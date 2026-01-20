@@ -1,0 +1,189 @@
+# Minimal Kafka StatefulSet for individual teams
+# This template deploys one Kafka instance per team namespace
+# Variables: TEAM_NAME, TEAM_NAMESPACE, STORAGE_CLASS
+#
+# Key features:
+# - Single PLAINTEXT listener (no SSL complexity)
+# - Reduced resource footprint for multi-tenant deployments
+# - 24-hour log retention with aggressive cleanup
+# - Auto-topic creation enabled
+#
+# Deploy with:
+#   export TEAM_NAME=team01
+#   export TEAM_NAMESPACE=team01-namespace
+#   export STORAGE_CLASS=standard
+#   envsubst < kafka-per-team-template.yaml | kubectl apply -f -
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-${TEAM_NAME}
+  namespace: ${TEAM_NAMESPACE}
+  labels:
+    app: kafka-${TEAM_NAME}
+    component: kafka
+    team: ${TEAM_NAME}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9092
+      name: kafka
+      targetPort: 9092
+  selector:
+    app: kafka-${TEAM_NAME}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-${TEAM_NAME}-headless
+  namespace: ${TEAM_NAMESPACE}
+  labels:
+    app: kafka-${TEAM_NAME}
+    component: kafka
+    team: ${TEAM_NAME}
+spec:
+  clusterIP: None
+  ports:
+    - port: 9092
+      name: kafka
+      targetPort: 9092
+    - port: 9093
+      name: controller
+      targetPort: 9093
+  selector:
+    app: kafka-${TEAM_NAME}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka-${TEAM_NAME}
+  namespace: ${TEAM_NAMESPACE}
+  labels:
+    app: kafka-${TEAM_NAME}
+    component: kafka
+    team: ${TEAM_NAME}
+spec:
+  serviceName: kafka-${TEAM_NAME}-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-${TEAM_NAME}
+  template:
+    metadata:
+      labels:
+        app: kafka-${TEAM_NAME}
+        component: kafka
+        team: ${TEAM_NAME}
+    spec:
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:7.5.0
+          ports:
+            - containerPort: 9092
+              name: kafka
+              protocol: TCP
+            - containerPort: 9093
+              name: controller
+              protocol: TCP
+          env:
+            # Unique cluster ID per team (generate your own or use a consistent hash)
+            - name: CLUSTER_ID
+              value: "MkU3OEVBNTcwNTJENDM2Qk"
+
+            # KRaft mode configuration (no ZooKeeper)
+            - name: KAFKA_NODE_ID
+              value: "1"
+            - name: KAFKA_PROCESS_ROLES
+              value: "broker,controller"
+
+            # Single PLAINTEXT listener for in-cluster access
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://:9092,CONTROLLER://:9093"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://kafka-${TEAM_NAME}-0.kafka-${TEAM_NAME}-headless.${TEAM_NAMESPACE}.svc.cluster.local:9092"
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: "CONTROLLER"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: "1@kafka-${TEAM_NAME}-0.kafka-${TEAM_NAME}-headless.${TEAM_NAMESPACE}.svc.cluster.local:9093"
+
+            # Replication factors (single node)
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_DEFAULT_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_MIN_INSYNC_REPLICAS
+              value: "1"
+
+            # Topic management
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: "true"
+
+            # Data directory
+            - name: KAFKA_LOG_DIRS
+              value: "/mnt/kafka-data/logs"
+
+            # Aggressive log retention for demo/test environments
+            - name: KAFKA_LOG_RETENTION_HOURS
+              value: "24"
+            - name: KAFKA_LOG_RETENTION_BYTES
+              value: "104857600"  # 100MB max per partition
+            - name: KAFKA_LOG_SEGMENT_BYTES
+              value: "52428800"  # 50MB segment size
+            - name: KAFKA_LOG_CLEANUP_POLICY
+              value: "delete"
+            - name: KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS
+              value: "300000"  # Check every 5 minutes
+            - name: KAFKA_LOG_SEGMENT_DELETE_DELAY_MS
+              value: "60000"  # Delete segments after 1 minute
+
+            # JVM heap settings - keep memory footprint small
+            - name: KAFKA_HEAP_OPTS
+              value: "-Xms256m -Xmx512m"
+
+          volumeMounts:
+            - name: data
+              mountPath: /mnt/kafka-data
+
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app: kafka-${TEAM_NAME}
+          component: kafka
+          team: ${TEAM_NAME}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+        storageClassName: ${STORAGE_CLASS}

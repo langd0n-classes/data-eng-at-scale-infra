@@ -1,0 +1,20 @@
+# Route template for team NiFi access
+# Variables: TEAM_NAME, INFRA_NAMESPACE
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: nifi-${TEAM_NAME}
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: nifi-${TEAM_NAME}
+spec:
+  host: nifi-${TEAM_NAME}.EXTERNAL_DOMAIN
+  to:
+    kind: Service
+    name: nifi-${TEAM_NAME}
+  port:
+    targetPort: https
+  tls:
+    termination: passthrough
+    insecureEdgeTerminationPolicy: Redirect

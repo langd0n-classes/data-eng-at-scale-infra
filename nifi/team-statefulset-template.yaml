@@ -1,0 +1,184 @@
+# Minimal NiFi StatefulSet for individual teams - Single PVC version
+# Variables: TEAM_NAME, INFRA_NAMESPACE, NIFI_IMAGE, TEAM_PASSWORD
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nifi-${TEAM_NAME}
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: nifi-${TEAM_NAME}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8443
+      targetPort: 8443
+      protocol: TCP
+      name: https
+  selector:
+    app: nifi-${TEAM_NAME}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nifi-${TEAM_NAME}
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: nifi-${TEAM_NAME}
+spec:
+  serviceName: nifi-${TEAM_NAME}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nifi-${TEAM_NAME}
+  template:
+    metadata:
+      labels:
+        app: nifi-${TEAM_NAME}
+    spec:
+      securityContext: {}
+
+      initContainers:
+        - name: init-config
+          image: ${NIFI_IMAGE}
+          command:
+            - sh
+            - -c
+            - |
+              set -x
+              echo "Initializing minimal NiFi configuration for ${TEAM_NAME}..."
+
+              # Create directory structure on single PVC
+              mkdir -p /data/conf /data/state /data/flowfile_repository /data/content_repository /data/provenance_repository
+
+              # Copy default configs if fresh deployment
+              if [ ! -f /data/conf/nifi.properties ]; then
+                echo "Fresh deployment - copying default configs..."
+                cp -r /opt/nifi/nifi-current/conf/* /data/conf/
+              fi
+
+              # REPLACE existing keystore with one that has correct hostname
+              # This avoids SNI errors when accessing via OpenShift route
+              rm -f /data/conf/keystore.p12  # Delete old keystore first
+              keytool -genkeypair -alias nifi -keyalg RSA -keysize 2048 \
+                -dname "CN=nifi-${TEAM_NAME}.EXTERNAL_DOMAIN" \
+                -ext "SAN=dns:nifi-${TEAM_NAME}.EXTERNAL_DOMAIN" \
+                -keystore /data/conf/keystore.p12 \
+                -storetype PKCS12 \
+                -storepass password -keypass password -validity 365 -noprompt
+
+              # Update nifi.properties to use plain text password (NiFi will encrypt it on first start)
+              sed -i 's|^nifi.security.keystorePasswd=.*|nifi.security.keystorePasswd=password|' /data/conf/nifi.properties
+              sed -i 's|^nifi.security.keyPasswd=.*|nifi.security.keyPasswd=password|' /data/conf/nifi.properties
+
+              echo "Custom keystore generated with correct hostname"
+
+              echo "Configuration complete"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+
+      containers:
+        - name: nifi
+          image: ${NIFI_IMAGE}
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - containerPort: 8443
+              name: https
+              protocol: TCP
+            - containerPort: 11443
+              name: cluster
+              protocol: TCP
+            - containerPort: 10443
+              name: s2s
+              protocol: TCP
+
+          env:
+            - name: HOME
+              value: "/tmp"
+            - name: NIFI_WEB_HTTPS_HOST
+              value: "0.0.0.0"
+            - name: NIFI_WEB_HTTPS_PORT
+              value: "8443"
+            - name: NIFI_WEB_PROXY_HOST
+              value: "nifi-${TEAM_NAME}.EXTERNAL_DOMAIN"
+            - name: SINGLE_USER_CREDENTIALS_USERNAME
+              value: "${TEAM_NAME}"
+            - name: SINGLE_USER_CREDENTIALS_PASSWORD
+              value: "${TEAM_PASSWORD}"
+
+                      # Sensitive Properties Key (for encrypted configs)
+            - name: NIFI_SENSITIVE_PROPS_KEY
+              value: "YOUR_SENSITIVE_PROPS_KEY"
+
+            # JVM Memory Configuration
+            - name: NIFI_JVM_HEAP_INIT
+              value: "512M"
+            - name: NIFI_JVM_HEAP_MAX
+              value: "1G"
+
+            # Kubernetes State Management (NiFi 2.0+)
+            - name: NIFI_STATE_MANAGEMENT_CLUSTER_PROVIDER
+              value: "kubernetes-state-provider"
+
+          volumeMounts:
+            - name: data
+              mountPath: /opt/nifi/nifi-current/conf
+              subPath: conf
+            - name: data
+              mountPath: /opt/nifi/nifi-current/state
+              subPath: state
+            - name: data
+              mountPath: /opt/nifi/nifi-current/flowfile_repository
+              subPath: flowfile_repository
+            - name: data
+              mountPath: /opt/nifi/nifi-current/content_repository
+              subPath: content_repository
+            - name: data
+              mountPath: /opt/nifi/nifi-current/provenance_repository
+              subPath: provenance_repository
+
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2560Mi"
+              cpu: "1500m"
+
+          # Liveness Probe - restart if NiFi becomes unresponsive
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "curl -k -f -s -H 'Host: nifi-${TEAM_NAME}.EXTERNAL_DOMAIN' https://localhost:8443/nifi/ > /dev/null"
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+          # Readiness Probe - don't route traffic until NiFi is ready
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "curl -k -f -s -H 'Host: nifi-${TEAM_NAME}.EXTERNAL_DOMAIN' https://localhost:8443/nifi/ > /dev/null"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: nifi-${TEAM_NAME}-data

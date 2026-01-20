@@ -1,0 +1,39 @@
+# OpenShift Route for external Kafka access via TLS
+# Students connect to: kafka-${KAFKA_CLUSTER_NAME}.EXTERNAL_DOMAIN:443
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: kafka-external
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: ${KAFKA_CLUSTER_NAME}
+spec:
+  host: kafka-${KAFKA_CLUSTER_NAME}.EXTERNAL_DOMAIN
+  to:
+    kind: Service
+    name: ${KAFKA_CLUSTER_NAME}-ssl
+  port:
+    targetPort: kafka-ssl
+  tls:
+    termination: passthrough
+    insecureEdgeTerminationPolicy: Redirect
+# OpenShift Route for plaintext Kafka access via NodePort service
+# This gives you a stable hostname instead of hardcoded IPs
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: kafka-external-plain
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: ${KAFKA_CLUSTER_NAME}
+    component: kafka
+spec:
+  host: kafka-plain-${KAFKA_CLUSTER_NAME}.EXTERNAL_DOMAIN
+  to:
+    kind: Service
+    name: ${KAFKA_CLUSTER_NAME}-external  # Your LoadBalancer/NodePort service
+  port:
+    targetPort: 9092
+  # No tls section - TCP passthrough

@@ -1,0 +1,18 @@
+# Service for Kafka SSL/External access
+# Used by the OpenShift Route for external connectivity
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${KAFKA_CLUSTER_NAME}-ssl
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: ${KAFKA_CLUSTER_NAME}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9094
+      name: kafka-ssl
+      targetPort: 9094
+  selector:
+    app: ${KAFKA_CLUSTER_NAME}

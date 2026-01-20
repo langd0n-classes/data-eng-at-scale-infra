@@ -1,0 +1,18 @@
+# Single PVC template for team NiFi instances (600Mi consolidating all storage)
+# Variables to substitute: TEAM_NAME, INFRA_NAMESPACE, STORAGE_CLASS
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nifi-${TEAM_NAME}-data
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: nifi-${TEAM_NAME}
+    component: data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1200Mi
+  storageClassName: ${STORAGE_CLASS}

@@ -1,0 +1,80 @@
+# Template for creating team ConfigMap and Secret
+# Usage: kubectl apply -f team-config-template.yaml -p TEAM_ID=01 -p NIFI_TEAM_PG_ID=<uuid> | kubectl apply -f -
+
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: ${TEAM_NAMESPACE_PREFIX:-${TEAM_NAMESPACE_PREFIX}}-config
+  annotations:
+    description: "Creates ConfigMap and Secret for Multi-Tenant Infrastructure team"
+    tags: "${CLUSTER_PREFIX},config"
+
+parameters:
+  - name: TEAM_ID
+    description: "Team ID (e.g., 01, 02, 03)"
+    required: true
+  - name: KAFKA_BOOTSTRAP_SERVERS
+    description: "Kafka bootstrap servers"
+    value: "${KAFKA_CLUSTER_NAME:-${CLUSTER_PREFIX}-kafka}-kafka-bootstrap.${INFRA_NAMESPACE:-${CLUSTER_PREFIX}-infra}.svc.cluster.local:9092"
+  - name: NIFI_UI_URL
+    description: "NiFi UI URL (get from route)"
+    value: "https://nifi-${CLUSTER_PREFIX}-infra.apps.cluster-domain.com/nifi"
+    required: true
+  - name: NIFI_API_URL
+    description: "NiFi API URL (get from route)"
+    value: "https://nifi-${CLUSTER_PREFIX}-infra.apps.cluster-domain.com/nifi-api"
+    required: true
+  - name: NIFI_TEAM_PG_ID
+    description: "NiFi Process Group ID for this team (create in NiFi UI first)"
+    required: true
+
+objects:
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: ${CLUSTER_PREFIX}-shared-config
+      namespace: ${TEAM_NAMESPACE_PREFIX:-${TEAM_NAMESPACE_PREFIX}}-${TEAM_ID}
+      labels:
+        course: ${CLUSTER_PREFIX}
+        team: team-${TEAM_ID}
+    data:
+      # Kafka configuration
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      TEAM_TOPIC_PREFIX: ${CLUSTER_PREFIX}.team${TEAM_ID}
+
+      # NiFi configuration
+      NIFI_UI_URL: ${NIFI_UI_URL}
+      NIFI_API_URL: ${NIFI_API_URL}
+      NIFI_TEAM_PG_ID: ${NIFI_TEAM_PG_ID}
+
+      # Team identification
+      TEAM_ID: ${TEAM_ID}
+      TEAM_NAMESPACE: ${TEAM_NAMESPACE_PREFIX:-${TEAM_NAMESPACE_PREFIX}}-${TEAM_ID}
+
+      # Environment mode (cluster vs local)
+      DEPLOYMENT_MODE: cluster
+
+  - apiVersion: v1
+    kind: Secret
+    metadata:
+      name: ${CLUSTER_PREFIX}-shared-credentials
+      namespace: ${TEAM_NAMESPACE_PREFIX:-${TEAM_NAMESPACE_PREFIX}}-${TEAM_ID}
+      labels:
+        course: ${CLUSTER_PREFIX}
+        team: team-${TEAM_ID}
+    type: Opaque
+    stringData:
+      # Add Kafka credentials if using authentication
+      # kafka.username: team${TEAM_ID}
+      # kafka.password: <generate-secure-password>
+
+      # Add NiFi credentials if required
+      # nifi.username: team${TEAM_ID}
+      # nifi.password: <generate-secure-password>
+
+      # Add MinIO credentials if using shared object storage
+      # minio.access.key: team${TEAM_ID}
+      # minio.secret.key: <generate-secure-key>
+
+      # Placeholder - remove if not using authentication
+      placeholder: "Add credentials here if using authentication"

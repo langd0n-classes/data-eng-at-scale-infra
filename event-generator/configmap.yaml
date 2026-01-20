@@ -1,0 +1,44 @@
+# Event Generator ConfigMap
+# This ConfigMap configures the synthetic event generator
+#
+# NOTE: This is an EXAMPLE configuration. Replace with your actual team mappings.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${EVENT_GENERATOR_NAME}-config
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: ${EVENT_GENERATOR_NAME}
+data:
+  # Event generation rate (events per second across all teams)
+  EVENT_RATE_PER_SEC: "10"
+  # When true, EVENT_RATE_PER_SEC applies per team
+  RATE_PER_TEAM: "false"
+
+  # Topic naming pattern:
+  # Multi-team:   ${TOPIC_PREFIX}${TEAM_ID}${TOPIC_SUFFIX} (e.g., events.team01.raw)
+  # Single-cluster: ${TOPIC_PREFIX}${TOPIC_SUFFIX} (e.g., events.raw) OR set TOPIC explicitly
+  TOPIC_PREFIX: "events.team"
+  TOPIC_SUFFIX: ".raw"
+  # Optional explicit topic name (overrides prefix/suffix)
+  # TOPIC: "events.raw"
+
+  # Event types to generate (comma-separated)
+  # Available: symptom_report, clinic_visit, environmental_conditions
+  EVENT_STREAMS: "symptom_report,clinic_visit,environmental_conditions"
+
+  # Geographic regions for simulation (comma-separated)
+  REGIONS: "Boston,NYC,Chicago,Seattle,Austin"
+
+  # Multi-team mode: team-to-Kafka bootstrap server mapping
+  # Format: team_id=bootstrap_server,team_id=bootstrap_server,...
+  # EXAMPLE: Replace with your actual team Kafka instances
+  TEAM_BOOTSTRAP_SERVERS: |
+    team01=kafka-team01.team-01.svc.cluster.local:9092,
+    team02=kafka-team02.team-02.svc.cluster.local:9092,
+    team03=kafka-team03.team-03.svc.cluster.local:9092
+
+  # Alternative: Single shared Kafka cluster (non-team mode)
+  # Uncomment and set if using one Kafka for all events
+  # KAFKA_BOOTSTRAP_SERVERS: "kafka-cluster.infra.svc.cluster.local:9092"

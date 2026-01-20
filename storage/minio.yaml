@@ -1,0 +1,171 @@
+# Optional: Shared MinIO (S3-compatible object storage) for demos
+# Teams typically use PVCs or their own storage in their namespaces
+# Deploy with: kubectl apply -f minio.yaml -n ${INFRA_NAMESPACE}
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-cluster-minio-credentials
+  namespace: ${INFRA_NAMESPACE:-${INFRA_NAMESPACE}}
+type: Opaque
+stringData:
+  access-key: "minio-clusteradmin"
+  secret-key: "minio-cluster-minio-secret-key"  # Change this!
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-cluster-minio-pvc
+  namespace: ${INFRA_NAMESPACE:-${INFRA_NAMESPACE}}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: gp2  # Adjust to your cluster's storage class
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio-cluster-minio
+  namespace: ${INFRA_NAMESPACE:-${INFRA_NAMESPACE}}
+  labels:
+    app: minio-cluster-minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio-cluster-minio
+  template:
+    metadata:
+      labels:
+        app: minio-cluster-minio
+    spec:
+      containers:
+        - name: minio
+          image: quay.io/minio/minio:latest
+          command:
+            - /bin/bash
+            - -c
+          args:
+            - minio server /data --console-address :9001
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-cluster-minio-credentials
+                  key: access-key
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-cluster-minio-credentials
+                  key: secret-key
+          ports:
+            - containerPort: 9000
+              name: api
+            - containerPort: 9001
+              name: console
+          volumeMounts:
+            - name: minio-data
+              mountPath: /data
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 250m
+            limits:
+              memory: 2Gi
+              cpu: 1000m
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: minio-data
+          persistentVolumeClaim:
+            claimName: minio-cluster-minio-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-cluster-minio
+  namespace: ${INFRA_NAMESPACE:-${INFRA_NAMESPACE}}
+  labels:
+    app: minio-cluster-minio
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9000
+      targetPort: 9000
+      name: api
+  selector:
+    app: minio-cluster-minio
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-cluster-minio-console
+  namespace: ${INFRA_NAMESPACE:-${INFRA_NAMESPACE}}
+  labels:
+    app: minio-cluster-minio
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9001
+      targetPort: 9001
+      name: console
+  selector:
+    app: minio-cluster-minio
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: minio-cluster-minio-console
+  namespace: ${INFRA_NAMESPACE:-${INFRA_NAMESPACE}}
+  labels:
+    app: minio-cluster-minio
+spec:
+  to:
+    kind: Service
+    name: minio-cluster-minio-console
+    weight: 100
+  port:
+    targetPort: console
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: minio-cluster-minio-api
+  namespace: ${INFRA_NAMESPACE:-${INFRA_NAMESPACE}}
+  labels:
+    app: minio-cluster-minio
+spec:
+  to:
+    kind: Service
+    name: minio-cluster-minio
+    weight: 100
+  port:
+    targetPort: api
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

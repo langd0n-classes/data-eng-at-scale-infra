@@ -1,0 +1,137 @@
+# Plain Kafka StatefulSet deployment (no operator required)
+# Uses official Apache Kafka images
+# For production, consider using the operator approach instead
+#
+# Deploy with: kubectl apply -f kafka-statefulset.yaml -n ${INFRA_NAMESPACE}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${KAFKA_CLUSTER_NAME}-headless
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: ${KAFKA_CLUSTER_NAME}
+    component: kafka
+spec:
+  clusterIP: None
+  ports:
+    - port: 9092
+      name: kafka
+      targetPort: 9092
+  selector:
+    app: ${KAFKA_CLUSTER_NAME}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${KAFKA_CLUSTER_NAME}-bootstrap
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: ${KAFKA_CLUSTER_NAME}
+    component: kafka
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9092
+      name: kafka
+      targetPort: 9092
+  selector:
+    app: ${KAFKA_CLUSTER_NAME}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${KAFKA_CLUSTER_NAME}
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: ${KAFKA_CLUSTER_NAME}
+    component: kafka
+spec:
+  serviceName: ${KAFKA_CLUSTER_NAME}-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${KAFKA_CLUSTER_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${KAFKA_CLUSTER_NAME}
+        component: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:7.5.0
+          ports:
+            - containerPort: 9092
+              name: kafka
+            - containerPort: 9093
+              name: controller
+            - containerPort: 9094
+              name: kafka-ssl
+          env:
+            - name: CLUSTER_ID
+              value: "MkU3OEVBNTcwNTJENDM2Qk"
+            - name: KAFKA_NODE_ID
+              value: "1"
+            - name: KAFKA_PROCESS_ROLES
+              value: "broker,controller"
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9092"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://${KAFKA_CLUSTER_NAME}-0.${KAFKA_CLUSTER_NAME}-headless.${INFRA_NAMESPACE}.svc.cluster.local:9092,EXTERNAL://${KAFKA_EXTERNAL_HOST}:${KAFKA_EXTERNAL_PORT}"
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: "CONTROLLER"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: "1@${KAFKA_CLUSTER_NAME}-0.${KAFKA_CLUSTER_NAME}-headless.${INFRA_NAMESPACE}.svc.cluster.local:9093"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_DEFAULT_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_MIN_INSYNC_REPLICAS
+              value: "1"
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: "true"
+            - name: KAFKA_LOG_DIRS
+              value: "/mnt/kafka-data/logs"
+            # Log retention and cleanup settings
+            - name: KAFKA_LOG_RETENTION_HOURS
+              value: "24"  # Keep logs for 24 hours
+            - name: KAFKA_LOG_RETENTION_BYTES
+              value: "104857600"  # 100MB max per partition
+            - name: KAFKA_LOG_SEGMENT_BYTES
+              value: "52428800"  # 50MB segment size
+            - name: KAFKA_LOG_CLEANUP_POLICY
+              value: "delete"
+            - name: KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS
+              value: "300000"  # Check every 5 minutes
+            - name: KAFKA_LOG_SEGMENT_DELETE_DELAY_MS
+              value: "60000"  # Delete segments after 1 minute
+          volumeMounts:
+            - name: data
+              mountPath: /mnt/kafka-data
+          resources:
+            requests:
+              memory: 2Gi
+              cpu: 500m
+            limits:
+              memory: 4Gi
+              cpu: 2000m
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app: ${KAFKA_CLUSTER_NAME}
+          component: kafka
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+        storageClassName: ${STORAGE_CLASS}

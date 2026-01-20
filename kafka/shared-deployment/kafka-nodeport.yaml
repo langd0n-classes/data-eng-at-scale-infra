@@ -1,0 +1,21 @@
+# NodePort service for external Kafka access
+# Students can connect from outside the cluster using node IP and this port
+# Deploy with: envsubst < kafka-nodeport.yaml | kubectl apply -f -
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${KAFKA_CLUSTER_NAME}-external
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: ${KAFKA_CLUSTER_NAME}
+spec:
+  type: NodePort
+  ports:
+    - name: kafka
+      port: 9092
+      targetPort: 9092
+      # nodePort will be auto-assigned in range 30000-32767
+      # Or uncomment and specify: nodePort: 30092
+  selector:
+    app: ${KAFKA_CLUSTER_NAME}

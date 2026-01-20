@@ -1,0 +1,75 @@
+# Template for creating team namespaces
+# Usage: kubectl apply -f namespace-template.yaml -p TEAM_ID=01 | kubectl apply -f -
+
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: ${TEAM_NAMESPACE_PREFIX:-${TEAM_NAMESPACE_PREFIX}}-namespace
+  annotations:
+    description: "Creates a Multi-Tenant Infrastructure team namespace with base resources"
+    tags: "${CLUSTER_PREFIX},namespace"
+
+parameters:
+  - name: TEAM_ID
+    description: "Team ID (e.g., 01, 02, 03)"
+    required: true
+  - name: RESOURCE_QUOTA_CPU
+    description: "CPU quota for team namespace"
+    value: "8"
+  - name: RESOURCE_QUOTA_MEMORY
+    description: "Memory quota for team namespace"
+    value: "16Gi"
+  - name: RESOURCE_QUOTA_STORAGE
+    description: "Storage quota for team namespace"
+    value: "100Gi"
+
+objects:
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: ${TEAM_NAMESPACE_PREFIX:-${TEAM_NAMESPACE_PREFIX}}-${TEAM_ID}
+      labels:
+        course: ${CLUSTER_PREFIX}
+        team: team-${TEAM_ID}
+      annotations:
+        openshift.io/description: "Multi-Tenant Infrastructure Team ${TEAM_ID}"
+
+  - apiVersion: v1
+    kind: ResourceQuota
+    metadata:
+      name: ${TEAM_NAMESPACE_PREFIX:-${TEAM_NAMESPACE_PREFIX}}-quota
+      namespace: ${TEAM_NAMESPACE_PREFIX:-${TEAM_NAMESPACE_PREFIX}}-${TEAM_ID}
+    spec:
+      hard:
+        requests.cpu: ${RESOURCE_QUOTA_CPU}
+        requests.memory: ${RESOURCE_QUOTA_MEMORY}
+        persistentvolumeclaims: "10"
+        requests.storage: ${RESOURCE_QUOTA_STORAGE}
+
+  - apiVersion: v1
+    kind: LimitRange
+    metadata:
+      name: ${TEAM_NAMESPACE_PREFIX:-${TEAM_NAMESPACE_PREFIX}}-limits
+      namespace: ${TEAM_NAMESPACE_PREFIX:-${TEAM_NAMESPACE_PREFIX}}-${TEAM_ID}
+    spec:
+      limits:
+        - type: Pod
+          max:
+            cpu: "4"
+            memory: 8Gi
+          min:
+            cpu: 50m
+            memory: 128Mi
+        - type: Container
+          max:
+            cpu: "2"
+            memory: 4Gi
+          min:
+            cpu: 10m
+            memory: 64Mi
+          default:
+            cpu: 500m
+            memory: 512Mi
+          defaultRequest:
+            cpu: 100m
+            memory: 256Mi
