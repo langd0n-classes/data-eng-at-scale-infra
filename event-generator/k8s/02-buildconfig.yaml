@@ -27,8 +27,8 @@ spec:
   source:
     type: Git
     git:
-      uri: '${GIT_REPO_URL}'
-      ref: '${GIT_BRANCH}'
+      uri: ${GIT_REPO_URL}
+      ref: ${GIT_BRANCH}
     contextDir: event-generator  # Only build from this directory
 
   # ============================================================================
