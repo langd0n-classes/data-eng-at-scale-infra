@@ -1,0 +1,24 @@
+# Event Generator BuildConfig
+# Builds the event generator Docker image from source
+# Deploy with: envsubst < buildconfig.yaml | oc apply -f -
+
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: event-generator
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: ${EVENT_GENERATOR_NAME}
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: event-generator:latest
+  source:
+    type: Binary
+    binary: {}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  triggers: []

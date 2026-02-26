@@ -73,7 +73,6 @@ fake = Faker()
 
 # Health check Flask app
 app = Flask(__name__)
-
 @app.route('/health')
 def health():
     return {'status': 'healthy', 'timestamp': datetime.utcnow().isoformat()}
