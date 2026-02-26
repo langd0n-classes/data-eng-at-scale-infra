@@ -9,6 +9,10 @@ metadata:
   namespace: ${INFRA_NAMESPACE}
   labels:
     app: ${EVENT_GENERATOR_NAME}
+    app.kubernetes.io/name: event-generator
+    app.kubernetes.io/component: data-producer
+    app.kubernetes.io/part-of: data-engineering-platform
+    app.kubernetes.io/managed-by: openshift
 spec:
   lookupPolicy:
     local: true

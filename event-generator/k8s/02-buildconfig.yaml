@@ -1,6 +1,10 @@
 # Event Generator BuildConfig
 # Builds the event generator Docker image from source
+#
+# DEFAULT: Git-based build (recommended for production/open-source)
 # Deploy with: envsubst < buildconfig.yaml | oc apply -f -
+#
+# ALTERNATIVE: For local development, uncomment Binary source and comment out Git source
 
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
@@ -14,11 +18,36 @@ spec:
     to:
       kind: ImageStreamTag
       name: event-generator:latest
+
+  # ============================================================================
+  # Git Source (DEFAULT - Recommended for open-source/production)
+  # ============================================================================
+  # Automatically builds from GitHub repository
+  # Requires: GIT_REPO_URL and GIT_BRANCH in config.env
   source:
-    type: Binary
-    binary: {}
+    type: Git
+    git:
+      uri: '${GIT_REPO_URL}'
+      ref: '${GIT_BRANCH}'
+    contextDir: event-generator  # Only build from this directory
+
+  # ============================================================================
+  # Binary Source (ALTERNATIVE - For local development)
+  # ============================================================================
+  # Uncomment this section and comment out Git source above for local builds
+  # Requires manual upload: oc start-build event-generator --from-dir=./event-generator --follow
+  #
+  # source:
+  #   type: Binary
+  #   binary: {}
+
   strategy:
     type: Docker
     dockerStrategy:
       dockerfilePath: Dockerfile
-  triggers: []
+
+  # Automatic triggers (for Git source)
+  triggers:
+    - type: ConfigChange  # Rebuild when BuildConfig changes
+    - type: ImageChange   # Rebuild when base image changes
+      imageChange: {}
