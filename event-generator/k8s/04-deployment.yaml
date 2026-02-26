@@ -9,6 +9,8 @@ metadata:
   namespace: ${INFRA_NAMESPACE}
   labels:
     app: ${EVENT_GENERATOR_NAME}
+  annotations:
+    image.openshift.io/triggers: '[{"from":{"kind":"ImageStreamTag","name":"event-generator:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"generator\")].image"}]'
 spec:
   replicas: 1
   selector:
@@ -22,6 +24,7 @@ spec:
       containers:
         - name: generator
           image: image-registry.openshift-image-registry.svc:5000/${INFRA_NAMESPACE}/event-generator:latest
+          imagePullPolicy: Always
           envFrom:
             - configMapRef:
                 name: ${EVENT_GENERATOR_NAME}-config

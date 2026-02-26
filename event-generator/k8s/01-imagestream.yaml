@@ -1,0 +1,14 @@
+# Event Generator ImageStream
+# Tracks the event generator container image in OpenShift's internal registry
+# Deploy with: envsubst < imagestream.yaml | oc apply -f -
+
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: event-generator
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: ${EVENT_GENERATOR_NAME}
+spec:
+  lookupPolicy:
+    local: true
