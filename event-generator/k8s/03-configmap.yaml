@@ -39,3 +39,10 @@ data:
   # Single-cluster mode: Single shared Kafka cluster
   # Set in config.env to use single-cluster mode instead of multi-team
   KAFKA_BOOTSTRAP_SERVERS: "${KAFKA_BOOTSTRAP_SERVERS}"
+
+  # Optional: Seed for Python's random number generator.
+  # When set, event data is reproducible across restarts — useful for demos and testing.
+  # Accepts an integer string (e.g. "42") or any string value (hashed internally).
+  # WARNING: setting RANDOM_SEED="" (empty string) still seeds with 0 — output will be deterministic.
+  # To get truly non-deterministic (random) output, do not set RANDOM_SEED in config.env.
+  RANDOM_SEED: "${RANDOM_SEED}"
