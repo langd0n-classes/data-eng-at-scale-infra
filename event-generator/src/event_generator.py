@@ -79,7 +79,7 @@ def health():
 
 @app.route('/ready')
 def ready():
-    return {'status': 'ready', 'teams': len(TEAM_KAFKA_MAPPING), 'rate': EVENT_RATE_PER_SEC}
+    return {'status': 'ready', 'teams': len(TEAM_KAFKA_MAPPING), 'rate': EVENT_RATE_PER_SEC, 'rate_per_team': RATE_PER_TEAM}
 
 
 class EventGenerator:
@@ -236,16 +236,20 @@ class EventGenerator:
     def produce_events(self):
         """Main event production loop - sends events to all configured producers"""
         logger.info(f"Starting event production for {len(self.producers)} producer(s)")
-        rate_desc = f"{EVENT_RATE_PER_SEC} events/sec"
-        if RATE_PER_TEAM and len(self.producers) > 1:
-            rate_desc += " per team"
+        if RATE_PER_TEAM or len(self.producers) <= 1:
+            rate_desc = f"{EVENT_RATE_PER_SEC} events/sec per team"
+        else:
+            per_team_rate = round(EVENT_RATE_PER_SEC / len(self.producers), 2)
+            rate_desc = f"{EVENT_RATE_PER_SEC} events/sec total ({per_team_rate}/sec per team)"
         logger.info(f"Event rate: {rate_desc}")
         logger.info(f"Event streams: {EVENT_STREAMS}")
 
         # Calculate sleep interval per loop iteration
+        # RATE_PER_TEAM=true:  each team gets EVENT_RATE_PER_SEC events/sec
+        # RATE_PER_TEAM=false: EVENT_RATE_PER_SEC is the total budget shared across all teams
         effective_rate = EVENT_RATE_PER_SEC
-        if RATE_PER_TEAM and len(self.producers) > 0:
-            effective_rate = EVENT_RATE_PER_SEC
+        if not RATE_PER_TEAM and len(self.producers) > 1:
+            effective_rate = EVENT_RATE_PER_SEC / len(self.producers)
         sleep_interval = 1.0 / max(effective_rate, 0.001)
         event_count = 0
         failed_sends = {}  # Track failures per team
