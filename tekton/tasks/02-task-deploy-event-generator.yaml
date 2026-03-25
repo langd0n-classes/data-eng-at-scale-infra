@@ -1,0 +1,221 @@
+# Task: deploy-event-generator
+#
+# Deploys or updates the event generator in the infra namespace.
+# Applies all 4 k8s resource files in order:
+#   1. ImageStream (OpenShift image registry entry)
+#   2. BuildConfig (builds the Docker image from Git source)
+#   3. ConfigMap  (runtime config: Kafka addresses, event rate, topics prefix, etc.)
+#   4. Deployment (runs the Python event generator)
+#
+# Then restarts the deployment so it picks up any ConfigMap changes immediately.
+#
+# This Task is idempotent — running it again updates config without recreating resources.
+#
+# Note on topics: KAFKA_AUTO_CREATE_TOPICS_ENABLE=true is set on the Kafka broker,
+# so topics are auto-created when the event generator first produces a message.
+# No separate topic creation step is needed.
+#
+# Variables substituted via envsubst (source config.env first):
+#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE  (namespace this Task lives in)
+#   ${OC_CLI_IMAGE}     — config.env: OC_CLI_IMAGE     (OpenShift CLI image for task steps)
+#
+# NOTE: use scoped envsubst to avoid substituting bash ${VAR} inside the scripts:
+#
+# Apply with:
+#   source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' \
+#     < tekton/tasks/02-task-deploy-event-generator.yaml | oc apply -f -
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-event-generator
+  namespace: ${INFRA_NAMESPACE}  # config.env: INFRA_NAMESPACE
+  labels:
+    app: tekton-pipeline
+    component: event-generator
+spec:
+  description: |
+    Deploys or updates the event generator in the infra namespace.
+    Applies ImageStream, BuildConfig, ConfigMap, and Deployment.
+    Restarts the deployment to pick up config changes.
+
+  params:
+    - name: infra-namespace
+      description: "Namespace where event generator runs (usually: infra)"
+      type: string
+      default: infra
+
+    - name: event-generator-name
+      description: "Name of the event generator deployment"
+      type: string
+      default: event-generator
+
+    - name: git-repo-url
+      description: "Git URL for OpenShift to build the event generator image from"
+      type: string
+
+    - name: git-branch
+      description: "Git branch to build from"
+      type: string
+      default: main
+
+    - name: team-bootstrap-servers
+      description: |
+        Team-to-Kafka mapping for multi-team mode.
+        Format: team01=kafka-team01.team-01.svc.cluster.local:9092
+        Multiple teams: team01=kafka-...:9092,team02=kafka-...:9092
+      type: string
+
+    - name: event-rate-per-sec
+      description: "Events to generate per second"
+      type: string
+      default: "10"
+
+    - name: rate-per-team
+      description: "When true, event-rate-per-sec applies per team not total"
+      type: string
+      default: "false"
+
+    - name: topic-prefix
+      description: "Prefix for auto-named topics (e.g., events.)"
+      type: string
+      default: "events."
+
+    - name: topic-suffix
+      description: "Suffix for auto-named topics (e.g., .raw)"
+      type: string
+      default: ".raw"
+
+    - name: event-streams
+      description: "Comma-separated event types to generate"
+      type: string
+      default: "symptom_report,clinic_visit,environmental_conditions"
+
+    - name: regions
+      description: "Comma-separated geographic regions for simulation"
+      type: string
+      default: "Boston,NYC,Chicago,Seattle,Austin"
+
+    - name: random-seed
+      description: |
+        Optional seed for Python's random number generator — makes generated events
+        reproducible across restarts. Accepts an integer string (e.g. "42") or any
+        string (hashed to int internally).
+        WARNING: empty string (the default) still seeds with 0 — output will be
+        deterministic. True non-determinism requires changing the ConfigMap template
+        to omit the RANDOM_SEED key when unset.
+      type: string
+      default: ""
+
+  workspaces:
+    - name: source
+      description: "Git repository containing event-generator/k8s/ files"
+
+  steps:
+    # Step 1: Apply ImageStream and BuildConfig
+    # ImageStream: registers the image in OpenShift's internal registry
+    # BuildConfig: tells OpenShift how to build the image from Git source
+    - name: apply-build-resources
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      script: |
+        #!/bin/bash
+        set -e
+
+        INFRA_NS="$(params.infra-namespace)"
+        EG_NAME="$(params.event-generator-name)"
+        SOURCE="$(workspaces.source.path)/event-generator/k8s"
+
+        echo "=================================================="
+        echo "Applying ImageStream..."
+        echo "=================================================="
+        sed \
+          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|\${EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
+          "${SOURCE}/01-imagestream.yaml" | oc apply -f -
+
+        echo ""
+        echo "=================================================="
+        echo "Applying BuildConfig (builds image from Git)..."
+        echo "=================================================="
+        sed \
+          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|\${EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
+          -e "s|\${GIT_REPO_URL}|$(params.git-repo-url)|g" \
+          -e "s|\${GIT_BRANCH}|$(params.git-branch)|g" \
+          "${SOURCE}/02-buildconfig.yaml" | oc apply -f -
+
+        echo ""
+        echo "Build resources applied."
+        echo "OpenShift will start a new image build if the BuildConfig changed."
+        echo "You can watch the build with: oc logs -f bc/${EG_NAME} -n ${INFRA_NS}"
+
+    # Step 2: Apply ConfigMap with current runtime configuration
+    # This is what controls event rate, topic names, Kafka addresses, etc.
+    # Changing any param and re-running the pipeline updates this ConfigMap.
+    - name: apply-configmap
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      script: |
+        #!/bin/bash
+        set -e
+
+        INFRA_NS="$(params.infra-namespace)"
+        EG_NAME="$(params.event-generator-name)"
+        SOURCE="$(workspaces.source.path)/event-generator/k8s"
+
+        echo "=================================================="
+        echo "Applying ConfigMap with current configuration..."
+        echo "  team-bootstrap-servers: $(params.team-bootstrap-servers)"
+        echo "  event-rate-per-sec:     $(params.event-rate-per-sec)"
+        echo "  topic-prefix:           $(params.topic-prefix)"
+        echo "  topic-suffix:           $(params.topic-suffix)"
+        echo "=================================================="
+
+        # Substitute all template variables using sed
+        # Using | as delimiter to avoid issues with / in URLs/paths
+        sed \
+          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|\${EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
+          -e "s|\${TEAM_BOOTSTRAP_SERVERS}|$(params.team-bootstrap-servers)|g" \
+          -e "s|\${EVENT_RATE_PER_SEC}|$(params.event-rate-per-sec)|g" \
+          -e "s|\${RATE_PER_TEAM}|$(params.rate-per-team)|g" \
+          -e "s|\${TOPIC_PREFIX}|$(params.topic-prefix)|g" \
+          -e "s|\${TOPIC_SUFFIX}|$(params.topic-suffix)|g" \
+          -e "s|\${EVENT_STREAMS}|$(params.event-streams)|g" \
+          -e "s|\${REGIONS}|$(params.regions)|g" \
+          -e "s|\${TOPIC}||g" \
+          -e "s|\${KAFKA_BOOTSTRAP_SERVERS}||g" \
+          -e "s|\${RANDOM_SEED}|$(params.random-seed)|g" \
+          "${SOURCE}/03-configmap.yaml" | oc apply -f -
+
+        echo ""
+        echo "ConfigMap applied."
+
+    # Step 3: Apply Deployment and restart to pick up ConfigMap changes
+    - name: apply-deployment
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      script: |
+        #!/bin/bash
+        set -e
+
+        INFRA_NS="$(params.infra-namespace)"
+        EG_NAME="$(params.event-generator-name)"
+        SOURCE="$(workspaces.source.path)/event-generator/k8s"
+
+        echo "=================================================="
+        echo "Applying Deployment..."
+        echo "=================================================="
+        sed \
+          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|\${EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
+          "${SOURCE}/04-deployment.yaml" | oc apply -f -
+
+        echo ""
+        echo "Restarting deployment to pick up ConfigMap changes..."
+        # rollout restart creates a new pod with the updated config
+        # '|| true' prevents failure if the deployment doesn't exist yet
+        # (first run: deployment was just created, no need to restart)
+        oc rollout restart "deployment/${EG_NAME}" -n "${INFRA_NS}" 2>/dev/null || true
+
+        echo ""
+        echo "Event generator deployment applied."
+        echo "Watch rollout status: oc rollout status deployment/${EG_NAME} -n ${INFRA_NS}"

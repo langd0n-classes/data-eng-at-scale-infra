@@ -1,0 +1,56 @@
+# TaskRun: deploy-kafka
+#
+# Deploys Kafka for a single team using the existing workspace PVC.
+# No git clone — reuses the PVC left behind by the last PipelineRun.
+#
+# When to use:
+#   - Adding a new team (templates unchanged)
+#   - Redeploying a crashed team's Kafka (templates unchanged)
+#
+# Prerequisites:
+#   - At least one PipelineRun has completed (workspace PVC must exist)
+#   - TEKTON_WORKSPACE_PVC is set in config.env
+#     Find it with: oc get pvc -n ${INFRA_NAMESPACE} | grep shared-data
+#
+# Apply with:
+#   source config.env && \
+#   envsubst '${TEAM_NAME} ${TEAM_NAMESPACE} ${INFRA_NAMESPACE} ${STORAGE_CLASS} ${TEKTON_WORKSPACE_PVC}' \
+#     < tekton/runs/taskrun-deploy-kafka.yaml | oc create -f -
+#
+# Watch:
+#   tkn taskrun logs --last -f -n ${INFRA_NAMESPACE}
+#
+# Variables (all from config.env):
+#   ${TEAM_NAME}              — team identifier used in resource names    (e.g. team01)
+#   ${TEAM_NAMESPACE}         — OpenShift namespace for this team         (e.g. team-01)
+#   ${INFRA_NAMESPACE}        — shared infra namespace                    (e.g. infra)
+#   ${STORAGE_CLASS}          — PVC storage class for Kafka               (e.g. standard)
+#   ${TEKTON_WORKSPACE_PVC}   — PVC name from a previous PipelineRun
+
+apiVersion: tekton.dev/v1
+kind: TaskRun
+metadata:
+  generateName: deploy-kafka-${TEAM_NAME}-    # auto-unique suffix, no collision
+  namespace: ${INFRA_NAMESPACE}               # config.env: INFRA_NAMESPACE
+  labels:
+    app: tekton-pipeline
+    component: kafka
+    team: ${TEAM_NAME}
+spec:
+  taskRef:
+    name: deploy-kafka
+
+  params:
+    - name: team-name
+      value: "${TEAM_NAME}"                   # config.env: TEAM_NAME
+
+    - name: team-namespace
+      value: "${TEAM_NAMESPACE}"              # config.env: TEAM_NAMESPACE
+
+    - name: storage-class
+      value: "${STORAGE_CLASS}"              # config.env: STORAGE_CLASS
+
+  workspaces:
+    - name: source
+      persistentVolumeClaim:
+        claimName: "${TEKTON_WORKSPACE_PVC}"  # config.env: TEKTON_WORKSPACE_PVC

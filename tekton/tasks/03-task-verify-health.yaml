@@ -1,0 +1,126 @@
+# Task: verify-health
+#
+# Checks that Kafka and the event generator are running correctly after deployment.
+# This is the final step of the pipeline — a sanity check.
+#
+# What it checks:
+#   Step 1: Kafka pod status and recent logs
+#   Step 2: Event generator pod status and recent logs
+#
+# Note: Topics are auto-created by Kafka when the first message is produced,
+# so we don't verify topics here — they show up once the event generator starts.
+#
+# Variables substituted via envsubst (source config.env first):
+#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE  (namespace this Task lives in)
+#   ${OC_CLI_IMAGE}     — config.env: OC_CLI_IMAGE     (OpenShift CLI image for task steps)
+#
+# NOTE: use scoped envsubst to avoid substituting bash ${VAR} inside the scripts:
+#
+# Apply with:
+#   source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' \
+#     < tekton/tasks/03-task-verify-health.yaml | oc apply -f -
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: verify-health
+  namespace: ${INFRA_NAMESPACE}  # config.env: INFRA_NAMESPACE
+  labels:
+    app: tekton-pipeline
+    component: health-check
+spec:
+  description: |
+    Verifies that Kafka and the event generator are running after deployment.
+    Prints pod status and recent logs for quick inspection.
+
+  params:
+    - name: team-name
+      description: "Team identifier (e.g., team01)"
+      type: string
+
+    - name: team-namespace
+      description: "Team namespace to check (e.g., team-01)"
+      type: string
+
+    - name: infra-namespace
+      description: "Infra namespace where event generator runs"
+      type: string
+      default: infra
+
+    - name: event-generator-name
+      description: "Event generator deployment name"
+      type: string
+      default: event-generator
+
+  steps:
+    # Step 1: Check Kafka status
+    - name: check-kafka
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      script: |
+        #!/bin/bash
+
+        TEAM_NAME="$(params.team-name)"
+        TEAM_NAMESPACE="$(params.team-namespace)"
+
+        echo "=================================================="
+        echo "Kafka Health Check — $TEAM_NAME ($TEAM_NAMESPACE)"
+        echo "=================================================="
+
+        echo ""
+        echo "--- Pod / Service / PVC status ---"
+        oc get pods,svc,pvc -n "$TEAM_NAMESPACE" -l component=kafka 2>/dev/null || \
+          echo "WARNING: No kafka resources found in $TEAM_NAMESPACE"
+
+        echo ""
+        echo "--- Kafka pod phase ---"
+        STATUS=$(oc get pod "kafka-${TEAM_NAME}-0" \
+          -n "$TEAM_NAMESPACE" \
+          -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+
+        if [ "$STATUS" = "Running" ]; then
+          echo "Kafka pod is Running — OK"
+        else
+          echo "WARNING: Kafka pod status is '$STATUS'"
+          echo "Check with: oc describe pod kafka-${TEAM_NAME}-0 -n $TEAM_NAMESPACE"
+        fi
+
+        echo ""
+        echo "--- Last 5 lines of Kafka logs ---"
+        oc logs "kafka-${TEAM_NAME}-0" -n "$TEAM_NAMESPACE" --tail=5 2>/dev/null || \
+          echo "(logs not available yet — pod may still be starting)"
+
+    # Step 2: Check event generator status
+    - name: check-event-generator
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      script: |
+        #!/bin/bash
+
+        INFRA_NS="$(params.infra-namespace)"
+        EG_NAME="$(params.event-generator-name)"
+
+        echo "=================================================="
+        echo "Event Generator Health Check ($INFRA_NS)"
+        echo "=================================================="
+
+        echo ""
+        echo "--- Pod / Service status ---"
+        oc get pods,svc -n "$INFRA_NS" -l "app=${EG_NAME}" 2>/dev/null || \
+          echo "WARNING: No event-generator resources found in $INFRA_NS"
+
+        echo ""
+        echo "--- Last 10 lines of event generator logs ---"
+        oc logs "deployment/${EG_NAME}" -n "$INFRA_NS" --tail=10 2>/dev/null || \
+          echo "(logs not available yet — pod may still be starting or image build in progress)"
+
+        echo ""
+        echo "=================================================="
+        echo "Deployment complete!"
+        echo ""
+        echo "Useful commands:"
+        echo "  Watch events flowing:"
+        echo "    oc logs -f deployment/${EG_NAME} -n ${INFRA_NS}"
+        echo ""
+        echo "  Check Kafka topics (auto-created after first message):"
+        echo "    oc exec kafka-$(params.team-name)-0 -n $(params.team-namespace) -- \\"
+        echo "      kafka-topics --bootstrap-server localhost:9092 --list"
+        echo "=================================================="
