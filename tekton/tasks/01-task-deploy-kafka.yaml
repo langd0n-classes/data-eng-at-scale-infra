@@ -1,0 +1,138 @@
+# Task: deploy-kafka
+#
+# Deploys a Kafka StatefulSet for a single team using the existing
+# kafka-per-team-template.yaml from the repository.
+#
+# What it does:
+#   Step 1 (apply-kafka): substitutes template variables and runs oc apply
+#   Step 2 (wait-for-kafka): waits until the Kafka pod is Ready (up to 5 min)
+#
+# This Task is idempotent — running it again when Kafka is already deployed
+# will update the resources if anything changed, or do nothing if unchanged.
+#
+# Variables substituted via envsubst (source config.env first):
+#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE  (namespace this Task lives in)
+#   ${OC_CLI_IMAGE}     — config.env: OC_CLI_IMAGE     (OpenShift CLI image for task steps)
+#
+# NOTE: use scoped envsubst to avoid substituting bash ${VAR} inside the scripts:
+#
+# Apply with:
+#   source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' \
+#     < tekton/tasks/01-task-deploy-kafka.yaml | oc apply -f -
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-kafka
+  namespace: ${INFRA_NAMESPACE}  # config.env: INFRA_NAMESPACE
+  labels:
+    app: tekton-pipeline
+    component: kafka
+spec:
+  description: |
+    Deploys a Kafka StatefulSet for a single team namespace using the
+    kafka-per-team-template.yaml template. Waits until the broker is Ready.
+
+  params:
+    - name: team-name
+      description: "Team identifier used in resource names (e.g., team01)"
+      type: string
+
+    - name: team-namespace
+      description: "OpenShift namespace where Kafka will be deployed (e.g., team-01)"
+      type: string
+
+    - name: storage-class
+      description: "Storage class name for the Kafka PVC (check with: oc get sc)"
+      type: string
+      default: standard
+
+  workspaces:
+    - name: source
+      description: Git repository containing the kafka/per-team/kafka-per-team-template.yaml
+
+  steps:
+    # Step 1: Substitute template variables and apply the Kafka resources
+    - name: apply-kafka
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      script: |
+        #!/bin/bash
+        set -e
+
+        TEAM_NAME="$(params.team-name)"
+        TEAM_NAMESPACE="$(params.team-namespace)"
+        STORAGE_CLASS="$(params.storage-class)"
+        TEMPLATE="$(workspaces.source.path)/kafka/per-team/kafka-per-team-template.yaml"
+
+        echo "=================================================="
+        echo "Deploying Kafka for team: $TEAM_NAME"
+        echo "Namespace:                $TEAM_NAMESPACE"
+        echo "Storage class:            $STORAGE_CLASS"
+        echo "Template:                 $TEMPLATE"
+        echo "=================================================="
+
+        # Verify the template exists in the cloned repo
+        if [ ! -f "$TEMPLATE" ]; then
+          echo "ERROR: Template not found at $TEMPLATE"
+          echo "Files in workspace:"
+          ls "$(workspaces.source.path)/kafka/per-team/" || true
+          exit 1
+        fi
+
+        # Verify the target namespace exists
+        if ! oc get namespace "$TEAM_NAMESPACE" &>/dev/null; then
+          echo "ERROR: Namespace $TEAM_NAMESPACE does not exist."
+          echo "Please create it before running this pipeline."
+          echo "Available namespaces:"
+          oc get namespaces | grep -E "^(infra|team)" || true
+          exit 1
+        fi
+
+        # Substitute template variables using sed (works without envsubst)
+        # The template uses: ${TEAM_NAME}, ${TEAM_NAMESPACE}, ${STORAGE_CLASS}
+        sed \
+          -e "s/\${TEAM_NAME}/${TEAM_NAME}/g" \
+          -e "s/\${TEAM_NAMESPACE}/${TEAM_NAMESPACE}/g" \
+          -e "s/\${STORAGE_CLASS}/${STORAGE_CLASS}/g" \
+          "$TEMPLATE" | oc apply -f -
+
+        echo ""
+        echo "Kafka resources applied successfully."
+        echo "Resources created:"
+        echo "  - Service:      kafka-${TEAM_NAME}"
+        echo "  - Service:      kafka-${TEAM_NAME}-headless"
+        echo "  - StatefulSet:  kafka-${TEAM_NAME}"
+        echo "  - PVC:          data-kafka-${TEAM_NAME}-0 (created on first run)"
+
+    # Step 2: Wait until Kafka pod is Ready before proceeding
+    - name: wait-for-kafka
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      script: |
+        #!/bin/bash
+        set -e
+
+        TEAM_NAME="$(params.team-name)"
+        TEAM_NAMESPACE="$(params.team-namespace)"
+
+        echo "Waiting for kafka-${TEAM_NAME}-0 to be Ready..."
+        echo "(This can take 1-3 minutes on first deployment)"
+
+        # Wait for the pod to exist first (it may take a moment to be scheduled)
+        for i in $(seq 1 12); do
+          if oc get pod "kafka-${TEAM_NAME}-0" -n "$TEAM_NAMESPACE" &>/dev/null; then
+            echo "Pod kafka-${TEAM_NAME}-0 found."
+            break
+          fi
+          echo "Waiting for pod to be scheduled... (${i}/12)"
+          sleep 10
+        done
+
+        # Now wait for it to be Ready
+        oc wait "pod/kafka-${TEAM_NAME}-0" \
+          -n "$TEAM_NAMESPACE" \
+          --for=condition=Ready \
+          --timeout=300s
+
+        echo ""
+        echo "Kafka is Ready!"
+        oc get pod "kafka-${TEAM_NAME}-0" -n "$TEAM_NAMESPACE"

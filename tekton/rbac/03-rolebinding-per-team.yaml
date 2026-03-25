@@ -1,0 +1,36 @@
+# RoleBinding for pipeline-runner — per team namespace
+#
+# Use this file if your cluster does NOT allow ClusterRoleBinding
+# (e.g., shared clusters like NERC where you are a namespace-scoped admin).
+#
+# How it works:
+#   - The ClusterRole (pipeline-runner-role) is defined in 02-clusterrolebinding.yaml
+#   - A RoleBinding references that ClusterRole but scopes it to ONE namespace
+#   - You need one RoleBinding per team namespace
+#
+# Variables substituted via envsubst (source config.env first):
+#   ${TEKTON_SA_NAME}   — config.env: TEKTON_SA_NAME   (e.g. pipeline-runner)
+#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE  (e.g. ds551-2026-spring-9ab13b)
+#
+# Apply for a single team:
+#   source config.env && envsubst '${TEKTON_SA_NAME} ${INFRA_NAMESPACE}' \
+#     < tekton/rbac/03-rolebinding-per-team.yaml | oc apply -f - -n <team-namespace>
+#
+# Or loop over all teams (see IMPLEMENTATION.md).
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pipeline-runner-binding
+  # namespace is set by the -n flag when you apply this file
+  labels:
+    app: tekton-pipeline
+    component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole         # references the ClusterRole from 02-clusterrolebinding.yaml
+  name: pipeline-runner-role  # but only applies within the namespace this RoleBinding is in
+subjects:
+  - kind: ServiceAccount
+    name: ${TEKTON_SA_NAME}       # config.env: TEKTON_SA_NAME
+    namespace: ${INFRA_NAMESPACE} # config.env: INFRA_NAMESPACE — SA lives here, not in team namespace

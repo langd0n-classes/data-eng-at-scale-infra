@@ -1,0 +1,798 @@
+# Pipeline: deploy-all-teams
+#
+# Deploys Kafka for up to 15 teams in parallel, then updates the event generator
+# once with all bootstrap servers.
+#
+# Teams set to "skip" in config.env are automatically bypassed via Tekton
+# `when` expressions. The event generator always runs once at the end.
+#
+# Apply with:
+#   source config.env && envsubst '${INFRA_NAMESPACE}' \
+#     < tekton/pipelines/01-pipeline-deploy-all-teams.yaml | oc apply -f -
+
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: deploy-all-teams
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: tekton-pipeline
+spec:
+  description: |
+    Deploys Kafka for up to 15 teams in parallel, then updates the event generator
+    once with all bootstrap servers. Teams set to "skip" are bypassed automatically.
+
+  params:
+    - name: git-url
+      type: string
+    - name: git-revision
+      type: string
+      default: main
+    - name: storage-class
+      type: string
+      default: standard
+    - name: infra-namespace
+      type: string
+      default: infra
+    - name: event-generator-name
+      type: string
+      default: event-generator
+    - name: git-repo-url
+      type: string
+
+    # ── Teams 1-15 (set to "skip" in config.env to bypass) ───────────────────
+    - name: team1-name
+      type: string
+      default: skip
+    - name: team1-namespace
+      type: string
+      default: skip
+
+    - name: team2-name
+      type: string
+      default: skip
+    - name: team2-namespace
+      type: string
+      default: skip
+
+    - name: team3-name
+      type: string
+      default: skip
+    - name: team3-namespace
+      type: string
+      default: skip
+
+    - name: team4-name
+      type: string
+      default: skip
+    - name: team4-namespace
+      type: string
+      default: skip
+
+    - name: team5-name
+      type: string
+      default: skip
+    - name: team5-namespace
+      type: string
+      default: skip
+
+    - name: team6-name
+      type: string
+      default: skip
+    - name: team6-namespace
+      type: string
+      default: skip
+
+    - name: team7-name
+      type: string
+      default: skip
+    - name: team7-namespace
+      type: string
+      default: skip
+
+    - name: team8-name
+      type: string
+      default: skip
+    - name: team8-namespace
+      type: string
+      default: skip
+
+    - name: team9-name
+      type: string
+      default: skip
+    - name: team9-namespace
+      type: string
+      default: skip
+
+    - name: team10-name
+      type: string
+      default: skip
+    - name: team10-namespace
+      type: string
+      default: skip
+
+    - name: team11-name
+      type: string
+      default: skip
+    - name: team11-namespace
+      type: string
+      default: skip
+
+    - name: team12-name
+      type: string
+      default: skip
+    - name: team12-namespace
+      type: string
+      default: skip
+
+    - name: team13-name
+      type: string
+      default: skip
+    - name: team13-namespace
+      type: string
+      default: skip
+
+    - name: team14-name
+      type: string
+      default: skip
+    - name: team14-namespace
+      type: string
+      default: skip
+
+    - name: team15-name
+      type: string
+      default: skip
+    - name: team15-namespace
+      type: string
+      default: skip
+
+    # ── Event generator config ────────────────────────────────────────────────
+    - name: all-team-bootstrap-servers
+      description: |
+        Bootstrap servers for ALL teams being deployed, comma-separated.
+        Example: team01=kafka-team01.team-01.svc.cluster.local:9092,team02=...
+      type: string
+    - name: event-rate-per-sec
+      type: string
+      default: "10"
+    - name: topic-prefix
+      type: string
+      default: "events."
+    - name: topic-suffix
+      type: string
+      default: ".raw"
+    - name: event-streams
+      type: string
+      default: "symptom_report,clinic_visit,environmental_conditions"
+    - name: regions
+      type: string
+      default: "Boston,NYC,Chicago,Seattle,Austin"
+    - name: random-seed
+      type: string
+      default: ""
+
+  workspaces:
+    - name: shared-data
+
+  tasks:
+    # ── Clone repo once — all tasks read templates from this workspace ────────
+    - name: clone-repo
+      taskRef:
+        name: git-clone
+        kind: ClusterTask
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.git-revision)
+      workspaces:
+        - name: output
+          workspace: shared-data
+
+    # ── Deploy Kafka — one task per team, skipped if team-name == "skip" ──────
+    - name: deploy-kafka-team1
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.team1-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-kafka
+      params:
+        - name: team-name
+          value: $(params.team1-name)
+        - name: team-namespace
+          value: $(params.team1-namespace)
+        - name: storage-class
+          value: $(params.storage-class)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-kafka-team2
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.team2-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-kafka
+      params:
+        - name: team-name
+          value: $(params.team2-name)
+        - name: team-namespace
+          value: $(params.team2-namespace)
+        - name: storage-class
+          value: $(params.storage-class)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-kafka-team3
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.team3-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-kafka
+      params:
+        - name: team-name
+          value: $(params.team3-name)
+        - name: team-namespace
+          value: $(params.team3-namespace)
+        - name: storage-class
+          value: $(params.storage-class)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-kafka-team4
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.team4-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-kafka
+      params:
+        - name: team-name
+          value: $(params.team4-name)
+        - name: team-namespace
+          value: $(params.team4-namespace)
+        - name: storage-class
+          value: $(params.storage-class)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-kafka-team5
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.team5-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-kafka
+      params:
+        - name: team-name
+          value: $(params.team5-name)
+        - name: team-namespace
+          value: $(params.team5-namespace)
+        - name: storage-class
+          value: $(params.storage-class)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-kafka-team6
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.team6-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-kafka
+      params:
+        - name: team-name
+          value: $(params.team6-name)
+        - name: team-namespace
+          value: $(params.team6-namespace)
+        - name: storage-class
+          value: $(params.storage-class)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-kafka-team7
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.team7-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-kafka
+      params:
+        - name: team-name
+          value: $(params.team7-name)
+        - name: team-namespace
+          value: $(params.team7-namespace)
+        - name: storage-class
+          value: $(params.storage-class)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-kafka-team8
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.team8-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-kafka
+      params:
+        - name: team-name
+          value: $(params.team8-name)
+        - name: team-namespace
+          value: $(params.team8-namespace)
+        - name: storage-class
+          value: $(params.storage-class)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-kafka-team9
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.team9-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-kafka
+      params:
+        - name: team-name
+          value: $(params.team9-name)
+        - name: team-namespace
+          value: $(params.team9-namespace)
+        - name: storage-class
+          value: $(params.storage-class)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-kafka-team10
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.team10-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-kafka
+      params:
+        - name: team-name
+          value: $(params.team10-name)
+        - name: team-namespace
+          value: $(params.team10-namespace)
+        - name: storage-class
+          value: $(params.storage-class)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-kafka-team11
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.team11-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-kafka
+      params:
+        - name: team-name
+          value: $(params.team11-name)
+        - name: team-namespace
+          value: $(params.team11-namespace)
+        - name: storage-class
+          value: $(params.storage-class)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-kafka-team12
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.team12-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-kafka
+      params:
+        - name: team-name
+          value: $(params.team12-name)
+        - name: team-namespace
+          value: $(params.team12-namespace)
+        - name: storage-class
+          value: $(params.storage-class)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-kafka-team13
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.team13-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-kafka
+      params:
+        - name: team-name
+          value: $(params.team13-name)
+        - name: team-namespace
+          value: $(params.team13-namespace)
+        - name: storage-class
+          value: $(params.storage-class)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-kafka-team14
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.team14-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-kafka
+      params:
+        - name: team-name
+          value: $(params.team14-name)
+        - name: team-namespace
+          value: $(params.team14-namespace)
+        - name: storage-class
+          value: $(params.storage-class)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-kafka-team15
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.team15-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-kafka
+      params:
+        - name: team-name
+          value: $(params.team15-name)
+        - name: team-namespace
+          value: $(params.team15-namespace)
+        - name: storage-class
+          value: $(params.storage-class)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    # ── Deploy event generator once — after ALL kafka tasks complete ──────────
+    # Skipped tasks count as complete, so this always runs.
+    # TEAM_BOOTSTRAP_SERVERS must list every active team — set in config.env.
+    - name: deploy-event-generator
+      runAfter:
+        - deploy-kafka-team1
+        - deploy-kafka-team2
+        - deploy-kafka-team3
+        - deploy-kafka-team4
+        - deploy-kafka-team5
+        - deploy-kafka-team6
+        - deploy-kafka-team7
+        - deploy-kafka-team8
+        - deploy-kafka-team9
+        - deploy-kafka-team10
+        - deploy-kafka-team11
+        - deploy-kafka-team12
+        - deploy-kafka-team13
+        - deploy-kafka-team14
+        - deploy-kafka-team15
+      taskRef:
+        name: deploy-event-generator
+      params:
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+        - name: git-repo-url
+          value: $(params.git-repo-url)
+        - name: git-branch
+          value: $(params.git-revision)
+        - name: team-bootstrap-servers
+          value: $(params.all-team-bootstrap-servers)
+        - name: event-rate-per-sec
+          value: $(params.event-rate-per-sec)
+        - name: rate-per-team
+          value: "false"
+        - name: topic-prefix
+          value: $(params.topic-prefix)
+        - name: topic-suffix
+          value: $(params.topic-suffix)
+        - name: event-streams
+          value: $(params.event-streams)
+        - name: regions
+          value: $(params.regions)
+        - name: random-seed
+          value: $(params.random-seed)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    # ── Verify health — one task per team, skipped if team-name == "skip" ────
+    - name: verify-health-team1
+      runAfter: [deploy-event-generator]
+      when:
+        - input: "$(params.team1-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: verify-health
+      params:
+        - name: team-name
+          value: $(params.team1-name)
+        - name: team-namespace
+          value: $(params.team1-namespace)
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+
+    - name: verify-health-team2
+      runAfter: [deploy-event-generator]
+      when:
+        - input: "$(params.team2-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: verify-health
+      params:
+        - name: team-name
+          value: $(params.team2-name)
+        - name: team-namespace
+          value: $(params.team2-namespace)
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+
+    - name: verify-health-team3
+      runAfter: [deploy-event-generator]
+      when:
+        - input: "$(params.team3-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: verify-health
+      params:
+        - name: team-name
+          value: $(params.team3-name)
+        - name: team-namespace
+          value: $(params.team3-namespace)
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+
+    - name: verify-health-team4
+      runAfter: [deploy-event-generator]
+      when:
+        - input: "$(params.team4-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: verify-health
+      params:
+        - name: team-name
+          value: $(params.team4-name)
+        - name: team-namespace
+          value: $(params.team4-namespace)
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+
+    - name: verify-health-team5
+      runAfter: [deploy-event-generator]
+      when:
+        - input: "$(params.team5-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: verify-health
+      params:
+        - name: team-name
+          value: $(params.team5-name)
+        - name: team-namespace
+          value: $(params.team5-namespace)
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+
+    - name: verify-health-team6
+      runAfter: [deploy-event-generator]
+      when:
+        - input: "$(params.team6-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: verify-health
+      params:
+        - name: team-name
+          value: $(params.team6-name)
+        - name: team-namespace
+          value: $(params.team6-namespace)
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+
+    - name: verify-health-team7
+      runAfter: [deploy-event-generator]
+      when:
+        - input: "$(params.team7-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: verify-health
+      params:
+        - name: team-name
+          value: $(params.team7-name)
+        - name: team-namespace
+          value: $(params.team7-namespace)
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+
+    - name: verify-health-team8
+      runAfter: [deploy-event-generator]
+      when:
+        - input: "$(params.team8-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: verify-health
+      params:
+        - name: team-name
+          value: $(params.team8-name)
+        - name: team-namespace
+          value: $(params.team8-namespace)
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+
+    - name: verify-health-team9
+      runAfter: [deploy-event-generator]
+      when:
+        - input: "$(params.team9-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: verify-health
+      params:
+        - name: team-name
+          value: $(params.team9-name)
+        - name: team-namespace
+          value: $(params.team9-namespace)
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+
+    - name: verify-health-team10
+      runAfter: [deploy-event-generator]
+      when:
+        - input: "$(params.team10-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: verify-health
+      params:
+        - name: team-name
+          value: $(params.team10-name)
+        - name: team-namespace
+          value: $(params.team10-namespace)
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+
+    - name: verify-health-team11
+      runAfter: [deploy-event-generator]
+      when:
+        - input: "$(params.team11-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: verify-health
+      params:
+        - name: team-name
+          value: $(params.team11-name)
+        - name: team-namespace
+          value: $(params.team11-namespace)
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+
+    - name: verify-health-team12
+      runAfter: [deploy-event-generator]
+      when:
+        - input: "$(params.team12-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: verify-health
+      params:
+        - name: team-name
+          value: $(params.team12-name)
+        - name: team-namespace
+          value: $(params.team12-namespace)
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+
+    - name: verify-health-team13
+      runAfter: [deploy-event-generator]
+      when:
+        - input: "$(params.team13-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: verify-health
+      params:
+        - name: team-name
+          value: $(params.team13-name)
+        - name: team-namespace
+          value: $(params.team13-namespace)
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+
+    - name: verify-health-team14
+      runAfter: [deploy-event-generator]
+      when:
+        - input: "$(params.team14-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: verify-health
+      params:
+        - name: team-name
+          value: $(params.team14-name)
+        - name: team-namespace
+          value: $(params.team14-namespace)
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+
+    - name: verify-health-team15
+      runAfter: [deploy-event-generator]
+      when:
+        - input: "$(params.team15-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: verify-health
+      params:
+        - name: team-name
+          value: $(params.team15-name)
+        - name: team-namespace
+          value: $(params.team15-namespace)
+        - name: infra-namespace
+          value: $(params.infra-namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)

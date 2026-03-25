@@ -1,0 +1,183 @@
+# PipelineRun: deploy all teams
+#
+# Deploys Kafka for every team that is NOT set to "skip" in config.env,
+# then updates the event generator once with all bootstrap servers.
+#
+# All values come from config.env — source it first, then run:
+#
+#   source config.env && envsubst < tekton/runs/run-all-teams.yaml | oc create -f -
+#
+# HOW TO USE:
+#   1. Set TEAM1_NAME/NAMESPACE through TEAM15_NAME/NAMESPACE in config.env.
+#      Set unused teams to "skip" — their tasks are automatically bypassed.
+#   2. Set TEAM_BOOTSTRAP_SERVERS to ALL teams you are deploying (comma-separated).
+#   3. Run the command above.
+#
+# Variables used (all from config.env):
+#   ${INFRA_NAMESPACE}           — shared infra namespace
+#   ${GIT_REPO_URL}              — your forked repo URL
+#   ${GIT_BRANCH}                — branch to deploy from
+#   ${STORAGE_CLASS}             — PVC storage class for Kafka
+#   ${EVENT_GENERATOR_NAME}      — event generator deployment name
+#   ${TEKTON_SA_NAME}            — Tekton service account name
+#   ${TEKTON_WORKSPACE_SIZE}     — shared workspace PVC size
+#   ${TEAM_BOOTSTRAP_SERVERS}    — all Kafka addresses comma-separated (ALL active teams)
+#   ${TEAM1_NAME} / ${TEAM1_NAMESPACE}   — team 1  (set to "skip" to bypass)
+#   ${TEAM2_NAME} / ${TEAM2_NAMESPACE}   — team 2
+#   ...
+#   ${TEAM15_NAME} / ${TEAM15_NAMESPACE} — team 15
+#   ${EVENT_RATE_PER_SEC}        — events per second
+#   ${TOPIC_PREFIX}              — Kafka topic name prefix
+#   ${TOPIC_SUFFIX}              — Kafka topic name suffix
+#   ${EVENT_STREAMS}             — comma-separated event types
+#   ${REGIONS}                   — comma-separated regions
+#   ${RANDOM_SEED}               — optional RNG seed (leave unset in config.env for true randomness)
+#
+# HOW TO WATCH:
+#   tkn pipelinerun logs deploy-all-teams-run-001 -f -n ${INFRA_NAMESPACE}
+#
+# IMPORTANT: Change the run name suffix (run-001 → run-002) on each new execution
+# to avoid name collisions — Tekton PipelineRun names must be unique.
+
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: deploy-all-teams-run-001        # change suffix for each new run
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: tekton-pipeline
+spec:
+  serviceAccountName: ${TEKTON_SA_NAME}
+
+  pipelineRef:
+    name: deploy-all-teams
+
+  params:
+    # ── Git source ──────────────────────────────────────────────────────────
+    - name: git-url
+      value: ${GIT_REPO_URL}
+
+    - name: git-revision
+      value: ${GIT_BRANCH}
+
+    - name: storage-class
+      value: ${STORAGE_CLASS}
+
+    # ── Infra namespace ─────────────────────────────────────────────────────
+    - name: infra-namespace
+      value: ${INFRA_NAMESPACE}
+
+    - name: event-generator-name
+      value: ${EVENT_GENERATOR_NAME}
+
+    - name: git-repo-url
+      value: ${GIT_REPO_URL}
+
+    # ── Teams 1-15 (set to "skip" in config.env to bypass) ──────────────────
+    - name: team1-name
+      value: ${TEAM1_NAME}
+    - name: team1-namespace
+      value: ${TEAM1_NAMESPACE}
+
+    - name: team2-name
+      value: ${TEAM2_NAME}
+    - name: team2-namespace
+      value: ${TEAM2_NAMESPACE}
+
+    - name: team3-name
+      value: ${TEAM3_NAME}
+    - name: team3-namespace
+      value: ${TEAM3_NAMESPACE}
+
+    - name: team4-name
+      value: ${TEAM4_NAME}
+    - name: team4-namespace
+      value: ${TEAM4_NAMESPACE}
+
+    - name: team5-name
+      value: ${TEAM5_NAME}
+    - name: team5-namespace
+      value: ${TEAM5_NAMESPACE}
+
+    - name: team6-name
+      value: ${TEAM6_NAME}
+    - name: team6-namespace
+      value: ${TEAM6_NAMESPACE}
+
+    - name: team7-name
+      value: ${TEAM7_NAME}
+    - name: team7-namespace
+      value: ${TEAM7_NAMESPACE}
+
+    - name: team8-name
+      value: ${TEAM8_NAME}
+    - name: team8-namespace
+      value: ${TEAM8_NAMESPACE}
+
+    - name: team9-name
+      value: ${TEAM9_NAME}
+    - name: team9-namespace
+      value: ${TEAM9_NAMESPACE}
+
+    - name: team10-name
+      value: ${TEAM10_NAME}
+    - name: team10-namespace
+      value: ${TEAM10_NAMESPACE}
+
+    - name: team11-name
+      value: ${TEAM11_NAME}
+    - name: team11-namespace
+      value: ${TEAM11_NAMESPACE}
+
+    - name: team12-name
+      value: ${TEAM12_NAME}
+    - name: team12-namespace
+      value: ${TEAM12_NAMESPACE}
+
+    - name: team13-name
+      value: ${TEAM13_NAME}
+    - name: team13-namespace
+      value: ${TEAM13_NAMESPACE}
+
+    - name: team14-name
+      value: ${TEAM14_NAME}
+    - name: team14-namespace
+      value: ${TEAM14_NAMESPACE}
+
+    - name: team15-name
+      value: ${TEAM15_NAME}
+    - name: team15-namespace
+      value: ${TEAM15_NAMESPACE}
+
+    # ── Event generator config ───────────────────────────────────────────────
+    # TEAM_BOOTSTRAP_SERVERS must list ALL active teams comma-separated
+    - name: all-team-bootstrap-servers
+      value: "${TEAM_BOOTSTRAP_SERVERS}"
+
+    - name: event-rate-per-sec
+      value: "${EVENT_RATE_PER_SEC}"
+
+    - name: topic-prefix
+      value: "${TOPIC_PREFIX}"
+
+    - name: topic-suffix
+      value: "${TOPIC_SUFFIX}"
+
+    - name: event-streams
+      value: "${EVENT_STREAMS}"
+
+    - name: regions
+      value: "${REGIONS}"
+
+    - name: random-seed
+      value: "${RANDOM_SEED}"
+
+  workspaces:
+    - name: shared-data
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: ${TEKTON_WORKSPACE_SIZE}
