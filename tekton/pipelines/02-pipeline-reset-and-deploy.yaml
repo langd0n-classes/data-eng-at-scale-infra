@@ -217,8 +217,14 @@ spec:
     - name: clone-repo
       runAfter: [teardown-all]
       taskRef:
-        name: git-clone
-        kind: ClusterTask
+        resolver: cluster
+        params:
+          - name: kind
+            value: task
+          - name: name
+            value: git-clone
+          - name: namespace
+            value: openshift-pipelines
       params:
         - name: url
           value: $(params.git-url)

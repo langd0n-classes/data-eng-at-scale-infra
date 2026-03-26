@@ -178,8 +178,14 @@ spec:
     # ── Clone repo once — all tasks read templates from this workspace ────────
     - name: clone-repo
       taskRef:
-        name: git-clone
-        kind: ClusterTask
+        resolver: cluster
+        params:
+          - name: kind
+            value: task
+          - name: name
+            value: git-clone
+          - name: namespace
+            value: openshift-pipelines
       params:
         - name: url
           value: $(params.git-url)
