@@ -20,9 +20,10 @@ Day-2 operations (add a team, update event generator, health checks, cleanup) fo
 ```
 tekton/
 ├── rbac/
-│   ├── 01-serviceaccount.yaml          service account the pipeline runs as
-│   ├── 02-clusterrolebinding.yaml      cross-namespace permissions (dedicated cluster)
-│   └── 03-rolebinding-per-team.yaml    per-namespace permissions (shared cluster)
+│   ├── 01-serviceaccount.yaml          optional: custom SA (not needed on most clusters)
+│   ├── 02-clusterrolebinding.yaml      cross-namespace permissions (dedicated cluster, cluster-admin only)
+│   ├── 03-rolebinding-per-team.yaml    per-namespace permissions (dedicated cluster, namespace-admin)
+│   └── 04-role-rolebinding-namespace.yaml  Role + RoleBinding for shared clusters (e.g. NERC)
 │
 ├── tasks/
 │   ├── 01-task-deploy-kafka.yaml       deploy/redeploy Kafka for one team
@@ -56,8 +57,9 @@ oc whoami
 oc get pods -n openshift-pipelines | grep tekton
 # If nothing shows: oc get csv -n openshift-operators | grep pipelines
 
-# git-clone ClusterTask is available
-oc get clustertask git-clone
+# git-clone Task is available (newer clusters use Tasks, not ClusterTasks)
+oc get tasks -n openshift-pipelines | grep git-clone
+# Older clusters: oc get clustertask git-clone
 ```
 
 Create namespaces — Tekton will not create them:
@@ -73,33 +75,33 @@ oc new-project team-02
 
 ## Step 2 — Apply RBAC
 
-**Always apply the service account first:**
+OpenShift Pipelines automatically creates a `pipeline` ServiceAccount in every namespace.
+The pipeline runs as this SA — no custom SA setup needed.
 
-```bash
-source config.env && envsubst '${INFRA_NAMESPACE} ${TEKTON_SA_NAME}' \
-  < tekton/rbac/01-serviceaccount.yaml | oc apply -f -
-```
-
-Then choose **one** based on your cluster type:
-
-**Dedicated cluster** — you have cluster-admin:
+Check your cluster type first:
 
 ```bash
 oc auth can-i create clusterrolebindings
-# "yes" → use this option
+# "yes" → dedicated cluster   (use option A)
+# "no"  → shared cluster      (use option B)
 ```
+
+**Option A — Dedicated cluster (cluster-admin):**
 
 ```bash
 source config.env && envsubst '${INFRA_NAMESPACE} ${TEKTON_SA_NAME}' \
   < tekton/rbac/02-clusterrolebinding.yaml | oc apply -f -
 ```
 
-**Shared cluster (e.g. NERC)** — ClusterRoleBinding is not allowed. Apply a RoleBinding per team namespace instead:
+**Option B — Shared cluster (e.g. NERC) — no ClusterRoleBinding allowed:**
+
+Apply a namespace-scoped Role + RoleBinding to every namespace the pipeline touches
+(infra namespace + all team namespaces):
 
 ```bash
-for ns in team-01 team-02 team-03; do
-  source config.env && envsubst '${INFRA_NAMESPACE} ${TEKTON_SA_NAME}' \
-    < tekton/rbac/03-rolebinding-per-team.yaml | oc apply -f - -n $ns
+for ns in infra team-01 team-02; do
+  source config.env && envsubst '${INFRA_NAMESPACE}' \
+    < tekton/rbac/04-role-rolebinding-namespace.yaml | oc apply -f - -n $ns
 done
 ```
 
@@ -108,12 +110,9 @@ Add each new team namespace to this loop whenever a team is provisioned.
 **Verify permissions are in place before continuing:**
 
 ```bash
-# ServiceAccount exists
-oc get serviceaccount ${TEKTON_SA_NAME} -n ${INFRA_NAMESPACE}
-
-# pipeline-runner can deploy into a team namespace
+# pipeline SA can deploy into a team namespace
 oc auth can-i create statefulsets -n ${TEAM_NAMESPACE} \
-  --as=system:serviceaccount:${INFRA_NAMESPACE}:${TEKTON_SA_NAME}
+  --as=system:serviceaccount:${INFRA_NAMESPACE}:pipeline
 # Expected: yes
 ```
 
@@ -122,18 +121,22 @@ oc auth can-i create statefulsets -n ${TEAM_NAMESPACE} \
 ## Step 3 — Apply Tasks and Pipelines
 
 ```bash
-source config.env
+# IMPORTANT: source config.env && must be on the same line as envsubst
+# Running source separately then envsubst in the next command can cause
+# variables to not be substituted (shell scope issue).
 
-envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/01-task-deploy-kafka.yaml          | oc apply -f -
-envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/02-task-deploy-event-generator.yaml | oc apply -f -
-envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/03-task-verify-health.yaml          | oc apply -f -
-envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/04-task-teardown-all.yaml           | oc apply -f -
+source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/01-task-deploy-kafka.yaml          | oc apply -f -
+source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/02-task-deploy-event-generator.yaml | oc apply -f -
+source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/03-task-verify-health.yaml          | oc apply -f -
+source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/04-task-teardown-all.yaml           | oc apply -f -
 
-envsubst '${INFRA_NAMESPACE}' < tekton/pipelines/01-pipeline-deploy-all-teams.yaml | oc apply -f -
-envsubst '${INFRA_NAMESPACE}' < tekton/pipelines/02-pipeline-reset-and-deploy.yaml | oc apply -f -
+source config.env && envsubst '${INFRA_NAMESPACE}' < tekton/pipelines/01-pipeline-deploy-all-teams.yaml | oc apply -f -
+source config.env && envsubst '${INFRA_NAMESPACE}' < tekton/pipelines/02-pipeline-reset-and-deploy.yaml | oc apply -f -
 
 # Verify all objects are registered
-oc get tasks,pipeline -n ${INFRA_NAMESPACE}
+# Note: use pipelines.tekton.dev to avoid collision with Kubeflow's "pipeline" resource
+oc get tasks -n ${INFRA_NAMESPACE}
+oc get pipelines.tekton.dev -n ${INFRA_NAMESPACE}
 ```
 
 ---
@@ -164,8 +167,18 @@ team02=kafka-team02.team-02.svc.cluster.local:9092"
 Deploys Kafka for every active team in parallel, then the event generator once with all bootstrap servers.
 
 ```bash
-source config.env && envsubst < tekton/runs/run-all-teams.yaml | oc create -f -
+# First run
+source config.env && envsubst < tekton/runs/run-all-teams.yaml | sed 's/run-001/run-001/' | oc create -f -
+
+# Each subsequent run — increment the suffix to avoid name collision
+source config.env && envsubst < tekton/runs/run-all-teams.yaml | sed 's/run-001/run-002/' | oc create -f -
+```
+
+Watch progress:
+```bash
 tkn pipelinerun logs --last -f -n ${INFRA_NAMESPACE}
+# or without tkn:
+oc get pipelinerun -n ${INFRA_NAMESPACE}
 ```
 
 Pipeline flow: `clone-repo` → Kafka per team (parallel) → `deploy-event-generator` → `verify-health` per team (parallel)
@@ -362,12 +375,27 @@ oc get pods -n ${INFRA_NAMESPACE} -l tekton.dev/pipelineRun=<run-name>
 oc logs <pod-name> -n ${INFRA_NAMESPACE}
 ```
 
-### "git-clone ClusterTask not found"
+### "git-clone ClusterTask not found" / cluster resolver error
 
+Newer OpenShift Pipelines (1.14+) removed ClusterTasks. The pipelines in this repo
+already use the `cluster` resolver pointing to `openshift-pipelines` namespace.
+
+If you see a resolver error, verify the task exists:
 ```bash
-oc get clustertask git-clone
-# If missing, check if it's scoped to openshift-pipelines namespace:
 oc get tasks -n openshift-pipelines | grep git-clone
+```
+
+The pipelines reference `git-clone` via:
+```yaml
+taskRef:
+  resolver: cluster
+  params:
+    - name: kind
+      value: task
+    - name: name
+      value: git-clone
+    - name: namespace
+      value: openshift-pipelines
 ```
 
 ### "Kafka pod not found" in wait step
@@ -378,8 +406,27 @@ The `oc wait` command needs the pod to exist before it can watch it. If Kafka ta
 
 ```bash
 oc auth can-i create statefulsets -n team-01 \
-  --as=system:serviceaccount:${INFRA_NAMESPACE}:${TEKTON_SA_NAME}
+  --as=system:serviceaccount:${INFRA_NAMESPACE}:pipeline
 ```
+
+If denied, re-apply the RBAC file for that namespace (see Step 2).
+
+### ExceededResourceQuota — deploy-event-generator stuck
+
+On shared clusters (e.g. NERC), the default LimitRange applies **4Gi memory per container**.
+The event-generator task has 3 steps = 12Gi requested. If your namespace quota is tight,
+delete old pipeline runs to free memory:
+
+```bash
+# Check quota usage
+oc describe resourcequota -n ${INFRA_NAMESPACE}
+
+# Delete old runs (keeps history clean too)
+oc delete pipelinerun <run-name-001> <run-name-002> -n ${INFRA_NAMESPACE}
+```
+
+All task steps in this repo explicitly set `computeResources: limits: memory: 256Mi`
+to stay well within quota.
 
 If denied, re-apply the appropriate RBAC file (see Step 2).
 

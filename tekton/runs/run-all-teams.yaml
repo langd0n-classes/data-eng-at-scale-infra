@@ -19,7 +19,7 @@
 #   ${GIT_BRANCH}                — branch to deploy from
 #   ${STORAGE_CLASS}             — PVC storage class for Kafka
 #   ${EVENT_GENERATOR_NAME}      — event generator deployment name
-#   ${TEKTON_SA_NAME}            — Tekton service account name
+#   serviceAccountName           — hardcoded as "pipeline" (default OpenShift Pipelines SA)
 #   ${TEKTON_WORKSPACE_SIZE}     — shared workspace PVC size
 #   ${TEAM_BOOTSTRAP_SERVERS}    — all Kafka addresses comma-separated (ALL active teams)
 #   ${TEAM1_NAME} / ${TEAM1_NAMESPACE}   — team 1  (set to "skip" to bypass)
@@ -47,7 +47,7 @@ metadata:
   labels:
     app: tekton-pipeline
 spec:
-  serviceAccountName: ${TEKTON_SA_NAME}
+  serviceAccountName: pipeline  # default SA created by OpenShift Pipelines in every namespace
 
   pipelineRef:
     name: deploy-all-teams
@@ -63,9 +63,8 @@ spec:
     - name: storage-class
       value: ${STORAGE_CLASS}
 
-    # ── Infra namespace ─────────────────────────────────────────────────────
-    - name: infra-namespace
-      value: ${INFRA_NAMESPACE}
+    # ── Infra namespace is derived automatically from $(context.pipelineRun.namespace)
+    # No need to pass infra-namespace — the pipeline derives it from context.
 
     - name: event-generator-name
       value: ${EVENT_GENERATOR_NAME}

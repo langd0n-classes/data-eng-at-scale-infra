@@ -117,6 +117,13 @@ spec:
     # BuildConfig: tells OpenShift how to build the image from Git source
     - name: apply-build-resources
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
       script: |
         #!/bin/bash
         set -e
@@ -154,6 +161,13 @@ spec:
     # Changing any param and re-running the pipeline updates this ConfigMap.
     - name: apply-configmap
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
       script: |
         #!/bin/bash
         set -e
@@ -193,6 +207,13 @@ spec:
     # Step 3: Apply Deployment and restart to pick up ConfigMap changes
     - name: apply-deployment
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
       script: |
         #!/bin/bash
         set -e

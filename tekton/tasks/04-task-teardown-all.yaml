@@ -98,6 +98,13 @@ spec:
     # Step 1: Delete Kafka StatefulSet, Services, and PVC from each active team namespace
     - name: delete-kafka
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
       script: |
         #!/bin/bash
         set -e
@@ -136,6 +143,13 @@ spec:
     # Step 2: Delete event generator from infra namespace
     - name: delete-event-generator
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
       script: |
         #!/bin/bash
         set -e

@@ -56,6 +56,13 @@ spec:
     # Step 1: Check Kafka status
     - name: check-kafka
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
       script: |
         #!/bin/bash
 
@@ -92,6 +99,13 @@ spec:
     # Step 2: Check event generator status
     - name: check-event-generator
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
       script: |
         #!/bin/bash
 
