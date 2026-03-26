@@ -55,6 +55,13 @@ spec:
     # Step 1: Substitute template variables and apply the Kafka resources
     - name: apply-kafka
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
       script: |
         #!/bin/bash
         set -e
@@ -79,12 +86,10 @@ spec:
           exit 1
         fi
 
-        # Verify the target namespace exists
-        if ! oc get namespace "$TEAM_NAMESPACE" &>/dev/null; then
-          echo "ERROR: Namespace $TEAM_NAMESPACE does not exist."
-          echo "Please create it before running this pipeline."
-          echo "Available namespaces:"
-          oc get namespaces | grep -E "^(infra|team)" || true
+        # Verify the target namespace exists and is accessible
+        if ! oc get pods -n "$TEAM_NAMESPACE" &>/dev/null; then
+          echo "ERROR: Namespace $TEAM_NAMESPACE does not exist or is not accessible."
+          echo "Please create it and apply RBAC before running this pipeline."
           exit 1
         fi
 
@@ -107,6 +112,13 @@ spec:
     # Step 2: Wait until Kafka pod is Ready before proceeding
     - name: wait-for-kafka
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
       script: |
         #!/bin/bash
         set -e

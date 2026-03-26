@@ -31,9 +31,7 @@ spec:
     - name: storage-class
       type: string
       default: standard
-    - name: infra-namespace
-      type: string
-      default: infra
+    # infra-namespace removed — derived automatically via $(context.pipelineRun.namespace)
     - name: event-generator-name
       type: string
       default: event-generator
@@ -187,7 +185,7 @@ spec:
           - name: namespace
             value: openshift-pipelines
       params:
-        - name: url
+        - name: URL
           value: $(params.git-url)
         - name: revision
           value: $(params.git-revision)
@@ -505,7 +503,7 @@ spec:
         name: deploy-event-generator
       params:
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
         - name: git-repo-url
@@ -547,7 +545,7 @@ spec:
         - name: team-namespace
           value: $(params.team1-namespace)
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
 
@@ -565,7 +563,7 @@ spec:
         - name: team-namespace
           value: $(params.team2-namespace)
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
 
@@ -583,7 +581,7 @@ spec:
         - name: team-namespace
           value: $(params.team3-namespace)
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
 
@@ -601,7 +599,7 @@ spec:
         - name: team-namespace
           value: $(params.team4-namespace)
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
 
@@ -619,7 +617,7 @@ spec:
         - name: team-namespace
           value: $(params.team5-namespace)
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
 
@@ -637,7 +635,7 @@ spec:
         - name: team-namespace
           value: $(params.team6-namespace)
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
 
@@ -655,7 +653,7 @@ spec:
         - name: team-namespace
           value: $(params.team7-namespace)
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
 
@@ -673,7 +671,7 @@ spec:
         - name: team-namespace
           value: $(params.team8-namespace)
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
 
@@ -691,7 +689,7 @@ spec:
         - name: team-namespace
           value: $(params.team9-namespace)
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
 
@@ -709,7 +707,7 @@ spec:
         - name: team-namespace
           value: $(params.team10-namespace)
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
 
@@ -727,7 +725,7 @@ spec:
         - name: team-namespace
           value: $(params.team11-namespace)
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
 
@@ -745,7 +743,7 @@ spec:
         - name: team-namespace
           value: $(params.team12-namespace)
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
 
@@ -763,7 +761,7 @@ spec:
         - name: team-namespace
           value: $(params.team13-namespace)
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
 
@@ -781,7 +779,7 @@ spec:
         - name: team-namespace
           value: $(params.team14-namespace)
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
 
@@ -799,6 +797,6 @@ spec:
         - name: team-namespace
           value: $(params.team15-namespace)
         - name: infra-namespace
-          value: $(params.infra-namespace)
+          value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)

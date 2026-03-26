@@ -1,4 +1,4 @@
-# RoleBinding for pipeline-runner — per team namespace
+# RoleBinding for pipeline SA — per team namespace (dedicated cluster)
 #
 # Use this file if your cluster does NOT allow ClusterRoleBinding
 # (e.g., shared clusters like NERC where you are a namespace-scoped admin).
@@ -9,7 +9,7 @@
 #   - You need one RoleBinding per team namespace
 #
 # Variables substituted via envsubst (source config.env first):
-#   ${TEKTON_SA_NAME}   — config.env: TEKTON_SA_NAME   (e.g. pipeline-runner)
+#   ${TEKTON_SA_NAME}   — config.env: TEKTON_SA_NAME   (default: pipeline)
 #   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE  (e.g. ds551-2026-spring-9ab13b)
 #
 # Apply for a single team:
