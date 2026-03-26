@@ -131,13 +131,14 @@ spec:
         INFRA_NS="$(params.infra-namespace)"
         EG_NAME="$(params.event-generator-name)"
         SOURCE="$(workspaces.source.path)/event-generator/k8s"
+        DOLLAR='$'
 
         echo "=================================================="
         echo "Applying ImageStream..."
         echo "=================================================="
         sed \
-          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
-          -e "s|\${EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
+          -e "s|${DOLLAR}{INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|${DOLLAR}{EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
           "${SOURCE}/01-imagestream.yaml" | oc apply -f -
 
         echo ""
@@ -145,10 +146,10 @@ spec:
         echo "Applying BuildConfig (builds image from Git)..."
         echo "=================================================="
         sed \
-          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
-          -e "s|\${EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
-          -e "s|\${GIT_REPO_URL}|$(params.git-repo-url)|g" \
-          -e "s|\${GIT_BRANCH}|$(params.git-branch)|g" \
+          -e "s|${DOLLAR}{INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|${DOLLAR}{EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
+          -e "s|${DOLLAR}{GIT_REPO_URL}|$(params.git-repo-url)|g" \
+          -e "s|${DOLLAR}{GIT_BRANCH}|$(params.git-branch)|g" \
           "${SOURCE}/02-buildconfig.yaml" | oc apply -f -
 
         echo ""
@@ -175,6 +176,7 @@ spec:
         INFRA_NS="$(params.infra-namespace)"
         EG_NAME="$(params.event-generator-name)"
         SOURCE="$(workspaces.source.path)/event-generator/k8s"
+        DOLLAR='$'
 
         echo "=================================================="
         echo "Applying ConfigMap with current configuration..."
@@ -187,9 +189,9 @@ spec:
         # Substitute all template variables using sed
         # Using | as delimiter to avoid issues with / in URLs/paths
         sed \
-          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
-          -e "s|\${EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
-          -e "s|\${TEAM_BOOTSTRAP_SERVERS}|$(params.team-bootstrap-servers)|g" \
+          -e "s|${DOLLAR}{INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|${DOLLAR}{EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
+          -e "s|${DOLLAR}{TEAM_BOOTSTRAP_SERVERS}|$(params.team-bootstrap-servers)|g" \
           -e "s|\${EVENT_RATE_PER_SEC}|$(params.event-rate-per-sec)|g" \
           -e "s|\${RATE_PER_TEAM}|$(params.rate-per-team)|g" \
           -e "s|\${TOPIC_PREFIX}|$(params.topic-prefix)|g" \
@@ -221,13 +223,14 @@ spec:
         INFRA_NS="$(params.infra-namespace)"
         EG_NAME="$(params.event-generator-name)"
         SOURCE="$(workspaces.source.path)/event-generator/k8s"
+        DOLLAR='$'
 
         echo "=================================================="
         echo "Applying Deployment..."
         echo "=================================================="
         sed \
-          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
-          -e "s|\${EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
+          -e "s|${DOLLAR}{INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|${DOLLAR}{EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
           "${SOURCE}/04-deployment.yaml" | oc apply -f -
 
         echo ""
