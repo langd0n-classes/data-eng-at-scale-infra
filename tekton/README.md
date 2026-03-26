@@ -99,8 +99,15 @@ Apply a namespace-scoped Role + RoleBinding to every namespace the pipeline touc
 (infra namespace + all team namespaces):
 
 ```bash
-for ns in infra team-01 team-02; do
-  source config.env && envsubst '${INFRA_NAMESPACE}' \
+source config.env
+for ns in ${INFRA_NAMESPACE} \
+  ${TEAM1_NAMESPACE}  ${TEAM2_NAMESPACE}  ${TEAM3_NAMESPACE} \
+  ${TEAM4_NAMESPACE}  ${TEAM5_NAMESPACE}  ${TEAM6_NAMESPACE} \
+  ${TEAM7_NAMESPACE}  ${TEAM8_NAMESPACE}  ${TEAM9_NAMESPACE} \
+  ${TEAM10_NAMESPACE} ${TEAM11_NAMESPACE} ${TEAM12_NAMESPACE} \
+  ${TEAM13_NAMESPACE} ${TEAM14_NAMESPACE} ${TEAM15_NAMESPACE}; do
+  [[ "$ns" == "skip" ]] && continue
+  envsubst '${INFRA_NAMESPACE}' \
     < tekton/rbac/04-role-rolebinding-namespace.yaml | oc apply -f - -n $ns
 done
 ```
@@ -194,7 +201,7 @@ After the pipeline completes, confirm everything is running:
 oc get pods,svc,pvc -n team-01 -l component=kafka
 
 # Event generator pod
-oc get pods -n infra -l app=event-generator
+oc get pods -n ${INFRA_NAMESPACE} -l app=${EVENT_GENERATOR_NAME}
 
 # Check events are flowing (consume 5 messages)
 oc run kafka-consumer --rm -it \
