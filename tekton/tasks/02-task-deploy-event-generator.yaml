@@ -154,10 +154,37 @@ spec:
 
         echo ""
         echo "Build resources applied."
-        echo "OpenShift will start a new image build if the BuildConfig changed."
-        echo "You can watch the build with: oc logs -f bc/${EG_NAME} -n ${INFRA_NS}"
 
-    # Step 2: Apply ConfigMap with current runtime configuration
+    # Step 2: Start image build and wait for it to complete
+    # oc start-build --follow streams logs to Tekton AND blocks until done.
+    # If the build fails, this step exits non-zero and the pipeline stops.
+    - name: wait-for-build
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        INFRA_NS="$(params.infra-namespace)"
+        EG_NAME="$(params.event-generator-name)"
+
+        echo "=================================================="
+        echo "Starting image build: ${EG_NAME}"
+        echo "Streaming build logs — pipeline waits here until done."
+        echo "=================================================="
+
+        oc start-build "${EG_NAME}" -n "${INFRA_NS}" --follow
+
+        echo ""
+        echo "Image build complete. ImageStream updated."
+
+    # Step 3: Apply ConfigMap with current runtime configuration
     # This is what controls event rate, topic names, Kafka addresses, etc.
     # Changing any param and re-running the pipeline updates this ConfigMap.
     - name: apply-configmap
@@ -241,5 +268,8 @@ spec:
         oc rollout restart "deployment/${EG_NAME}" -n "${INFRA_NS}" 2>/dev/null || true
 
         echo ""
-        echo "Event generator deployment applied."
-        echo "Watch rollout status: oc rollout status deployment/${EG_NAME} -n ${INFRA_NS}"
+        echo "Waiting for deployment rollout to complete..."
+        oc rollout status "deployment/${EG_NAME}" -n "${INFRA_NS}" --timeout=120s
+
+        echo ""
+        echo "Event generator deployment is ready."
