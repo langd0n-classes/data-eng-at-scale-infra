@@ -10,7 +10,7 @@ metadata:
   labels:
     app: ${EVENT_GENERATOR_NAME}
   annotations:
-    image.openshift.io/triggers: '[{"from":{"kind":"ImageStreamTag","name":"event-generator:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"generator\")].image"}]'
+    image.openshift.io/triggers: '[{"from":{"kind":"ImageStreamTag","name":"${EVENT_GENERATOR_NAME}:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"generator\")].image"}]'
 spec:
   replicas: 1
   selector:
@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
         - name: generator
-          image: image-registry.openshift-image-registry.svc:5000/${INFRA_NAMESPACE}/event-generator:latest
+          image: image-registry.openshift-image-registry.svc:5000/${INFRA_NAMESPACE}/${EVENT_GENERATOR_NAME}:latest
           imagePullPolicy: Always
           envFrom:
             - configMapRef:
