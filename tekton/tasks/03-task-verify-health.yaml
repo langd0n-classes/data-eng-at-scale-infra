@@ -122,13 +122,79 @@ spec:
           echo "WARNING: No event-generator resources found in $INFRA_NS"
 
         echo ""
+        echo "--- Waiting for event generator pod to be Running ---"
+        RUNNING=false
+        for i in $(seq 1 12); do
+          STATUS=$(oc get pods -n "$INFRA_NS" -l "app=${EG_NAME}" \
+            -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "NotFound")
+          if [ "$STATUS" = "Running" ]; then
+            RUNNING=true
+            break
+          fi
+          echo "  Pod status: $STATUS (check ${i}/12)"
+          sleep 5
+        done
+
+        if [ "$RUNNING" = "false" ]; then
+          echo ""
+          echo "ERROR: Event generator pod is not Running after 60s."
+          echo "Describe pods for details:"
+          oc describe pods -n "$INFRA_NS" -l "app=${EG_NAME}" 2>/dev/null || true
+          exit 1
+        fi
+
+        echo "Event generator pod is Running — OK"
+
+        TEAM_NAME="$(params.team-name)"
+
+        echo ""
+        echo "--- Verifying Kafka connection for ${TEAM_NAME} (waiting up to 60s) ---"
+        KAFKA_CONNECTED=false
+        EVENTS_FLOWING=false
+        for i in $(seq 1 12); do
+          LOGS=$(oc logs "deployment/${EG_NAME}" -n "$INFRA_NS" --tail=100 2>/dev/null || echo "")
+
+          if echo "$LOGS" | grep -q "Connected to Kafka for ${TEAM_NAME}"; then
+            KAFKA_CONNECTED=true
+          fi
+          if echo "$LOGS" | grep -q "Produced"; then
+            EVENTS_FLOWING=true
+          fi
+
+          if [ "$KAFKA_CONNECTED" = "true" ] && [ "$EVENTS_FLOWING" = "true" ]; then
+            break
+          fi
+
+          echo "  Waiting... (check ${i}/12) connected=${KAFKA_CONNECTED} flowing=${EVENTS_FLOWING}"
+          sleep 5
+        done
+
+        echo ""
+        if [ "$KAFKA_CONNECTED" = "false" ]; then
+          echo "ERROR: Event generator never connected to Kafka for ${TEAM_NAME}."
+          echo "Check TEAM_BOOTSTRAP_SERVERS in the ConfigMap:"
+          oc get configmap "${EG_NAME}-config" -n "$INFRA_NS" \
+            -o jsonpath='{.data.TEAM_BOOTSTRAP_SERVERS}' 2>/dev/null || true
+          echo ""
+          echo "Recent logs:"
+          oc logs "deployment/${EG_NAME}" -n "$INFRA_NS" --tail=30 2>/dev/null || true
+          exit 1
+        fi
+
+        if [ "$EVENTS_FLOWING" = "false" ]; then
+          echo "WARNING: Connected to Kafka for ${TEAM_NAME} but no events produced yet."
+          echo "Check logs: oc logs -f deployment/${EG_NAME} -n ${INFRA_NS}"
+        else
+          echo "Kafka connection for ${TEAM_NAME} established and events are flowing — OK"
+        fi
+
+        echo ""
         echo "--- Last 10 lines of event generator logs ---"
-        oc logs "deployment/${EG_NAME}" -n "$INFRA_NS" --tail=10 2>/dev/null || \
-          echo "(logs not available yet — pod may still be starting or image build in progress)"
+        oc logs "deployment/${EG_NAME}" -n "$INFRA_NS" --tail=10 2>/dev/null || true
 
         echo ""
         echo "=================================================="
-        echo "Deployment complete!"
+        echo "Deployment verified successfully!"
         echo ""
         echo "Useful commands:"
         echo "  Watch events flowing:"
