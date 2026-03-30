@@ -175,11 +175,32 @@ spec:
         EG_NAME="$(params.event-generator-name)"
 
         echo "=================================================="
-        echo "Starting image build: ${EG_NAME}"
-        echo "Streaming build logs — pipeline waits here until done."
+        echo "Waiting for image build: ${EG_NAME}"
         echo "=================================================="
 
-        oc start-build "${EG_NAME}" -n "${INFRA_NS}" --follow
+        # The BuildConfig has a ConfigChange trigger so oc apply already
+        # started a build. Wait briefly for it to appear, then follow it.
+        # Only start a new build manually if none was auto-triggered.
+        sleep 5
+        BUILD_NAME=$(oc get builds -n "${INFRA_NS}" -l "buildconfig=${EG_NAME}" \
+          --sort-by='.metadata.creationTimestamp' \
+          -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null || echo "")
+
+        if [ -z "$BUILD_NAME" ]; then
+          echo "No auto-triggered build found — starting one manually..."
+          oc start-build "${EG_NAME}" -n "${INFRA_NS}" --follow
+        else
+          echo "Following auto-triggered build: ${BUILD_NAME}"
+          oc logs -f "build/${BUILD_NAME}" -n "${INFRA_NS}" 2>/dev/null || true
+
+          PHASE=$(oc get build "${BUILD_NAME}" -n "${INFRA_NS}" \
+            -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+          if [ "$PHASE" != "Complete" ]; then
+            echo "ERROR: Build ${BUILD_NAME} ended with phase: ${PHASE}"
+            exit 1
+          fi
+          echo "Build complete."
+        fi
 
         echo ""
         echo "Image build complete. ImageStream updated."
@@ -269,7 +290,7 @@ spec:
 
         echo ""
         echo "Waiting for deployment rollout to complete..."
-        oc rollout status "deployment/${EG_NAME}" -n "${INFRA_NS}" --timeout=120s
+        oc rollout status "deployment/${EG_NAME}" -n "${INFRA_NS}" --timeout=300s
 
         echo ""
         echo "Event generator deployment is ready."
