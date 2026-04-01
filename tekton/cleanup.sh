@@ -63,7 +63,12 @@ ok "TaskRuns done"
 # 3. Event generator (label: app=${EVENT_GENERATOR_NAME})
 # ------------------------------------------------------------
 info "Step 3/10 — Deleting event generator (${EVENT_GENERATOR_NAME})..."
-oc delete deployment,svc,configmap,buildconfig,imagestream \
+# Pin the Deployment by name — avoids hitting another deployment that happens
+# to carry the same app= label. Other resource types (svc, configmap, etc.)
+# don't have a fixed predictable name so label-select is fine for those.
+oc delete deployment/"${EVENT_GENERATOR_NAME}" \
+  -n "${INFRA_NAMESPACE}" --ignore-not-found
+oc delete svc,configmap,buildconfig,imagestream \
   -l "app=${EVENT_GENERATOR_NAME}" \
   -n "${INFRA_NAMESPACE}" --ignore-not-found
 ok "Event generator done"

@@ -176,34 +176,64 @@ spec:
       taskRef:
         name: teardown-all
       params:
+        - name: team1-name
+          value: $(params.team1-name)
         - name: team1-namespace
           value: $(params.team1-namespace)
+        - name: team2-name
+          value: $(params.team2-name)
         - name: team2-namespace
           value: $(params.team2-namespace)
+        - name: team3-name
+          value: $(params.team3-name)
         - name: team3-namespace
           value: $(params.team3-namespace)
+        - name: team4-name
+          value: $(params.team4-name)
         - name: team4-namespace
           value: $(params.team4-namespace)
+        - name: team5-name
+          value: $(params.team5-name)
         - name: team5-namespace
           value: $(params.team5-namespace)
+        - name: team6-name
+          value: $(params.team6-name)
         - name: team6-namespace
           value: $(params.team6-namespace)
+        - name: team7-name
+          value: $(params.team7-name)
         - name: team7-namespace
           value: $(params.team7-namespace)
+        - name: team8-name
+          value: $(params.team8-name)
         - name: team8-namespace
           value: $(params.team8-namespace)
+        - name: team9-name
+          value: $(params.team9-name)
         - name: team9-namespace
           value: $(params.team9-namespace)
+        - name: team10-name
+          value: $(params.team10-name)
         - name: team10-namespace
           value: $(params.team10-namespace)
+        - name: team11-name
+          value: $(params.team11-name)
         - name: team11-namespace
           value: $(params.team11-namespace)
+        - name: team12-name
+          value: $(params.team12-name)
         - name: team12-namespace
           value: $(params.team12-namespace)
+        - name: team13-name
+          value: $(params.team13-name)
         - name: team13-namespace
           value: $(params.team13-namespace)
+        - name: team14-name
+          value: $(params.team14-name)
         - name: team14-namespace
           value: $(params.team14-namespace)
+        - name: team15-name
+          value: $(params.team15-name)
         - name: team15-namespace
           value: $(params.team15-namespace)
         - name: infra-namespace
