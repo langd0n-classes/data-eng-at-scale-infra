@@ -198,7 +198,7 @@ After the pipeline completes, confirm everything is running:
 
 ```bash
 # Kafka pod, service, and PVC for each team
-oc get pods,svc,pvc -n team-01 -l component=kafka
+oc get pods,svc,pvc -n ${TEAM_NAMESPACE} -l component=kafka
 
 # Event generator pod
 oc get pods -n ${INFRA_NAMESPACE} -l app=${EVENT_GENERATOR_NAME}
@@ -206,10 +206,10 @@ oc get pods -n ${INFRA_NAMESPACE} -l app=${EVENT_GENERATOR_NAME}
 # Check events are flowing (consume 5 messages)
 oc run kafka-consumer --rm -it \
   --image=confluentinc/cp-kafka:7.5.0 \
-  -n team-01 -- \
+  -n ${TEAM1_NAMESPACE} -- \
   kafka-console-consumer \
-  --bootstrap-server kafka-team01:9092 \
-  --topic events.team01.raw \
+  --bootstrap-server kafka-${TEAM1_NAME}.${TEAM1_NAMESPACE}.svc.cluster.local:9092 \
+  --topic ${TOPIC_PREFIX}${TEAM1_NAME}${TOPIC_SUFFIX} \
   --max-messages 5
 ```
 
@@ -235,7 +235,15 @@ All TaskRun files read `TEKTON_WORKSPACE_PVC` — set it once, reuse for every s
 
 ### Reset and Redeploy — All Teams
 
-Use after config changes, a broken deployment, or a full classroom reset. Tears down all Kafka and the event generator, then redeploys everything fresh.
+For most config changes, re-running the initial deploy pipeline is enough — all tasks are idempotent and safe to rerun on a healthy deployment.
+
+Use the reset pipeline only when you need a true clean slate:
+
+- **Broken StatefulSets** — if a Kafka pod is stuck (`CrashLoopBackOff`, `Pending`), `oc apply` patches the spec but won't recreate the broken resource. Teardown forces a clean delete + recreate.
+- **Stale PVC data** — `oc apply` never deletes PVCs. If you want Kafka to start with a fresh disk (e.g. resetting a classroom between semesters), teardown explicitly deletes the PVCs.
+- **Immutable StatefulSet fields** — fields like `volumeClaimTemplates` and storage size cannot be patched in-place. `oc apply` will error; delete + recreate is the only fix.
+
+Tears down all Kafka and the event generator, then redeploys everything fresh.
 
 The teardown derives which namespaces to wipe from `TEAM1_NAMESPACE` through `TEAM15_NAMESPACE` — any set to `skip` are bypassed automatically. No separate list needed.
 
@@ -311,58 +319,149 @@ tkn taskrun delete --keep 5 -n ${INFRA_NAMESPACE}
 
 ## Cleanup
 
-### Remove One Team
+### Prerequisites
+
+Before running any cleanup commands, verify you are on the right cluster:
 
 ```bash
-# Remove Kafka resources
-oc delete statefulset,svc,pvc -l component=kafka -n team-01
+# Confirm tkn CLI is installed
+tkn version
+# If not installed:
+#   Mac:         brew install tektoncd/tools/tektoncd-cli
+#   RHEL/Fedora: sudo dnf install tektoncd-cli
+#   Other:       https://tekton.dev/docs/cli/#installation
 
-# Update event generator to remove the team from bootstrap servers
+# Confirm you are logged into the correct cluster
+oc whoami
+oc project   # sanity-check before deleting anything
+
+# Source config.env — all commands below require it
+# Run from repo root (same directory as config.env)
 source config.env
+```
+
+---
+
+### Remove One Team
+
+Update `TEAM_BOOTSTRAP_SERVERS` in `config.env` first to remove the team, then:
+
+```bash
+source config.env
+
+# Remove Kafka resources (scoped to this team's exact deployment name)
+oc delete statefulset,svc,pvc \
+  -l "app=kafka-${TEAM_NAME}" \
+  -n ${TEAM_NAMESPACE} --ignore-not-found
+
+# Update event generator bootstrap servers and restart
 oc set env deployment/${EVENT_GENERATOR_NAME} \
   TEAM_BOOTSTRAP_SERVERS="${TEAM_BOOTSTRAP_SERVERS}" \
   -n ${INFRA_NAMESPACE}
 oc rollout restart deployment/${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE}
 ```
 
+---
+
 ### Remove All Teams
 
 ```bash
-for ns in team-01 team-02 team-03; do
-  oc delete statefulset,svc,pvc -l component=kafka -n $ns
+source config.env
+
+# Remove Kafka from every active team namespace
+for i in $(seq 1 15); do
+  ns_var="TEAM${i}_NAMESPACE"; name_var="TEAM${i}_NAME"
+  ns="${!ns_var:-skip}";       name="${!name_var:-skip}"
+  [[ "$ns" == "skip" ]] && continue
+  oc delete statefulset,svc,pvc \
+    -l "app=kafka-${name}" \
+    -n "${ns}" --ignore-not-found
 done
 
 # Stop the event generator
 oc scale deployment/${EVENT_GENERATOR_NAME} --replicas=0 -n ${INFRA_NAMESPACE}
 ```
 
+---
+
 ### Full Teardown — Remove Everything
 
+**Quickest option — single command:**
+
 ```bash
-# Delete Tekton run history
-tkn pipelinerun delete --all -n ${INFRA_NAMESPACE}
-tkn taskrun delete --all -n ${INFRA_NAMESPACE}
-
-# Delete Tekton objects
-oc delete pipeline,task --all -n ${INFRA_NAMESPACE}
-
-# Delete RBAC
-source config.env
-oc delete serviceaccount ${TEKTON_SA_NAME} -n ${INFRA_NAMESPACE}
-oc delete clusterrolebinding tekton-pipeline-runner
-
-# Delete event generator
-oc delete deployment,svc,configmap,buildconfig,imagestream \
-  -l app=${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE}
-
-# Delete workspace PVCs
-oc delete pvc -l tekton.dev/pipeline=deploy-all-teams -n ${INFRA_NAMESPACE}
-
-# Delete team Kafka resources
-for ns in team-01 team-02 team-03; do
-  oc delete statefulset,svc,pvc -l component=kafka -n $ns
-done
+bash tekton/cleanup.sh
+# With namespace deletion (self-provisioned clusters only):
+# DELETE_NAMESPACES=true bash tekton/cleanup.sh
 ```
+
+**Or run each step manually in order** — order matters, do not rearrange:
+
+```bash
+source config.env
+
+# Step 1 — Cancel any in-flight pipeline and task runs first
+tkn pipelinerun delete --all --force -n ${INFRA_NAMESPACE}
+tkn taskrun delete --all --force -n ${INFRA_NAMESPACE}
+
+# Step 2 — Delete event generator (label scoped to our deployment name)
+oc delete deployment,svc,configmap,buildconfig,imagestream \
+  -l "app=${EVENT_GENERATOR_NAME}" \
+  -n ${INFRA_NAMESPACE} --ignore-not-found
+
+# Step 3 — Delete Kafka from every active team namespace
+for i in $(seq 1 15); do
+  ns_var="TEAM${i}_NAMESPACE"; name_var="TEAM${i}_NAME"
+  ns="${!ns_var:-skip}";       name="${!name_var:-skip}"
+  [[ "$ns" == "skip" ]] && continue
+  oc delete statefulset,svc,pvc \
+    -l "app=kafka-${name}" \
+    -n "${ns}" --ignore-not-found
+done
+
+# Step 4 — Delete Tekton tasks and pipelines (by name, not --all)
+oc delete task \
+  deploy-kafka deploy-event-generator verify-health teardown-all \
+  -n ${INFRA_NAMESPACE} --ignore-not-found
+oc delete pipeline.tekton.dev \
+  deploy-all-teams reset-and-deploy \
+  -n ${INFRA_NAMESPACE} --ignore-not-found
+
+# Step 5 — Delete workspace PVCs
+oc delete pvc \
+  -l "tekton.dev/pipeline=deploy-all-teams" \
+  -n ${INFRA_NAMESPACE} --ignore-not-found
+
+# Step 6 — Delete RBAC from every team namespace
+#           (covers both 03-rolebinding-per-team.yaml and 04-role-rolebinding-namespace.yaml)
+for i in $(seq 1 15); do
+  ns_var="TEAM${i}_NAMESPACE"
+  ns="${!ns_var:-skip}"
+  [[ "$ns" == "skip" ]] && continue
+  oc delete role,rolebinding \
+    -l "app=tekton-pipeline,component=rbac" \
+    -n "${ns}" --ignore-not-found
+done
+
+# Step 7 — Delete RBAC from infra namespace (shared cluster only)
+oc delete role,rolebinding \
+  -l "app=tekton-pipeline,component=rbac" \
+  -n ${INFRA_NAMESPACE} --ignore-not-found
+
+# Step 8 — Delete cluster-scoped RBAC (dedicated cluster only)
+#           Skip this block on shared clusters (NERC etc.) — you won't have permission
+if oc auth can-i create clusterrolebindings; then
+  oc delete clusterrolebinding pipeline-runner-binding --ignore-not-found
+  oc delete clusterrole pipeline-runner-role --ignore-not-found
+fi
+
+# Step 9 — Delete namespaces (self-provisioned clusters only)
+#           Skip on NERC or any cluster where namespaces were provisioned for you
+# oc delete namespace ${INFRA_NAMESPACE} ${TEAM1_NAMESPACE} ${TEAM2_NAMESPACE}
+```
+
+**What is NOT deleted:**
+- Namespaces — comment out Step 9 block above if you own them, or use `DELETE_NAMESPACES=true` with the script
+- The default `pipeline` ServiceAccount — created and managed by the OpenShift Pipelines operator
 
 ---
 
