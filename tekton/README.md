@@ -403,8 +403,11 @@ source config.env
 tkn pipelinerun delete --all --force -n ${INFRA_NAMESPACE}
 tkn taskrun delete --all --force -n ${INFRA_NAMESPACE}
 
-# Step 2 — Delete event generator (label scoped to our deployment name)
-oc delete deployment,svc,configmap,buildconfig,imagestream \
+# Step 2 — Delete event generator
+# Deployment pinned by name; other resource types use label (no fixed name pattern)
+oc delete deployment/${EVENT_GENERATOR_NAME} \
+  -n ${INFRA_NAMESPACE} --ignore-not-found
+oc delete svc,configmap,buildconfig,imagestream \
   -l "app=${EVENT_GENERATOR_NAME}" \
   -n ${INFRA_NAMESPACE} --ignore-not-found
 

@@ -38,46 +38,91 @@ spec:
     Uses --ignore-not-found throughout.
 
   params:
+    - name: team1-name
+      type: string
+      default: skip
     - name: team1-namespace
+      type: string
+      default: skip
+    - name: team2-name
       type: string
       default: skip
     - name: team2-namespace
       type: string
       default: skip
+    - name: team3-name
+      type: string
+      default: skip
     - name: team3-namespace
+      type: string
+      default: skip
+    - name: team4-name
       type: string
       default: skip
     - name: team4-namespace
       type: string
       default: skip
+    - name: team5-name
+      type: string
+      default: skip
     - name: team5-namespace
+      type: string
+      default: skip
+    - name: team6-name
       type: string
       default: skip
     - name: team6-namespace
       type: string
       default: skip
+    - name: team7-name
+      type: string
+      default: skip
     - name: team7-namespace
+      type: string
+      default: skip
+    - name: team8-name
       type: string
       default: skip
     - name: team8-namespace
       type: string
       default: skip
+    - name: team9-name
+      type: string
+      default: skip
     - name: team9-namespace
+      type: string
+      default: skip
+    - name: team10-name
       type: string
       default: skip
     - name: team10-namespace
       type: string
       default: skip
+    - name: team11-name
+      type: string
+      default: skip
     - name: team11-namespace
+      type: string
+      default: skip
+    - name: team12-name
       type: string
       default: skip
     - name: team12-namespace
       type: string
       default: skip
+    - name: team13-name
+      type: string
+      default: skip
     - name: team13-namespace
       type: string
       default: skip
+    - name: team14-name
+      type: string
+      default: skip
     - name: team14-namespace
+      type: string
+      default: skip
+    - name: team15-name
       type: string
       default: skip
     - name: team15-namespace
@@ -113,28 +158,34 @@ spec:
         echo "Tearing down Kafka for all active teams"
         echo "=================================================="
 
-        for ns in \
-          "$(params.team1-namespace)" \
-          "$(params.team2-namespace)" \
-          "$(params.team3-namespace)" \
-          "$(params.team4-namespace)" \
-          "$(params.team5-namespace)" \
-          "$(params.team6-namespace)" \
-          "$(params.team7-namespace)" \
-          "$(params.team8-namespace)" \
-          "$(params.team9-namespace)" \
-          "$(params.team10-namespace)" \
-          "$(params.team11-namespace)" \
-          "$(params.team12-namespace)" \
-          "$(params.team13-namespace)" \
-          "$(params.team14-namespace)" \
-          "$(params.team15-namespace)"; do
-          if [ "$ns" = "skip" ]; then
+        # Iterate name+namespace pairs — use app=kafka-$name to scope deletes
+        # to exactly our deployment, not any Kafka that happens to be in the namespace.
+        set -- \
+          "$(params.team1-name)"  "$(params.team1-namespace)" \
+          "$(params.team2-name)"  "$(params.team2-namespace)" \
+          "$(params.team3-name)"  "$(params.team3-namespace)" \
+          "$(params.team4-name)"  "$(params.team4-namespace)" \
+          "$(params.team5-name)"  "$(params.team5-namespace)" \
+          "$(params.team6-name)"  "$(params.team6-namespace)" \
+          "$(params.team7-name)"  "$(params.team7-namespace)" \
+          "$(params.team8-name)"  "$(params.team8-namespace)" \
+          "$(params.team9-name)"  "$(params.team9-namespace)" \
+          "$(params.team10-name)" "$(params.team10-namespace)" \
+          "$(params.team11-name)" "$(params.team11-namespace)" \
+          "$(params.team12-name)" "$(params.team12-namespace)" \
+          "$(params.team13-name)" "$(params.team13-namespace)" \
+          "$(params.team14-name)" "$(params.team14-namespace)" \
+          "$(params.team15-name)" "$(params.team15-namespace)"
+        while [ $# -gt 0 ]; do
+          name="$1"; ns="$2"; shift 2
+          if [ "$ns" = "skip" ] || [ "$name" = "skip" ]; then
             continue
           fi
           echo ""
-          echo "Deleting Kafka resources in namespace: $ns"
-          oc delete statefulset,svc,pvc -l component=kafka -n "$ns" --ignore-not-found
+          echo "Deleting kafka-${name} in namespace: $ns"
+          oc delete statefulset,svc,pvc \
+            -l "app=kafka-${name}" \
+            -n "$ns" --ignore-not-found
         done
 
         echo ""
@@ -162,7 +213,10 @@ spec:
         echo "Namespace: $INFRA_NS"
         echo "=================================================="
 
-        oc delete deployment,svc,configmap,buildconfig,imagestream \
+        # Pin the Deployment by name — avoids hitting another deployment that
+        # happens to carry the same app= label in the infra namespace.
+        oc delete deployment/"$EG_NAME" -n "$INFRA_NS" --ignore-not-found
+        oc delete svc,configmap,buildconfig,imagestream \
           -l app="$EG_NAME" -n "$INFRA_NS" --ignore-not-found
 
         echo ""
