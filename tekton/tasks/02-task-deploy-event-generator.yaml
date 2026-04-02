@@ -179,18 +179,42 @@ spec:
         echo "=================================================="
 
         # The BuildConfig has a ConfigChange trigger so oc apply already
-        # started a build. Wait briefly for it to appear, then follow it.
+        # started a build. Wait for it to appear, then wait for it to leave
+        # New/Pending before following logs (oc logs -f on a New-phase build
+        # returns immediately — no pod exists yet — causing a false failure).
         # Only start a new build manually if none was auto-triggered.
-        sleep 5
-        BUILD_NAME=$(oc get builds -n "${INFRA_NS}" -l "buildconfig=${EG_NAME}" \
-          --sort-by='.metadata.creationTimestamp' \
-          -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null || echo "")
+
+        # Wait up to 30s for the build object to appear
+        BUILD_NAME=""
+        for i in $(seq 1 6); do
+          BUILD_NAME=$(oc get builds -n "${INFRA_NS}" -l "buildconfig=${EG_NAME}" \
+            --sort-by='.metadata.creationTimestamp' \
+            -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null || echo "")
+          [ -n "$BUILD_NAME" ] && break
+          echo "Waiting for build to appear... (${i}/6)"
+          sleep 5
+        done
 
         if [ -z "$BUILD_NAME" ]; then
           echo "No auto-triggered build found — starting one manually..."
           oc start-build "${EG_NAME}" -n "${INFRA_NS}" --follow
         else
-          echo "Following auto-triggered build: ${BUILD_NAME}"
+          echo "Found build: ${BUILD_NAME}"
+
+          # Wait for build to leave New/Pending before following logs.
+          # A build in New phase has no pod yet — oc logs -f returns immediately.
+          echo "Waiting for build pod to start..."
+          for i in $(seq 1 60); do
+            PHASE=$(oc get build "${BUILD_NAME}" -n "${INFRA_NS}" \
+              -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+            if [ "$PHASE" != "New" ] && [ "$PHASE" != "Pending" ]; then
+              echo "Build phase: ${PHASE} — following logs..."
+              break
+            fi
+            echo "  phase=${PHASE}, waiting... (${i}/60)"
+            sleep 5
+          done
+
           oc logs -f "build/${BUILD_NAME}" -n "${INFRA_NS}" 2>/dev/null || true
 
           PHASE=$(oc get build "${BUILD_NAME}" -n "${INFRA_NS}" \
