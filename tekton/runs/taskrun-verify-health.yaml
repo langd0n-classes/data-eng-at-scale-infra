@@ -1,0 +1,43 @@
+# TaskRun: verify-health
+#
+# Checks pod status and tails logs for a team's Kafka and the event generator.
+# No workspace needed — fastest Tekton operation.
+#
+# Apply with:
+#   source config.env && \
+#   envsubst '${TEAM_NAME} ${TEAM_NAMESPACE} ${INFRA_NAMESPACE} ${EVENT_GENERATOR_NAME}' \
+#     < tekton/runs/taskrun-verify-health.yaml | oc create -f -
+#
+# Watch:
+#   tkn taskrun logs --last -f -n ${INFRA_NAMESPACE}
+#
+# Variables (all from config.env):
+#   ${TEAM_NAME}              — team identifier used in resource names    (e.g. team01)
+#   ${TEAM_NAMESPACE}         — OpenShift namespace for this team         (e.g. team-01)
+#   ${INFRA_NAMESPACE}        — shared infra namespace                    (e.g. infra)
+#   ${EVENT_GENERATOR_NAME}   — event generator deployment name           (e.g. event-generator)
+
+apiVersion: tekton.dev/v1
+kind: TaskRun
+metadata:
+  generateName: verify-health-${TEAM_NAME}-   # auto-unique suffix, no collision
+  namespace: ${INFRA_NAMESPACE}               # config.env: INFRA_NAMESPACE
+  labels:
+    app: tekton-pipeline
+    team: ${TEAM_NAME}
+spec:
+  taskRef:
+    name: verify-health
+
+  params:
+    - name: team-name
+      value: "${TEAM_NAME}"                   # config.env: TEAM_NAME
+
+    - name: team-namespace
+      value: "${TEAM_NAMESPACE}"              # config.env: TEAM_NAMESPACE
+
+    - name: infra-namespace
+      value: "${INFRA_NAMESPACE}"             # config.env: INFRA_NAMESPACE
+
+    - name: event-generator-name
+      value: "${EVENT_GENERATOR_NAME}"        # config.env: EVENT_GENERATOR_NAME

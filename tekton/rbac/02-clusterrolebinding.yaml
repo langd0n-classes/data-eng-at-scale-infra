@@ -1,0 +1,90 @@
+# RBAC for Tekton pipeline ServiceAccount (dedicated cluster)
+#
+# The pipeline needs to deploy resources into:
+#   - infra namespace (event generator, imagestream, buildconfig)
+#   - team-XX namespaces (kafka statefulset, services, pvcs)
+#
+# A ClusterRole lets us grant these permissions once for all namespaces
+# instead of creating a Role in every team namespace.
+#
+# Variables substituted via envsubst (source config.env first):
+#   ${TEKTON_SA_NAME}   — config.env: TEKTON_SA_NAME   (default: pipeline)
+#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE  (e.g. ds551-2026-spring-9ab13b)
+#
+# Apply with:
+#   source config.env && envsubst '${TEKTON_SA_NAME} ${INFRA_NAMESPACE}' \
+#     < tekton/rbac/02-clusterrolebinding.yaml | oc apply -f -
+
+---
+# What the pipeline is allowed to do
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pipeline-runner-role
+  labels:
+    app: tekton-pipeline
+    component: rbac
+rules:
+  # Core Kubernetes resources
+  - apiGroups: [""]
+    resources:
+      - pods
+      - services
+      - configmaps
+      - persistentvolumeclaims
+      - serviceaccounts
+      - events
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Workload resources
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - statefulsets
+      - replicasets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # OpenShift build resources (for event generator image builds)
+  - apiGroups: ["build.openshift.io"]
+    resources:
+      - buildconfigs
+      - builds
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # OpenShift image resources (for event generator ImageStream)
+  - apiGroups: ["image.openshift.io"]
+    resources:
+      - imagestreams
+      - imagestreamtags
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Needed to watch pod status (oc wait --for=condition=Ready)
+  - apiGroups: [""]
+    resources:
+      - pods/log
+      - pods/exec
+    verbs: ["get", "list", "watch"]
+
+  # Needed to trigger rollout restarts
+  - apiGroups: ["apps"]
+    resources:
+      - deployments/rollout
+    verbs: ["update", "patch"]
+
+---
+# Bind the ClusterRole to our ServiceAccount in infra namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pipeline-runner-binding
+  labels:
+    app: tekton-pipeline
+    component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pipeline-runner-role
+subjects:
+  - kind: ServiceAccount
+    name: ${TEKTON_SA_NAME}       # config.env: TEKTON_SA_NAME
+    namespace: ${INFRA_NAMESPACE} # config.env: INFRA_NAMESPACE

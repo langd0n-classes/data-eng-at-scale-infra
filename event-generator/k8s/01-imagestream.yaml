@@ -5,11 +5,11 @@
 apiVersion: image.openshift.io/v1
 kind: ImageStream
 metadata:
-  name: event-generator
+  name: ${EVENT_GENERATOR_NAME}
   namespace: ${INFRA_NAMESPACE}
   labels:
     app: ${EVENT_GENERATOR_NAME}
-    app.kubernetes.io/name: event-generator
+    app.kubernetes.io/name: ${EVENT_GENERATOR_NAME}
     app.kubernetes.io/component: data-producer
     app.kubernetes.io/part-of: data-engineering-platform
     app.kubernetes.io/managed-by: openshift

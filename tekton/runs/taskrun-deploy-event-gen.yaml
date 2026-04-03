@@ -1,0 +1,96 @@
+# TaskRun: deploy-event-generator (initial deploy)
+#
+# Deploys the event generator for the first time as a standalone operation,
+# outside of a pipeline. Applies ImageStream, BuildConfig, ConfigMap, and
+# Deployment in order, then restarts the deployment.
+#
+# Difference from taskrun-update-event-gen.yaml:
+#   deploy   → use when the event generator does not exist yet in the infra namespace
+#   update   → use when it already exists and you are changing config (rate, topics, etc.)
+#   Both files run the same task and are idempotent — if unsure, either is safe to run.
+#
+# When to use:
+#   - Event generator was never deployed (fresh infra namespace)
+#   - Recovering from a full infra namespace wipe
+#
+# Prerequisites:
+#   - At least one PipelineRun has completed (workspace PVC must exist)
+#   - TEKTON_WORKSPACE_PVC is set in config.env
+#     Find it with: oc get pvc -n ${INFRA_NAMESPACE} | grep shared-data
+#
+# Apply with:
+#   source config.env && \
+#   envsubst '${INFRA_NAMESPACE} ${EVENT_GENERATOR_NAME} ${GIT_REPO_URL} ${GIT_BRANCH} ${TEAM_BOOTSTRAP_SERVERS} ${EVENT_RATE_PER_SEC} ${RATE_PER_TEAM} ${TOPIC_PREFIX} ${TOPIC_SUFFIX} ${EVENT_STREAMS} ${REGIONS} ${RANDOM_SEED} ${TEKTON_WORKSPACE_PVC}' \
+#     < tekton/runs/taskrun-deploy-event-gen.yaml | oc create -f -
+#
+# Watch:
+#   tkn taskrun logs --last -f -n ${INFRA_NAMESPACE}
+#
+# Variables (all from config.env):
+#   ${INFRA_NAMESPACE}          — shared infra namespace
+#   ${EVENT_GENERATOR_NAME}     — event generator deployment name
+#   ${GIT_REPO_URL}             — git repo URL (used by OpenShift BuildConfig)
+#   ${GIT_BRANCH}               — branch to build from
+#   ${TEAM_BOOTSTRAP_SERVERS}   — full comma-separated team-to-Kafka mapping
+#   ${EVENT_RATE_PER_SEC}       — events per second
+#   ${RATE_PER_TEAM}            — true = rate per team, false = total rate
+#   ${TOPIC_PREFIX}             — topic name prefix (e.g. events.)
+#   ${TOPIC_SUFFIX}             — topic name suffix (e.g. .raw)
+#   ${EVENT_STREAMS}            — comma-separated event types to generate
+#   ${REGIONS}                  — comma-separated regions for simulation
+#   ${RANDOM_SEED}              — optional RNG seed (leave unset in config.env for true randomness)
+#   ${TEKTON_WORKSPACE_PVC}     — PVC name from a previous PipelineRun
+
+apiVersion: tekton.dev/v1
+kind: TaskRun
+metadata:
+  generateName: deploy-event-gen-             # auto-unique suffix, no collision
+  namespace: ${INFRA_NAMESPACE}               # config.env: INFRA_NAMESPACE
+  labels:
+    app: tekton-pipeline
+    component: event-generator
+spec:
+  taskRef:
+    name: deploy-event-generator
+
+  params:
+    - name: infra-namespace
+      value: "${INFRA_NAMESPACE}"             # config.env: INFRA_NAMESPACE
+
+    - name: event-generator-name
+      value: "${EVENT_GENERATOR_NAME}"        # config.env: EVENT_GENERATOR_NAME
+
+    - name: git-repo-url
+      value: "${GIT_REPO_URL}"               # config.env: GIT_REPO_URL
+
+    - name: git-branch
+      value: "${GIT_BRANCH}"                 # config.env: GIT_BRANCH
+
+    - name: team-bootstrap-servers
+      value: "${TEAM_BOOTSTRAP_SERVERS}"     # config.env: TEAM_BOOTSTRAP_SERVERS
+
+    - name: event-rate-per-sec
+      value: "${EVENT_RATE_PER_SEC}"         # config.env: EVENT_RATE_PER_SEC
+
+    - name: rate-per-team
+      value: "${RATE_PER_TEAM}"              # config.env: RATE_PER_TEAM
+
+    - name: topic-prefix
+      value: "${TOPIC_PREFIX}"               # config.env: TOPIC_PREFIX
+
+    - name: topic-suffix
+      value: "${TOPIC_SUFFIX}"               # config.env: TOPIC_SUFFIX
+
+    - name: event-streams
+      value: "${EVENT_STREAMS}"              # config.env: EVENT_STREAMS
+
+    - name: regions
+      value: "${REGIONS}"                    # config.env: REGIONS
+
+    - name: random-seed
+      value: "${RANDOM_SEED}"               # config.env: RANDOM_SEED (optional, leave unset for true randomness)
+
+  workspaces:
+    - name: source
+      persistentVolumeClaim:
+        claimName: "${TEKTON_WORKSPACE_PVC}"  # config.env: TEKTON_WORKSPACE_PVC

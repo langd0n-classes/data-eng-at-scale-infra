@@ -9,7 +9,7 @@
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
-  name: event-generator
+  name: ${EVENT_GENERATOR_NAME}
   namespace: ${INFRA_NAMESPACE}
   labels:
     app: ${EVENT_GENERATOR_NAME}
@@ -17,7 +17,7 @@ spec:
   output:
     to:
       kind: ImageStreamTag
-      name: event-generator:latest
+      name: ${EVENT_GENERATOR_NAME}:latest
 
   # ============================================================================
   # Git Source (DEFAULT - Recommended for open-source/production)

@@ -1,0 +1,223 @@
+# Task: teardown-all
+#
+# Deletes Kafka resources from every active team namespace and removes
+# the event generator from the infra namespace.
+#
+# What it does:
+#   Step 1 (delete-kafka): iterates team1-namespace through team15-namespace,
+#                          skips any set to "skip", deletes StatefulSet, Services,
+#                          and PVCs labelled component=kafka from the rest
+#   Step 2 (delete-event-generator): deletes all event generator objects from infra
+#
+# Derives the teardown list from the same TEAM1_NAMESPACE...TEAM15_NAMESPACE values
+# used by the deploy pipeline — any set to "skip" are bypassed automatically.
+#
+# Safe to run against namespaces that have already been cleaned — all deletes
+# use --ignore-not-found.
+#
+# Variables substituted via envsubst (source config.env first):
+#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE
+#   ${OC_CLI_IMAGE}     — config.env: OC_CLI_IMAGE
+#
+# Apply with:
+#   source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' \
+#     < tekton/tasks/04-task-teardown-all.yaml | oc apply -f -
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: teardown-all
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: tekton-pipeline
+    component: teardown
+spec:
+  description: |
+    Deletes Kafka resources from all active team namespaces and removes the
+    event generator from the infra namespace. Skips namespaces set to "skip".
+    Uses --ignore-not-found throughout.
+
+  params:
+    - name: team1-name
+      type: string
+      default: skip
+    - name: team1-namespace
+      type: string
+      default: skip
+    - name: team2-name
+      type: string
+      default: skip
+    - name: team2-namespace
+      type: string
+      default: skip
+    - name: team3-name
+      type: string
+      default: skip
+    - name: team3-namespace
+      type: string
+      default: skip
+    - name: team4-name
+      type: string
+      default: skip
+    - name: team4-namespace
+      type: string
+      default: skip
+    - name: team5-name
+      type: string
+      default: skip
+    - name: team5-namespace
+      type: string
+      default: skip
+    - name: team6-name
+      type: string
+      default: skip
+    - name: team6-namespace
+      type: string
+      default: skip
+    - name: team7-name
+      type: string
+      default: skip
+    - name: team7-namespace
+      type: string
+      default: skip
+    - name: team8-name
+      type: string
+      default: skip
+    - name: team8-namespace
+      type: string
+      default: skip
+    - name: team9-name
+      type: string
+      default: skip
+    - name: team9-namespace
+      type: string
+      default: skip
+    - name: team10-name
+      type: string
+      default: skip
+    - name: team10-namespace
+      type: string
+      default: skip
+    - name: team11-name
+      type: string
+      default: skip
+    - name: team11-namespace
+      type: string
+      default: skip
+    - name: team12-name
+      type: string
+      default: skip
+    - name: team12-namespace
+      type: string
+      default: skip
+    - name: team13-name
+      type: string
+      default: skip
+    - name: team13-namespace
+      type: string
+      default: skip
+    - name: team14-name
+      type: string
+      default: skip
+    - name: team14-namespace
+      type: string
+      default: skip
+    - name: team15-name
+      type: string
+      default: skip
+    - name: team15-namespace
+      type: string
+      default: skip
+
+    - name: infra-namespace
+      description: "Infra namespace where the event generator runs"
+      type: string
+      default: infra
+
+    - name: event-generator-name
+      description: "Event generator deployment name"
+      type: string
+      default: event-generator
+
+  steps:
+    # Step 1: Delete Kafka StatefulSet, Services, and PVC from each active team namespace
+    - name: delete-kafka
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        echo "=================================================="
+        echo "Tearing down Kafka for all active teams"
+        echo "=================================================="
+
+        # Iterate name+namespace pairs — use app=kafka-$name to scope deletes
+        # to exactly our deployment, not any Kafka that happens to be in the namespace.
+        set -- \
+          "$(params.team1-name)"  "$(params.team1-namespace)" \
+          "$(params.team2-name)"  "$(params.team2-namespace)" \
+          "$(params.team3-name)"  "$(params.team3-namespace)" \
+          "$(params.team4-name)"  "$(params.team4-namespace)" \
+          "$(params.team5-name)"  "$(params.team5-namespace)" \
+          "$(params.team6-name)"  "$(params.team6-namespace)" \
+          "$(params.team7-name)"  "$(params.team7-namespace)" \
+          "$(params.team8-name)"  "$(params.team8-namespace)" \
+          "$(params.team9-name)"  "$(params.team9-namespace)" \
+          "$(params.team10-name)" "$(params.team10-namespace)" \
+          "$(params.team11-name)" "$(params.team11-namespace)" \
+          "$(params.team12-name)" "$(params.team12-namespace)" \
+          "$(params.team13-name)" "$(params.team13-namespace)" \
+          "$(params.team14-name)" "$(params.team14-namespace)" \
+          "$(params.team15-name)" "$(params.team15-namespace)"
+        while [ $# -gt 0 ]; do
+          name="$1"; ns="$2"; shift 2
+          if [ "$ns" = "skip" ] || [ "$name" = "skip" ]; then
+            continue
+          fi
+          echo ""
+          echo "Deleting kafka-${name} in namespace: $ns"
+          oc delete statefulset,svc,pvc \
+            -l "app=kafka-${name}" \
+            -n "$ns" --ignore-not-found
+        done
+
+        echo ""
+        echo "Kafka teardown complete."
+
+    # Step 2: Delete event generator from infra namespace
+    - name: delete-event-generator
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        INFRA_NS="$(params.infra-namespace)"
+        EG_NAME="$(params.event-generator-name)"
+
+        echo "=================================================="
+        echo "Tearing down event generator: $EG_NAME"
+        echo "Namespace: $INFRA_NS"
+        echo "=================================================="
+
+        # Pin the Deployment by name — avoids hitting another deployment that
+        # happens to carry the same app= label in the infra namespace.
+        oc delete deployment/"$EG_NAME" -n "$INFRA_NS" --ignore-not-found
+        oc delete svc,configmap,buildconfig,imagestream \
+          -l app="$EG_NAME" -n "$INFRA_NS" --ignore-not-found
+
+        echo ""
+        echo "Event generator teardown complete."

@@ -1,0 +1,92 @@
+# Role + RoleBinding for the `pipeline` ServiceAccount — fully namespace-scoped
+#
+# USE THIS FILE on shared clusters (e.g. NERC, any namespace-admin-only cluster)
+# where you cannot create ClusterRoles or ClusterRoleBindings.
+#
+# Why `pipeline` SA?
+#   OpenShift Pipelines automatically creates a `pipeline` ServiceAccount in every
+#   namespace. Using it means zero SA setup — no custom SA to create or manage.
+#   PipelineRun and TaskRun files do NOT need a serviceAccountName field.
+#
+# Apply once per namespace the pipeline needs to operate in:
+#   - infra namespace (for event generator, imagestream, buildconfig)
+#   - each team namespace (for Kafka statefulset, services, pvcs)
+#
+# Variables substituted via envsubst (source config.env first):
+#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE  (where the pipeline SA lives)
+#
+# Apply with:
+#   source config.env && envsubst '${INFRA_NAMESPACE}' \
+#     < tekton/rbac/04-role-rolebinding-namespace.yaml | oc apply -f - -n <namespace>
+#
+# Or loop over all namespaces:
+#   for ns in infra team-01 team-02; do
+#     source config.env && envsubst '${INFRA_NAMESPACE}' \
+#       < tekton/rbac/04-role-rolebinding-namespace.yaml | oc apply -f - -n $ns
+#   done
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pipeline-runner-role
+  labels:
+    app: tekton-pipeline
+    component: rbac
+rules:
+  # Core Kubernetes resources
+  - apiGroups: [""]
+    resources:
+      - pods
+      - services
+      - configmaps
+      - persistentvolumeclaims
+      - serviceaccounts
+      - events
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Workload resources
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - statefulsets
+      - replicasets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # OpenShift build resources (for event generator image builds)
+  - apiGroups: ["build.openshift.io"]
+    resources:
+      - buildconfigs
+      - builds
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # OpenShift image resources (for event generator ImageStream)
+  - apiGroups: ["image.openshift.io"]
+    resources:
+      - imagestreams
+      - imagestreamtags
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Needed to watch pod status (oc wait --for=condition=Ready)
+  - apiGroups: [""]
+    resources:
+      - pods/log
+      - pods/exec
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pipeline-runner-binding
+  labels:
+    app: tekton-pipeline
+    component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pipeline-runner-role
+subjects:
+  - kind: ServiceAccount
+    name: pipeline                # default SA created by OpenShift Pipelines in every namespace
+    namespace: ${INFRA_NAMESPACE} # config.env: INFRA_NAMESPACE — where the pipeline runs
