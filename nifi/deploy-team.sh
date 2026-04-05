@@ -16,6 +16,7 @@ source ../config.env
 # Export variables for envsubst
 export STORAGE_CLASS
 export NIFI_IMAGE
+export EXTERNAL_DOMAIN
 
 # Parse arguments
 GENERATE_YAML=false
@@ -39,8 +40,8 @@ while [[ $# -gt 0 ]]; do
             else
                 echo "ERROR: Too many arguments"
                 echo "Usage: $0 <team-name> <namespace> <password> [--generate-yaml]"
-                echo "Example: $0 team01 team-01 MySecurePass123"
-                echo "Example: $0 team01 team-01 MySecurePass123 --generate-yaml"
+                echo "Example: $0 \${TEAM_NAME} \${TEAM_NAMESPACE} password"
+                echo "Example: $0 \${TEAM_NAME} \${TEAM_NAMESPACE} password --generate-yaml"
                 exit 1
             fi
             shift
@@ -58,8 +59,8 @@ if [ -z "$TEAM_NAME" ] || [ -z "$TEAM_NAMESPACE" ] || [ -z "$TEAM_PASSWORD" ]; t
     echo "  password   : NiFi login password for this team"
     echo ""
     echo "Examples:"
-    echo "  $0 team01 team-01 MySecurePass123"
-    echo "  $0 team01 ${INFRA_NAMESPACE} \"\$(openssl rand -base64 16)\" --generate-yaml"
+    echo "  $0 \${TEAM_NAME} \${TEAM_NAMESPACE} password"
+    echo "  $0 \${TEAM_NAME} \${TEAM_NAMESPACE} \"\$(openssl rand -base64 16)\" --generate-yaml"
     exit 1
 fi
 
