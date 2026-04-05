@@ -41,13 +41,13 @@ metadata:
 ```bash
 # Set variables
 export TEAM_NAME=team01
-export INFRA_NAMESPACE=team-01
-export TEAM_PASSWORD="SecurePassword123"
+export TEAM_NAMESPACE=team-01
+export TEAM_PASSWORD="password"
 export NIFI_IMAGE=apache/nifi:latest
 export STORAGE_CLASS=standard
 
 # Deploy
-./deploy-team.sh ${TEAM_NAME} ${INFRA_NAMESPACE} ${TEAM_PASSWORD}
+./deploy-team.sh ${TEAM_NAME} ${TEAM_NAMESPACE} ${TEAM_PASSWORD}
 ```
 
 ### Manual Deployment
@@ -56,7 +56,7 @@ export STORAGE_CLASS=standard
 # Source configuration
 source ../config.env
 export TEAM_NAME=team01
-export TEAM_PASSWORD="SecurePassword123"
+export TEAM_PASSWORD="password"
 
 # Apply manifests
 envsubst < team-pvc-template.yaml | kubectl apply -f -
@@ -71,20 +71,20 @@ envsubst < team-route-template.yaml | kubectl apply -f -
 **OpenShift (Route):**
 
 ```bash
-kubectl get route nifi-${TEAM_NAME} -n ${INFRA_NAMESPACE} \
+kubectl get route nifi-${TEAM_NAME} -n ${TEAM_NAMESPACE} \
   -o jsonpath='{.spec.host}'
 ```
 
 **Kubernetes (Ingress):**
 
 ```bash
-kubectl get ingress nifi-${TEAM_NAME} -n ${INFRA_NAMESPACE}
+kubectl get ingress nifi-${TEAM_NAME} -n ${TEAM_NAMESPACE}
 ```
 
 **Port Forward (for testing):**
 
 ```bash
-kubectl port-forward -n ${INFRA_NAMESPACE} nifi-${TEAM_NAME}-0 8443:8443
+kubectl port-forward -n ${TEAM_NAMESPACE} nifi-${TEAM_NAME}-0 8443:8443
 # Access at https://localhost:8443/nifi
 ```
 
@@ -130,7 +130,7 @@ resources:
 ```
 
 Adjust based on workflow complexity.
-
+ 
 ### JVM Heap
 
 Modify in StatefulSet template:
@@ -196,7 +196,7 @@ The deployment uses single-user mode (username/password). For production:
 # Create secret
 kubectl create secret generic nifi-${TEAM_NAME}-creds \
   --from-literal=password="${TEAM_PASSWORD}" \
-  -n ${INFRA_NAMESPACE}
+  -n ${TEAM_NAMESPACE}
 
 # Reference in StatefulSet
 env:
@@ -231,7 +231,7 @@ For SSL, configure:
 
 ```bash
 # Check pod status
-kubectl describe pod nifi-${TEAM_NAME}-0 -n ${INFRA_NAMESPACE}
+kubectl describe pod nifi-${TEAM_NAME}-0 -n ${TEAM_NAMESPACE}
 
 # Common issues:
 # - SCC not granted (OpenShift)
@@ -243,13 +243,13 @@ kubectl describe pod nifi-${TEAM_NAME}-0 -n ${INFRA_NAMESPACE}
 
 ```bash
 # Check route/ingress
-kubectl get route,ingress -n ${INFRA_NAMESPACE}
+kubectl get route,ingress -n ${TEAM_NAMESPACE}
 
 # Check service
-kubectl get svc nifi-${TEAM_NAME} -n ${INFRA_NAMESPACE}
+kubectl get svc nifi-${TEAM_NAME} -n ${TEAM_NAMESPACE}
 
 # Check pod logs
-kubectl logs -f nifi-${TEAM_NAME}-0 -n ${INFRA_NAMESPACE}
+kubectl logs -f nifi-${TEAM_NAME}-0 -n ${TEAM_NAMESPACE}
 ```
 
 ### Login fails
@@ -264,7 +264,7 @@ kubectl logs -f nifi-${TEAM_NAME}-0 -n ${INFRA_NAMESPACE}
 NiFi can take 2-3 minutes to start. Monitor logs:
 
 ```bash
-kubectl logs -f nifi-${TEAM_NAME}-0 -n ${INFRA_NAMESPACE}
+kubectl logs -f nifi-${TEAM_NAME}-0 -n ${TEAM_NAMESPACE}
 ```
 
 Look for: `NiFi has started. The UI is available`
@@ -272,10 +272,10 @@ Look for: `NiFi has started. The UI is available`
 ## Cleanup
 
 ```bash
-./delete-team.sh ${TEAM_NAME} ${INFRA_NAMESPACE}
+./delete-team.sh ${TEAM_NAME} ${TEAM_NAMESPACE}
 
 # To also delete PVC (⚠️ loses all data):
-kubectl delete pvc nifi-${TEAM_NAME}-data -n ${INFRA_NAMESPACE}
+kubectl delete pvc nifi-${TEAM_NAME}-data -n ${TEAM_NAMESPACE}
 ```
 
 ## Advanced Topics

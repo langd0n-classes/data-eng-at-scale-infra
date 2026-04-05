@@ -13,23 +13,16 @@ fi
 source ../config.env
 
 # Team name from argument
-if [ -z "$1" ]; then
-    echo "Usage: $0 <team-name> [namespace]"
-    echo "Example: $0 team01"
-    echo "Example: $0 team01 ${INFRA_NAMESPACE}"
+if [ -z "$1" ] || [ -z "$2" ]; then
+    echo "Usage: $0 <team-name> <namespace>"
+    echo "Example: $0 \${TEAM_NAME} \${TEAM_NAMESPACE}"
     exit 1
 fi
 
 TEAM_NAME=$1
-export TEAM_NAME
-
-# Namespace (default to INFRA_NAMESPACE from config)
-if [ -z "$2" ]; then
-    TARGET_NAMESPACE=$INFRA_NAMESPACE
-else
-    TARGET_NAMESPACE=$2
-fi
-export INFRA_NAMESPACE=$TARGET_NAMESPACE
+TEAM_NAMESPACE=$2
+TARGET_NAMESPACE=$2
+export TEAM_NAME TEAM_NAMESPACE EXTERNAL_DOMAIN
 
 echo "=========================================="
 echo "Deleting NiFi for: ${TEAM_NAME}"

@@ -1,15 +1,18 @@
-# Route template for team NiFi access
-# Variables: TEAM_NAME, INFRA_NAMESPACE
+# Route template for team NiFi access (OpenShift only)
+# Variables: TEAM_NAME, TEAM_NAMESPACE, EXTERNAL_DOMAIN
+# Note: This is an OpenShift Route (route.openshift.io/v1).
+# On vanilla Kubernetes, replace this with a standard Ingress resource.
+# The deploy-team.sh script handles this gracefully if Route creation fails.
 ---
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: nifi-${TEAM_NAME}
-  namespace: ${INFRA_NAMESPACE}
+  namespace: ${TEAM_NAMESPACE}
   labels:
     app: nifi-${TEAM_NAME}
 spec:
-  host: nifi-${TEAM_NAME}.EXTERNAL_DOMAIN
+  host: nifi-${TEAM_NAME}.${EXTERNAL_DOMAIN}
   to:
     kind: Service
     name: nifi-${TEAM_NAME}
