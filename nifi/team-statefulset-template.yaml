@@ -144,19 +144,16 @@ spec:
 
           resources:
             requests:
-              memory: "1Gi"
-              cpu: "500m"
+              memory: "512Mi"
+              cpu: "200m"
             limits:
-              memory: "2560Mi"
-              cpu: "1500m"
+              memory: "2Gi"
+              cpu: "500m"
 
           # Liveness Probe - restart if NiFi becomes unresponsive
           livenessProbe:
-            exec:
-              command:
-                - sh
-                - -c
-                - "curl -k -f -s -H 'Host: nifi-${TEAM_NAME}.${EXTERNAL_DOMAIN}' https://localhost:8443/nifi/ > /dev/null"
+            tcpSocket:
+              port: 8443
             initialDelaySeconds: 120
             periodSeconds: 30
             timeoutSeconds: 10
@@ -164,11 +161,8 @@ spec:
 
           # Readiness Probe - don't route traffic until NiFi is ready
           readinessProbe:
-            exec:
-              command:
-                - sh
-                - -c
-                - "curl -k -f -s -H 'Host: nifi-${TEAM_NAME}.${EXTERNAL_DOMAIN}' https://localhost:8443/nifi/ > /dev/null"
+            tcpSocket:
+              port: 8443
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5

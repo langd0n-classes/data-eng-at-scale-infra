@@ -1,0 +1,18 @@
+# NetworkPolicy to allow OpenShift router ingress to team namespace
+# Required when a team-isolation NetworkPolicy blocks external traffic
+# Variables: TEAM_NAMESPACE
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-openshift-ingress
+  namespace: ${TEAM_NAMESPACE}
+spec:
+  podSelector: {}
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              network.openshift.io/policy-group: ingress
+  policyTypes:
+    - Ingress
