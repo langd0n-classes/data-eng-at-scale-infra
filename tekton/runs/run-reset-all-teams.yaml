@@ -1,6 +1,6 @@
 # PipelineRun: reset-and-deploy all teams
 #
-# Tears down all Kafka and the event generator, then redeploys everything fresh.
+# Tears down all Kafka, NiFi, and the event generator, then redeploys everything fresh.
 # Use this after config changes, broken deployments, or a full classroom reset.
 #
 # All values come from config.env — source it first, then run:
@@ -11,7 +11,8 @@
 # HOW TO USE:
 #   1. Set TEAM1_NAME/NAMESPACE through TEAM15_NAME/NAMESPACE in config.env (unused = "skip").
 #   2. Update TEAM_BOOTSTRAP_SERVERS to list all active teams.
-#   3. Run the command above.
+#   3. Set TEAM1_PASSWORD through TEAM15_PASSWORD (use "skip" for unused teams).
+#   4. Run the command above.
 #
 # IMPORTANT: Change the run name suffix (run-001 → run-002) on each new execution.
 #
@@ -19,7 +20,7 @@
 #   ${INFRA_NAMESPACE}           — shared infra namespace
 #   ${GIT_REPO_URL}              — your forked repo URL
 #   ${GIT_BRANCH}                — branch to deploy from
-#   ${STORAGE_CLASS}             — PVC storage class for Kafka
+#   ${STORAGE_CLASS}             — PVC storage class for Kafka + NiFi
 #   ${EVENT_GENERATOR_NAME}      — event generator deployment name
 #   serviceAccountName           — hardcoded as "pipeline" (default OpenShift Pipelines SA)
 #   ${TEKTON_WORKSPACE_SIZE}     — shared workspace PVC size
@@ -27,6 +28,9 @@
 #   ${TEAM1_NAME} / ${TEAM1_NAMESPACE}   — team 1 (set to "skip" to bypass)
 #   ...
 #   ${TEAM15_NAME} / ${TEAM15_NAMESPACE} — team 15
+#   ${NIFI_IMAGE}                — NiFi container image
+#   ${EXTERNAL_DOMAIN}           — OpenShift cluster wildcard domain
+#   ${TEAM1_PASSWORD} ... ${TEAM15_PASSWORD} — per-team NiFi passwords
 
 apiVersion: tekton.dev/v1
 kind: PipelineRun
@@ -136,6 +140,45 @@ spec:
       value: ${TEAM15_NAME}
     - name: team15-namespace
       value: ${TEAM15_NAMESPACE}
+
+    # ── NiFi shared config ───────────────────────────────────────────────────
+    - name: nifi-image
+      value: "${NIFI_IMAGE}"
+
+    - name: external-domain
+      value: "${EXTERNAL_DOMAIN}"
+
+    # ── NiFi per-team passwords ──────────────────────────────────────────────
+    - name: team1-password
+      value: "${TEAM1_PASSWORD}"
+    - name: team2-password
+      value: "${TEAM2_PASSWORD}"
+    - name: team3-password
+      value: "${TEAM3_PASSWORD}"
+    - name: team4-password
+      value: "${TEAM4_PASSWORD}"
+    - name: team5-password
+      value: "${TEAM5_PASSWORD}"
+    - name: team6-password
+      value: "${TEAM6_PASSWORD}"
+    - name: team7-password
+      value: "${TEAM7_PASSWORD}"
+    - name: team8-password
+      value: "${TEAM8_PASSWORD}"
+    - name: team9-password
+      value: "${TEAM9_PASSWORD}"
+    - name: team10-password
+      value: "${TEAM10_PASSWORD}"
+    - name: team11-password
+      value: "${TEAM11_PASSWORD}"
+    - name: team12-password
+      value: "${TEAM12_PASSWORD}"
+    - name: team13-password
+      value: "${TEAM13_PASSWORD}"
+    - name: team14-password
+      value: "${TEAM14_PASSWORD}"
+    - name: team15-password
+      value: "${TEAM15_PASSWORD}"
 
     # ── Event generator config ───────────────────────────────────────────────
     - name: all-team-bootstrap-servers

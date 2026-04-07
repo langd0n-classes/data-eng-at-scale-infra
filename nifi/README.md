@@ -96,7 +96,7 @@ volumeMounts:
   # ... more repositories
 ```
 
-Default PVC size: 5Gi (adjust in template)
+Default PVC size: 1200Mi
 
 ### Resources
 

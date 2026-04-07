@@ -1,0 +1,201 @@
+# Task: deploy-nifi
+#
+# Deploys a NiFi StatefulSet for a single team using the templates from the repository.
+#
+# What it does:
+#   Step 1 (apply-nifi): substitutes template variables and runs oc apply
+#   Step 2 (wait-for-nifi): waits until the NiFi pod is Ready (up to 10 min — NiFi init is slow)
+#
+# This Task is idempotent — running it again when NiFi is already deployed
+# will update the resources if anything changed, or do nothing if unchanged.
+#
+# Variables substituted via envsubst (source config.env first):
+#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE  (namespace this Task lives in)
+#   ${OC_CLI_IMAGE}     — config.env: OC_CLI_IMAGE     (OpenShift CLI image for task steps)
+#
+# NOTE: use scoped envsubst to avoid substituting bash ${VAR} inside the scripts:
+#
+# Apply with:
+#   source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' \
+#     < tekton/tasks/05-task-deploy-nifi.yaml | oc apply -f -
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-nifi
+  namespace: ${INFRA_NAMESPACE}  # config.env: INFRA_NAMESPACE
+  labels:
+    app: tekton-pipeline
+    component: nifi
+spec:
+  description: |
+    Deploys a NiFi StatefulSet for a single team namespace using the
+    nifi template files. Waits until the NiFi pod is Ready (up to 10 min).
+
+  params:
+    - name: team-name
+      description: "Team identifier used in resource names (e.g., team01)"
+      type: string
+
+    - name: team-namespace
+      description: "OpenShift namespace where NiFi will be deployed (e.g., team-01)"
+      type: string
+
+    - name: nifi-image
+      description: "NiFi container image (e.g., quay.io/langdon/nifi-openshift:latest)"
+      type: string
+
+    - name: team-password
+      description: "NiFi single-user login password for this team"
+      type: string
+
+    - name: storage-class
+      description: "Storage class name for the NiFi PVC (check with: oc get sc)"
+      type: string
+      default: standard
+
+    - name: external-domain
+      description: "OpenShift cluster wildcard domain (e.g., apps.your-cluster.example.com)"
+      type: string
+
+  workspaces:
+    - name: source
+      description: Git repository containing the nifi template files
+
+  steps:
+    # Step 1: Substitute template variables and apply the NiFi resources
+    - name: apply-nifi
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        TEAM_NAME="$(params.team-name)"
+        TEAM_NAMESPACE="$(params.team-namespace)"
+        NIFI_IMAGE="$(params.nifi-image)"
+        TEAM_PASSWORD="$(params.team-password)"
+        STORAGE_CLASS="$(params.storage-class)"
+        EXTERNAL_DOMAIN="$(params.external-domain)"
+        NIFI_DIR="$(workspaces.source.path)/nifi"
+
+        echo "=================================================="
+        echo "Deploying NiFi for team: $TEAM_NAME"
+        echo "Namespace:               $TEAM_NAMESPACE"
+        echo "NiFi image:              $NIFI_IMAGE"
+        echo "Storage class:           $STORAGE_CLASS"
+        echo "External domain:         $EXTERNAL_DOMAIN"
+        echo "=================================================="
+
+        # Verify templates exist in the cloned repo
+        for tmpl in team-pvc-template.yaml team-statefulset-template.yaml \
+                    team-route-template.yaml team-networkpolicy-template.yaml; do
+          if [ ! -f "$NIFI_DIR/$tmpl" ]; then
+            echo "ERROR: Template not found at $NIFI_DIR/$tmpl"
+            echo "Files in workspace nifi/:"
+            ls "$NIFI_DIR/" || true
+            exit 1
+          fi
+        done
+
+        # Verify the target namespace exists and is accessible
+        if ! oc get pods -n "$TEAM_NAMESPACE" &>/dev/null; then
+          echo "ERROR: Namespace $TEAM_NAMESPACE does not exist or is not accessible."
+          echo "Please create it and apply RBAC before running this pipeline."
+          exit 1
+        fi
+
+        # Use sed with | delimiter throughout to handle / in image names and . in domain names
+        # Apply in order: pvc → statefulset → route → networkpolicy
+
+        echo ""
+        echo "Applying PVC..."
+        sed \
+          -e "s|\${TEAM_NAME}|${TEAM_NAME}|g" \
+          -e "s|\${TEAM_NAMESPACE}|${TEAM_NAMESPACE}|g" \
+          -e "s|\${STORAGE_CLASS}|${STORAGE_CLASS}|g" \
+          "$NIFI_DIR/team-pvc-template.yaml" | oc apply -f -
+
+        echo ""
+        echo "Applying StatefulSet..."
+        sed \
+          -e "s|\${TEAM_NAME}|${TEAM_NAME}|g" \
+          -e "s|\${TEAM_NAMESPACE}|${TEAM_NAMESPACE}|g" \
+          -e "s|\${NIFI_IMAGE}|${NIFI_IMAGE}|g" \
+          -e "s|\${TEAM_PASSWORD}|${TEAM_PASSWORD}|g" \
+          -e "s|\${EXTERNAL_DOMAIN}|${EXTERNAL_DOMAIN}|g" \
+          "$NIFI_DIR/team-statefulset-template.yaml" | oc apply -f -
+
+        echo ""
+        echo "Applying Route..."
+        sed \
+          -e "s|\${TEAM_NAME}|${TEAM_NAME}|g" \
+          -e "s|\${TEAM_NAMESPACE}|${TEAM_NAMESPACE}|g" \
+          -e "s|\${EXTERNAL_DOMAIN}|${EXTERNAL_DOMAIN}|g" \
+          "$NIFI_DIR/team-route-template.yaml" | oc apply -f -
+
+        echo ""
+        echo "Applying NetworkPolicy..."
+        sed \
+          -e "s|\${TEAM_NAMESPACE}|${TEAM_NAMESPACE}|g" \
+          "$NIFI_DIR/team-networkpolicy-template.yaml" | oc apply -f -
+
+        echo ""
+        echo "NiFi resources applied successfully."
+        echo "Resources created:"
+        echo "  - Service:       nifi-${TEAM_NAME}"
+        echo "  - StatefulSet:   nifi-${TEAM_NAME}"
+        echo "  - PVC:           (created on first run, labeled app=nifi-${TEAM_NAME})"
+        echo "  - Route:         nifi-${TEAM_NAME}"
+        echo "  - NetworkPolicy: allow-from-openshift-ingress"
+
+    # Step 2: Wait until NiFi pod is Ready before proceeding
+    - name: wait-for-nifi
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        TEAM_NAME="$(params.team-name)"
+        TEAM_NAMESPACE="$(params.team-namespace)"
+        EXTERNAL_DOMAIN="$(params.external-domain)"
+
+        echo "Waiting for nifi-${TEAM_NAME}-0 to be Ready..."
+        echo "(NiFi has a slow init — keytool + startup can take 3-5 minutes)"
+
+        # Wait for the pod to exist first (init container runs keytool, takes ~30s)
+        for i in $(seq 1 18); do
+          if oc get pod "nifi-${TEAM_NAME}-0" -n "$TEAM_NAMESPACE" &>/dev/null; then
+            echo "Pod nifi-${TEAM_NAME}-0 found."
+            break
+          fi
+          echo "Waiting for pod to be scheduled... (${i}/18)"
+          sleep 10
+        done
+
+        # Now wait for it to be Ready (including init container completion)
+        oc wait "pod/nifi-${TEAM_NAME}-0" \
+          -n "$TEAM_NAMESPACE" \
+          --for=condition=Ready \
+          --timeout=600s
+
+        echo ""
+        echo "NiFi is Ready!"
+        oc get pod "nifi-${TEAM_NAME}-0" -n "$TEAM_NAMESPACE"
+        echo ""
+        echo "NiFi UI: https://nifi-${TEAM_NAME}.${EXTERNAL_DOMAIN}/nifi"
+        echo "Username: ${TEAM_NAME}"
+        echo "(password was set via team-password param)"

@@ -41,6 +41,10 @@ envsubst < team-statefulset-template.yaml | kubectl delete -f - --ignore-not-fou
 echo "Deleting PVC..."
 envsubst < team-pvc-template.yaml | kubectl delete -f - --ignore-not-found
 
+# Delete NetworkPolicy
+echo "Deleting NetworkPolicy..."
+envsubst < team-networkpolicy-template.yaml | kubectl delete -f - --ignore-not-found
+
 echo ""
 echo "✓ Deletion complete for ${TEAM_NAME} in ${TARGET_NAMESPACE}"
 echo ""
