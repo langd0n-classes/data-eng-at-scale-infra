@@ -183,21 +183,10 @@ else
   BASE_NAME="deploy-all-teams-run"
 fi
 
-# Find the highest existing run number and increment
-LAST_NUM=""
-if [[ "$DRY_RUN" == "false" ]]; then
-  LAST_NUM=$(oc get pipelineruns -n "${INFRA_NAMESPACE}" \
-    --no-headers -o custom-columns='NAME:.metadata.name' 2>/dev/null \
-    | grep "^${BASE_NAME}-" \
-    | grep -oE '[0-9]+$' \
-    | sort -n | tail -1 || true)
-fi
-
-if [[ -z "$LAST_NUM" ]]; then
-  RUN_NUM="001"
-else
-  RUN_NUM=$(printf "%03d" $((10#$LAST_NUM + 1)))
-fi
+# Use a timestamp suffix — avoids name collisions even when old runs are
+# archived (not truly deleted) on shared clusters like NERC where only
+# cluster admins can delete PipelineRun objects.
+RUN_NUM=$(date +%Y%m%d-%H%M%S)
 
 RUN_NAME="${BASE_NAME}-${RUN_NUM}"
 echo "         run name: ${RUN_NAME}"
