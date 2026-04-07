@@ -1,13 +1,13 @@
-# Tekton — Kafka + Event Generator Deployment
+# Tekton — Kafka + NiFi + Event Generator Deployment
 
-Automates Kafka and event generator deployments on OpenShift. All config comes from `config.env`.
+Automates Kafka, NiFi, and event generator deployments on OpenShift. All config comes from `config.env`.
 
 ## Quick Start
 
 ```bash
 # 1. Copy and fill in config.env (if you haven't already)
 cp config.env.example config.env
-# Edit config.env — set INFRA_NAMESPACE, GIT_REPO_URL, EXTERNAL_DOMAIN, STORAGE_CLASS
+# Edit config.env — set INFRA_NAMESPACE, GIT_REPO_URL, EXTERNAL_DOMAIN, STORAGE_CLASS, NIFI_IMAGE
 
 # 2. Run the setup script (full setup: RBAC + tasks + pipelines + PipelineRun)
 bash tekton/setup.sh
@@ -48,7 +48,7 @@ DELETE_NAMESPACES=true bash tekton/cleanup.sh
 5. Run the pipeline
 6. Verify deployment
 
-Day-2 operations (add a team, update event generator, health checks, cleanup) follow after the initial setup.
+Day-2 operations (add a team, redeploy NiFi, update event generator, health checks, cleanup) follow after the initial setup.
 
 ---
 
@@ -197,8 +197,10 @@ Set active teams and mark unused slots as `"skip"`:
 ```bash
 export TEAM1_NAME=team01
 export TEAM1_NAMESPACE=team-01
+export TEAM1_PASSWORD=SecurePass123   # NiFi login password for this team
 export TEAM2_NAME=team02
 export TEAM2_NAMESPACE=team-02
+export TEAM2_PASSWORD=SecurePass456
 export TEAM3_NAME=skip          # not deploying
 export TEAM3_NAMESPACE=skip
 
@@ -213,7 +215,7 @@ team02=kafka-team02.team-02.svc.cluster.local:9092"
 
 ### Initial Deploy — All Teams
 
-Deploys Kafka for every active team in parallel, then the event generator once with all bootstrap servers.
+Deploys Kafka and NiFi for every active team in parallel, then the event generator once with all bootstrap servers.
 
 ```bash
 # First run
@@ -244,6 +246,12 @@ oc get pods,svc,pvc -n ${TEAM_NAMESPACE} -l component=kafka
 
 # Event generator pod
 oc get pods -n ${INFRA_NAMESPACE} -l app=${EVENT_GENERATOR_NAME}
+
+# NiFi pod and route for each team
+oc get pods,svc,pvc -n ${TEAM_NAMESPACE} -l component=nifi
+oc get route nifi-${TEAM1_NAME} -n ${TEAM1_NAMESPACE}
+# NiFi UI: https://nifi-${TEAM1_NAME}-${TEAM1_NAMESPACE}.${EXTERNAL_DOMAIN}/nifi
+# Username: ${TEAM1_NAME}   Password: set in TEAM1_PASSWORD
 
 # Check events are flowing (consume 5 messages)
 oc run kafka-consumer --rm -it \
@@ -285,7 +293,7 @@ Use the reset pipeline only when you need a true clean slate:
 - **Stale PVC data** — `oc apply` never deletes PVCs. If you want Kafka to start with a fresh disk (e.g. resetting a classroom between semesters), teardown explicitly deletes the PVCs.
 - **Immutable StatefulSet fields** — fields like `volumeClaimTemplates` and storage size cannot be patched in-place. `oc apply` will error; delete + recreate is the only fix.
 
-Tears down all Kafka and the event generator, then redeploys everything fresh.
+Tears down all Kafka, NiFi, and the event generator, then redeploys everything fresh.
 
 The teardown derives which namespaces to wipe from `TEAM1_NAMESPACE` through `TEAM15_NAMESPACE` — any set to `skip` are bypassed automatically. No separate list needed.
 
@@ -680,6 +688,13 @@ tkn taskrun delete --keep 5 -n ${INFRA_NAMESPACE}
 tkn task start deploy-kafka -n ${INFRA_NAMESPACE} \
   --param team-name=team01 \
   --param team-namespace=team-01 \
+  --workspace name=source,emptyDir="" \
+  --showlog
+
+tkn task start deploy-nifi -n ${INFRA_NAMESPACE} \
+  --param team-name=team01 \
+  --param team-namespace=team-01 \
+  --param team-password=SecurePass123 \
   --workspace name=source,emptyDir="" \
   --showlog
 ```
