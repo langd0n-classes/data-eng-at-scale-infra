@@ -151,9 +151,11 @@ spec:
         oc get route "nifi-${TEAM_NAME}" -n "$TEAM_NAMESPACE" 2>/dev/null || \
           echo "WARNING: Route nifi-${TEAM_NAME} not found in $TEAM_NAMESPACE"
 
-        if [ -n "$EXTERNAL_DOMAIN" ]; then
+        NIFI_HOST=$(oc get route "nifi-${TEAM_NAME}" -n "$TEAM_NAMESPACE" \
+          -o jsonpath='{.spec.host}' 2>/dev/null || true)
+        if [ -n "$NIFI_HOST" ]; then
           echo ""
-          echo "NiFi UI: https://nifi-${TEAM_NAME}.${EXTERNAL_DOMAIN}/nifi"
+          echo "NiFi UI: https://${NIFI_HOST}/nifi"
         fi
 
     # Step 3: Check event generator status
