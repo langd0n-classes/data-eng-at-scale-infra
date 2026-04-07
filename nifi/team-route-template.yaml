@@ -1,8 +1,9 @@
 # Route template for team NiFi access (OpenShift only)
-# Variables: TEAM_NAME, TEAM_NAMESPACE, EXTERNAL_DOMAIN
-# Note: This is an OpenShift Route (route.openshift.io/v1).
+# Variables: TEAM_NAME, TEAM_NAMESPACE
+# Note: spec.host is intentionally omitted — OpenShift auto-generates the hostname
+# as: nifi-{TEAM_NAME}-{TEAM_NAMESPACE}.{cluster-wildcard-domain}
+# The cert CN/SAN and NIFI_WEB_PROXY_HOST in the StatefulSet must match this pattern.
 # On vanilla Kubernetes, replace this with a standard Ingress resource.
-# The deploy-team.sh script handles this gracefully if Route creation fails.
 ---
 apiVersion: route.openshift.io/v1
 kind: Route
@@ -12,7 +13,6 @@ metadata:
   labels:
     app: nifi-${TEAM_NAME}
 spec:
-  host: nifi-${TEAM_NAME}.${EXTERNAL_DOMAIN}
   to:
     kind: Service
     name: nifi-${TEAM_NAME}

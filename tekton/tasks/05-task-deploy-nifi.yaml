@@ -196,6 +196,6 @@ spec:
         echo "NiFi is Ready!"
         oc get pod "nifi-${TEAM_NAME}-0" -n "$TEAM_NAMESPACE"
         echo ""
-        echo "NiFi UI: https://nifi-${TEAM_NAME}.${EXTERNAL_DOMAIN}/nifi"
+        echo "NiFi UI: https://nifi-${TEAM_NAME}-${TEAM_NAMESPACE}.${EXTERNAL_DOMAIN}/nifi"
         echo "Username: ${TEAM_NAME}"
         echo "(password was set via team-password param)"
