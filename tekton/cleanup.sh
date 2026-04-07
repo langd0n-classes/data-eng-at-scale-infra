@@ -91,11 +91,33 @@ done
 ok "Kafka done"
 
 # ------------------------------------------------------------
+# 4b. NiFi per team (label: app=nifi-${TEAM_NAME} — scoped to our exact deployment)
+# ------------------------------------------------------------
+info "Step 4b/10 — Deleting NiFi from team namespaces..."
+for i in $(seq 1 15); do
+  ns_var="TEAM${i}_NAMESPACE"
+  name_var="TEAM${i}_NAME"
+  ns="${!ns_var:-skip}"
+  name="${!name_var:-skip}"
+  [[ "$ns" == "skip" ]] && continue
+  echo "         nifi-${name} in ${ns}"
+  oc delete statefulset,svc,pvc \
+    -l "app=nifi-${name}" \
+    -n "${ns}" --ignore-not-found
+  oc delete route \
+    -l "app=nifi-${name}" \
+    -n "${ns}" --ignore-not-found
+  oc delete networkpolicy allow-from-openshift-ingress \
+    -n "${ns}" --ignore-not-found
+done
+ok "NiFi done"
+
+# ------------------------------------------------------------
 # 5. Tekton tasks + pipelines (by name — not --all, avoids hitting unrelated objects)
 # ------------------------------------------------------------
 info "Step 5/10 — Deleting Tekton tasks..."
 oc delete task \
-  deploy-kafka deploy-event-generator verify-health teardown-all \
+  deploy-kafka deploy-event-generator verify-health teardown-all deploy-nifi \
   -n "${INFRA_NAMESPACE}" --ignore-not-found
 
 info "          Deleting Tekton pipelines..."

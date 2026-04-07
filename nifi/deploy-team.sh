@@ -103,6 +103,9 @@ if [ "$GENERATE_YAML" = true ]; then
     echo "Generating Route/Ingress..."
     envsubst < team-route-template.yaml > "$OUTPUT_DIR/nifi-route.yaml"
 
+    echo "Generating NetworkPolicy..."
+    envsubst < team-networkpolicy-template.yaml > "$OUTPUT_DIR/nifi-networkpolicy.yaml"
+
     echo ""
     echo "✓ YAML files generated for ${TEAM_NAME}"
     echo "  Output directory: $OUTPUT_DIR"
@@ -110,6 +113,7 @@ if [ "$GENERATE_YAML" = true ]; then
     echo "    - $OUTPUT_DIR/nifi-pvc.yaml"
     echo "    - $OUTPUT_DIR/nifi-statefulset.yaml"
     echo "    - $OUTPUT_DIR/nifi-route.yaml"
+    echo "    - $OUTPUT_DIR/nifi-networkpolicy.yaml"
     echo ""
     echo "You can now edit these files manually and apply them with:"
     echo "  kubectl apply -f $OUTPUT_DIR/ -n ${TEAM_NAMESPACE}"
@@ -125,6 +129,9 @@ else
 
     echo "Deploying Route/Ingress..."
     envsubst < team-route-template.yaml | kubectl apply -f - || echo "Note: Route/Ingress creation may fail on vanilla Kubernetes (OpenShift-specific)"
+
+    echo "Deploying NetworkPolicy..."
+    envsubst < team-networkpolicy-template.yaml | kubectl apply -f - || echo "Note: NetworkPolicy creation may fail if networking.k8s.io is not available"
 
     echo ""
     echo "=========================================="
