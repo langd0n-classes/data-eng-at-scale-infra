@@ -2,7 +2,44 @@
 
 Automates Kafka and event generator deployments on OpenShift. All config comes from `config.env`.
 
-**What you'll do — in order:**
+## Quick Start
+
+```bash
+# 1. Copy and fill in config.env (if you haven't already)
+cp config.env.example config.env
+# Edit config.env — set INFRA_NAMESPACE, GIT_REPO_URL, EXTERNAL_DOMAIN, STORAGE_CLASS
+
+# 2. Run the setup script (full setup: RBAC + tasks + pipelines + PipelineRun)
+bash tekton/setup.sh
+
+# 3. Watch the pipeline
+tkn pipelinerun logs --last -f -n <your-infra-namespace>
+```
+
+**Flags:**
+
+| Flag | Purpose |
+|------|---------|
+| *(none)* | Full setup: RBAC + tasks + pipelines + run |
+| `--skip-rbac` | Skip RBAC step (already applied) |
+| `--skip-tasks` | Skip tasks/pipelines step (already applied) |
+| `--run-only` | Only submit the PipelineRun |
+| `--reset` | Use `run-reset-all-teams.yaml` instead of `run-all-teams.yaml` |
+| `--dry-run` | Print all commands without executing |
+
+The script auto-detects your cluster type (dedicated vs shared/NERC) and chooses the correct RBAC path. It also auto-increments the PipelineRun name (`run-001` → `run-002` → ...) so you never hit name collisions.
+
+**Teardown:**
+
+```bash
+bash tekton/cleanup.sh
+# With namespace deletion (self-provisioned clusters only):
+DELETE_NAMESPACES=true bash tekton/cleanup.sh
+```
+
+---
+
+**Manual setup — step by step:**
 
 1. Verify prerequisites
 2. Apply RBAC (service account + permissions)
