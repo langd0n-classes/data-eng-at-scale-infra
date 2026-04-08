@@ -1,8 +1,9 @@
 # Pipeline: deploy-all-teams
 #
-# Deploys Kafka for up to 15 teams in parallel, then updates the event generator
-# once with all bootstrap servers.
+# Deploys Kafka + NiFi for up to 15 teams in parallel, then updates the event
+# generator once with all bootstrap servers.
 #
+# Per team: deploy-kafka-teamN → deploy-nifi-teamN (chained, maximises parallelism)
 # Teams set to "skip" in config.env are automatically bypassed via Tekton
 # `when` expressions. The event generator always runs once at the end.
 #
@@ -19,8 +20,9 @@ metadata:
     app: tekton-pipeline
 spec:
   description: |
-    Deploys Kafka for up to 15 teams in parallel, then updates the event generator
+    Deploys Kafka + NiFi for up to 15 teams, then updates the event generator
     once with all bootstrap servers. Teams set to "skip" are bypassed automatically.
+    Per team: deploy-kafka → deploy-nifi (chained per team, parallel across teams).
 
   params:
     - name: git-url
@@ -143,6 +145,59 @@ spec:
     - name: team15-namespace
       type: string
       default: skip
+
+    # ── NiFi shared config ────────────────────────────────────────────────────
+    - name: nifi-image
+      type: string
+    - name: external-domain
+      type: string
+
+    # ── NiFi per-team passwords (each team gets their own unique password) ────
+    - name: team1-password
+      type: string
+      default: ""
+    - name: team2-password
+      type: string
+      default: ""
+    - name: team3-password
+      type: string
+      default: ""
+    - name: team4-password
+      type: string
+      default: ""
+    - name: team5-password
+      type: string
+      default: ""
+    - name: team6-password
+      type: string
+      default: ""
+    - name: team7-password
+      type: string
+      default: ""
+    - name: team8-password
+      type: string
+      default: ""
+    - name: team9-password
+      type: string
+      default: ""
+    - name: team10-password
+      type: string
+      default: ""
+    - name: team11-password
+      type: string
+      default: ""
+    - name: team12-password
+      type: string
+      default: ""
+    - name: team13-password
+      type: string
+      default: ""
+    - name: team14-password
+      type: string
+      default: ""
+    - name: team15-password
+      type: string
+      default: ""
 
     # ── Event generator config ────────────────────────────────────────────────
     - name: all-team-bootstrap-servers
@@ -479,26 +534,402 @@ spec:
         - name: source
           workspace: shared-data
 
-    # ── Deploy event generator once — after ALL kafka tasks complete ──────────
+    # ── Deploy NiFi — one task per team, runAfter its own kafka task ──────────
+    - name: deploy-nifi-team1
+      runAfter: [deploy-kafka-team1]
+      when:
+        - input: "$(params.team1-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-nifi
+      params:
+        - name: team-name
+          value: $(params.team1-name)
+        - name: team-namespace
+          value: $(params.team1-namespace)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: team-password
+          value: $(params.team1-password)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: external-domain
+          value: $(params.external-domain)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-nifi-team2
+      runAfter: [deploy-kafka-team2]
+      when:
+        - input: "$(params.team2-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-nifi
+      params:
+        - name: team-name
+          value: $(params.team2-name)
+        - name: team-namespace
+          value: $(params.team2-namespace)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: team-password
+          value: $(params.team2-password)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: external-domain
+          value: $(params.external-domain)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-nifi-team3
+      runAfter: [deploy-kafka-team3]
+      when:
+        - input: "$(params.team3-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-nifi
+      params:
+        - name: team-name
+          value: $(params.team3-name)
+        - name: team-namespace
+          value: $(params.team3-namespace)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: team-password
+          value: $(params.team3-password)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: external-domain
+          value: $(params.external-domain)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-nifi-team4
+      runAfter: [deploy-kafka-team4]
+      when:
+        - input: "$(params.team4-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-nifi
+      params:
+        - name: team-name
+          value: $(params.team4-name)
+        - name: team-namespace
+          value: $(params.team4-namespace)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: team-password
+          value: $(params.team4-password)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: external-domain
+          value: $(params.external-domain)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-nifi-team5
+      runAfter: [deploy-kafka-team5]
+      when:
+        - input: "$(params.team5-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-nifi
+      params:
+        - name: team-name
+          value: $(params.team5-name)
+        - name: team-namespace
+          value: $(params.team5-namespace)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: team-password
+          value: $(params.team5-password)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: external-domain
+          value: $(params.external-domain)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-nifi-team6
+      runAfter: [deploy-kafka-team6]
+      when:
+        - input: "$(params.team6-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-nifi
+      params:
+        - name: team-name
+          value: $(params.team6-name)
+        - name: team-namespace
+          value: $(params.team6-namespace)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: team-password
+          value: $(params.team6-password)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: external-domain
+          value: $(params.external-domain)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-nifi-team7
+      runAfter: [deploy-kafka-team7]
+      when:
+        - input: "$(params.team7-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-nifi
+      params:
+        - name: team-name
+          value: $(params.team7-name)
+        - name: team-namespace
+          value: $(params.team7-namespace)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: team-password
+          value: $(params.team7-password)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: external-domain
+          value: $(params.external-domain)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-nifi-team8
+      runAfter: [deploy-kafka-team8]
+      when:
+        - input: "$(params.team8-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-nifi
+      params:
+        - name: team-name
+          value: $(params.team8-name)
+        - name: team-namespace
+          value: $(params.team8-namespace)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: team-password
+          value: $(params.team8-password)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: external-domain
+          value: $(params.external-domain)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-nifi-team9
+      runAfter: [deploy-kafka-team9]
+      when:
+        - input: "$(params.team9-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-nifi
+      params:
+        - name: team-name
+          value: $(params.team9-name)
+        - name: team-namespace
+          value: $(params.team9-namespace)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: team-password
+          value: $(params.team9-password)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: external-domain
+          value: $(params.external-domain)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-nifi-team10
+      runAfter: [deploy-kafka-team10]
+      when:
+        - input: "$(params.team10-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-nifi
+      params:
+        - name: team-name
+          value: $(params.team10-name)
+        - name: team-namespace
+          value: $(params.team10-namespace)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: team-password
+          value: $(params.team10-password)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: external-domain
+          value: $(params.external-domain)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-nifi-team11
+      runAfter: [deploy-kafka-team11]
+      when:
+        - input: "$(params.team11-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-nifi
+      params:
+        - name: team-name
+          value: $(params.team11-name)
+        - name: team-namespace
+          value: $(params.team11-namespace)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: team-password
+          value: $(params.team11-password)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: external-domain
+          value: $(params.external-domain)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-nifi-team12
+      runAfter: [deploy-kafka-team12]
+      when:
+        - input: "$(params.team12-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-nifi
+      params:
+        - name: team-name
+          value: $(params.team12-name)
+        - name: team-namespace
+          value: $(params.team12-namespace)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: team-password
+          value: $(params.team12-password)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: external-domain
+          value: $(params.external-domain)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-nifi-team13
+      runAfter: [deploy-kafka-team13]
+      when:
+        - input: "$(params.team13-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-nifi
+      params:
+        - name: team-name
+          value: $(params.team13-name)
+        - name: team-namespace
+          value: $(params.team13-namespace)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: team-password
+          value: $(params.team13-password)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: external-domain
+          value: $(params.external-domain)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-nifi-team14
+      runAfter: [deploy-kafka-team14]
+      when:
+        - input: "$(params.team14-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-nifi
+      params:
+        - name: team-name
+          value: $(params.team14-name)
+        - name: team-namespace
+          value: $(params.team14-namespace)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: team-password
+          value: $(params.team14-password)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: external-domain
+          value: $(params.external-domain)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    - name: deploy-nifi-team15
+      runAfter: [deploy-kafka-team15]
+      when:
+        - input: "$(params.team15-name)"
+          operator: notin
+          values: ["skip"]
+      taskRef:
+        name: deploy-nifi
+      params:
+        - name: team-name
+          value: $(params.team15-name)
+        - name: team-namespace
+          value: $(params.team15-namespace)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: team-password
+          value: $(params.team15-password)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: external-domain
+          value: $(params.external-domain)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    # ── Deploy event generator once — after ALL nifi tasks complete ───────────
     # Skipped tasks count as complete, so this always runs.
     # TEAM_BOOTSTRAP_SERVERS must list every active team — set in config.env.
     - name: deploy-event-generator
       runAfter:
-        - deploy-kafka-team1
-        - deploy-kafka-team2
-        - deploy-kafka-team3
-        - deploy-kafka-team4
-        - deploy-kafka-team5
-        - deploy-kafka-team6
-        - deploy-kafka-team7
-        - deploy-kafka-team8
-        - deploy-kafka-team9
-        - deploy-kafka-team10
-        - deploy-kafka-team11
-        - deploy-kafka-team12
-        - deploy-kafka-team13
-        - deploy-kafka-team14
-        - deploy-kafka-team15
+        - deploy-nifi-team1
+        - deploy-nifi-team2
+        - deploy-nifi-team3
+        - deploy-nifi-team4
+        - deploy-nifi-team5
+        - deploy-nifi-team6
+        - deploy-nifi-team7
+        - deploy-nifi-team8
+        - deploy-nifi-team9
+        - deploy-nifi-team10
+        - deploy-nifi-team11
+        - deploy-nifi-team12
+        - deploy-nifi-team13
+        - deploy-nifi-team14
+        - deploy-nifi-team15
       taskRef:
         name: deploy-event-generator
       params:
@@ -548,6 +979,8 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
+        - name: external-domain
+          value: $(params.external-domain)
 
     - name: verify-health-team2
       runAfter: [deploy-event-generator]
@@ -566,6 +999,8 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
+        - name: external-domain
+          value: $(params.external-domain)
 
     - name: verify-health-team3
       runAfter: [deploy-event-generator]
@@ -584,6 +1019,8 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
+        - name: external-domain
+          value: $(params.external-domain)
 
     - name: verify-health-team4
       runAfter: [deploy-event-generator]
@@ -602,6 +1039,8 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
+        - name: external-domain
+          value: $(params.external-domain)
 
     - name: verify-health-team5
       runAfter: [deploy-event-generator]
@@ -620,6 +1059,8 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
+        - name: external-domain
+          value: $(params.external-domain)
 
     - name: verify-health-team6
       runAfter: [deploy-event-generator]
@@ -638,6 +1079,8 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
+        - name: external-domain
+          value: $(params.external-domain)
 
     - name: verify-health-team7
       runAfter: [deploy-event-generator]
@@ -656,6 +1099,8 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
+        - name: external-domain
+          value: $(params.external-domain)
 
     - name: verify-health-team8
       runAfter: [deploy-event-generator]
@@ -674,6 +1119,8 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
+        - name: external-domain
+          value: $(params.external-domain)
 
     - name: verify-health-team9
       runAfter: [deploy-event-generator]
@@ -692,6 +1139,8 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
+        - name: external-domain
+          value: $(params.external-domain)
 
     - name: verify-health-team10
       runAfter: [deploy-event-generator]
@@ -710,6 +1159,8 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
+        - name: external-domain
+          value: $(params.external-domain)
 
     - name: verify-health-team11
       runAfter: [deploy-event-generator]
@@ -728,6 +1179,8 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
+        - name: external-domain
+          value: $(params.external-domain)
 
     - name: verify-health-team12
       runAfter: [deploy-event-generator]
@@ -746,6 +1199,8 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
+        - name: external-domain
+          value: $(params.external-domain)
 
     - name: verify-health-team13
       runAfter: [deploy-event-generator]
@@ -764,6 +1219,8 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
+        - name: external-domain
+          value: $(params.external-domain)
 
     - name: verify-health-team14
       runAfter: [deploy-event-generator]
@@ -782,6 +1239,8 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
+        - name: external-domain
+          value: $(params.external-domain)
 
     - name: verify-health-team15
       runAfter: [deploy-event-generator]
@@ -800,3 +1259,5 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
+        - name: external-domain
+          value: $(params.external-domain)

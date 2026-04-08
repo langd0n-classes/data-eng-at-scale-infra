@@ -16,6 +16,7 @@ source ../config.env
 # Export variables for envsubst
 export STORAGE_CLASS
 export NIFI_IMAGE
+export EXTERNAL_DOMAIN
 
 # Parse arguments
 GENERATE_YAML=false
@@ -39,8 +40,8 @@ while [[ $# -gt 0 ]]; do
             else
                 echo "ERROR: Too many arguments"
                 echo "Usage: $0 <team-name> <namespace> <password> [--generate-yaml]"
-                echo "Example: $0 team01 team-01 MySecurePass123"
-                echo "Example: $0 team01 team-01 MySecurePass123 --generate-yaml"
+                echo "Example: $0 \${TEAM_NAME} \${TEAM_NAMESPACE} password"
+                echo "Example: $0 \${TEAM_NAME} \${TEAM_NAMESPACE} password --generate-yaml"
                 exit 1
             fi
             shift
@@ -58,8 +59,8 @@ if [ -z "$TEAM_NAME" ] || [ -z "$TEAM_NAMESPACE" ] || [ -z "$TEAM_PASSWORD" ]; t
     echo "  password   : NiFi login password for this team"
     echo ""
     echo "Examples:"
-    echo "  $0 team01 team-01 MySecurePass123"
-    echo "  $0 team01 ${INFRA_NAMESPACE} \"\$(openssl rand -base64 16)\" --generate-yaml"
+    echo "  $0 \${TEAM_NAME} \${TEAM_NAMESPACE} password"
+    echo "  $0 \${TEAM_NAME} \${TEAM_NAMESPACE} \"\$(openssl rand -base64 16)\" --generate-yaml"
     exit 1
 fi
 
@@ -102,6 +103,9 @@ if [ "$GENERATE_YAML" = true ]; then
     echo "Generating Route/Ingress..."
     envsubst < team-route-template.yaml > "$OUTPUT_DIR/nifi-route.yaml"
 
+    echo "Generating NetworkPolicy..."
+    envsubst < team-networkpolicy-template.yaml > "$OUTPUT_DIR/nifi-networkpolicy.yaml"
+
     echo ""
     echo "✓ YAML files generated for ${TEAM_NAME}"
     echo "  Output directory: $OUTPUT_DIR"
@@ -109,6 +113,7 @@ if [ "$GENERATE_YAML" = true ]; then
     echo "    - $OUTPUT_DIR/nifi-pvc.yaml"
     echo "    - $OUTPUT_DIR/nifi-statefulset.yaml"
     echo "    - $OUTPUT_DIR/nifi-route.yaml"
+    echo "    - $OUTPUT_DIR/nifi-networkpolicy.yaml"
     echo ""
     echo "You can now edit these files manually and apply them with:"
     echo "  kubectl apply -f $OUTPUT_DIR/ -n ${TEAM_NAMESPACE}"
@@ -124,6 +129,9 @@ else
 
     echo "Deploying Route/Ingress..."
     envsubst < team-route-template.yaml | kubectl apply -f - || echo "Note: Route/Ingress creation may fail on vanilla Kubernetes (OpenShift-specific)"
+
+    echo "Deploying NetworkPolicy..."
+    envsubst < team-networkpolicy-template.yaml | kubectl apply -f - || echo "Note: NetworkPolicy creation may fail if networking.k8s.io is not available"
 
     echo ""
     echo "=========================================="

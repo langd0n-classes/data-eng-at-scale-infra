@@ -71,6 +71,18 @@ rules:
       - deployments/rollout
     verbs: ["update", "patch"]
 
+  # OpenShift Route resources (for NiFi UI ingress)
+  - apiGroups: ["route.openshift.io"]
+    resources:
+      - routes
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # NetworkPolicy resources (for NiFi ingress from OpenShift router)
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
 ---
 # Bind the ClusterRole to our ServiceAccount in infra namespace
 apiVersion: rbac.authorization.k8s.io/v1

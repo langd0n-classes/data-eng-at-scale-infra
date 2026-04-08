@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# tekton/setup.sh — Automated Tekton setup: RBAC + tasks/pipelines + PipelineRun
+#
+# Usage:
+#   bash tekton/setup.sh                    # full setup: RBAC + tasks + pipelines + run
+#   bash tekton/setup.sh --skip-rbac        # skip RBAC (already applied)
+#   bash tekton/setup.sh --skip-tasks       # skip tasks/pipelines (already applied)
+#   bash tekton/setup.sh --run-only         # only submit the PipelineRun
+#   bash tekton/setup.sh --reset            # use run-reset-all-teams.yaml instead
+#   bash tekton/setup.sh --dry-run          # print all commands without executing
+#
+# Run from repo root or from tekton/ — the script finds config.env automatically.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# ── Parse flags ────────────────────────────────────────────────────────────────
+SKIP_RBAC=false
+SKIP_TASKS=false
+RUN_ONLY=false
+USE_RESET=false
+DRY_RUN=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --skip-rbac)   SKIP_RBAC=true ;;
+    --skip-tasks)  SKIP_TASKS=true ;;
+    --run-only)    RUN_ONLY=true; SKIP_RBAC=true; SKIP_TASKS=true ;;
+    --reset)       USE_RESET=true ;;
+    --dry-run)     DRY_RUN=true ;;
+    *) echo "Unknown flag: $arg"; echo "Usage: $0 [--skip-rbac] [--skip-tasks] [--run-only] [--reset] [--dry-run]"; exit 1 ;;
+  esac
+done
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+info() { echo "▶ $*"; }
+ok()   { echo "  ✓ $*"; }
+warn() { echo "  ⚠ $*"; }
+
+run() {
+  if [[ "$DRY_RUN" == "true" ]]; then
+    echo "  [dry-run] $*"
+  else
+    eval "$@"
+  fi
+}
+
+# ── Step 1: Load & Validate Config ─────────────────────────────────────────────
+echo "============================================================"
+echo " Tekton Setup"
+echo "============================================================"
+echo ""
+info "Step 1 — Loading config..."
+
+CONFIG_FILE="${REPO_ROOT}/config.env"
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  echo "ERROR: config.env not found at ${CONFIG_FILE}"
+  echo "       Copy config.env.example to config.env and fill in your values."
+  exit 1
+fi
+
+source "$CONFIG_FILE"
+
+# Validate required variables
+MISSING=()
+for var in INFRA_NAMESPACE OC_CLI_IMAGE GIT_REPO_URL EXTERNAL_DOMAIN STORAGE_CLASS; do
+  val="${!var:-}"
+  if [[ -z "$val" ]]; then
+    MISSING+=("$var (empty)")
+  elif [[ "$val" == *"your-cluster"* || "$val" == *"YOUR-USERNAME"* || "$val" == *"example.com"* ]]; then
+    MISSING+=("$var (still has placeholder value: $val)")
+  fi
+done
+
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+  echo "ERROR: The following config.env variables are missing or have placeholder values:"
+  for m in "${MISSING[@]}"; do echo "         $m"; done
+  echo "       Edit config.env and re-run."
+  exit 1
+fi
+
+ok "Config loaded — infra namespace: ${INFRA_NAMESPACE}"
+
+# ── Step 2: Prerequisite Checks ────────────────────────────────────────────────
+info "Step 2 — Checking prerequisites..."
+
+if ! oc whoami &>/dev/null; then
+  warn "Not logged into OpenShift — run 'oc login' first"
+else
+  ok "Logged in as $(oc whoami)"
+fi
+
+if ! oc get pods -n openshift-pipelines &>/dev/null; then
+  warn "Cannot list pods in openshift-pipelines — Pipelines operator may not be installed"
+else
+  ok "OpenShift Pipelines namespace accessible"
+fi
+
+if oc get task git-clone -n openshift-pipelines &>/dev/null || oc get clustertask git-clone &>/dev/null 2>/dev/null; then
+  ok "git-clone task found"
+else
+  warn "git-clone task not found — pipeline will fail at clone-repo step"
+fi
+
+# ── Step 3: Auto-Detect Cluster Type ───────────────────────────────────────────
+info "Step 3 — Detecting cluster type..."
+
+if oc auth can-i create clusterrolebindings &>/dev/null; then
+  CLUSTER_TYPE="dedicated"
+else
+  CLUSTER_TYPE="shared"
+fi
+
+ok "Cluster type: ${CLUSTER_TYPE}"
+
+# ── Step 4: Apply RBAC ─────────────────────────────────────────────────────────
+if [[ "$SKIP_RBAC" == "false" ]]; then
+  echo ""
+  info "Step 4 — Applying RBAC (${CLUSTER_TYPE} path)..."
+
+  if [[ "$CLUSTER_TYPE" == "dedicated" ]]; then
+    run "source '${CONFIG_FILE}' && envsubst '\${INFRA_NAMESPACE} \${TEKTON_SA_NAME}' \
+      < '${SCRIPT_DIR}/rbac/02-clusterrolebinding.yaml' | oc apply -f -"
+    ok "ClusterRoleBinding applied"
+  else
+    # Shared cluster — apply Role + RoleBinding to every active namespace
+    ALL_NS=("${INFRA_NAMESPACE}")
+    for i in $(seq 1 15); do
+      ns_var="TEAM${i}_NAMESPACE"
+      ns="${!ns_var:-skip}"
+      [[ "$ns" == "skip" ]] && continue
+      ALL_NS+=("$ns")
+    done
+
+    for ns in "${ALL_NS[@]}"; do
+      echo "         applying to namespace: ${ns}"
+      run "source '${CONFIG_FILE}' && INFRA_NAMESPACE='${INFRA_NAMESPACE}' \
+        envsubst '\${INFRA_NAMESPACE}' \
+        < '${SCRIPT_DIR}/rbac/04-role-rolebinding-namespace.yaml' | oc apply -f - -n '${ns}'"
+    done
+    ok "Role + RoleBinding applied to ${#ALL_NS[@]} namespaces"
+  fi
+else
+  info "Step 4 — RBAC (skipped)"
+fi
+
+# ── Step 5: Apply Tasks and Pipelines ──────────────────────────────────────────
+if [[ "$SKIP_TASKS" == "false" ]]; then
+  echo ""
+  info "Step 5 — Applying tasks..."
+
+  for task_file in "${SCRIPT_DIR}/tasks"/0*.yaml; do
+    task_name="$(basename "$task_file")"
+    echo "         ${task_name}"
+    run "source '${CONFIG_FILE}' && envsubst '\${INFRA_NAMESPACE} \${OC_CLI_IMAGE}' \
+      < '${task_file}' | oc apply -f -"
+  done
+  ok "Tasks applied"
+
+  info "          Applying pipelines..."
+  for pipeline_file in "${SCRIPT_DIR}/pipelines"/0*.yaml; do
+    pipeline_name="$(basename "$pipeline_file")"
+    echo "         ${pipeline_name}"
+    run "source '${CONFIG_FILE}' && envsubst '\${INFRA_NAMESPACE}' \
+      < '${pipeline_file}' | oc apply -f -"
+  done
+  ok "Pipelines applied"
+else
+  info "Step 5 — Tasks/pipelines (skipped)"
+fi
+
+# ── Step 6: Auto-Increment Run Number and Submit ───────────────────────────────
+echo ""
+info "Step 6 — Submitting PipelineRun..."
+
+if [[ "$USE_RESET" == "true" ]]; then
+  RUN_YAML="${SCRIPT_DIR}/runs/run-reset-all-teams.yaml"
+  BASE_NAME="reset-all-teams-run"
+else
+  RUN_YAML="${SCRIPT_DIR}/runs/run-all-teams.yaml"
+  BASE_NAME="deploy-all-teams-run"
+fi
+
+# Use a timestamp suffix — avoids name collisions even when old runs are
+# archived (not truly deleted) on shared clusters like NERC where only
+# cluster admins can delete PipelineRun objects.
+RUN_NUM=$(date +%Y%m%d-%H%M%S)
+
+RUN_NAME="${BASE_NAME}-${RUN_NUM}"
+echo "         run name: ${RUN_NAME}"
+
+run "source '${CONFIG_FILE}' && envsubst < '${RUN_YAML}' \
+  | sed 's/${BASE_NAME}-001/${RUN_NAME}/' \
+  | oc create -f -"
+
+ok "PipelineRun submitted"
+
+# ── Step 7: Print Watch Command ────────────────────────────────────────────────
+echo ""
+echo "============================================================"
+echo " PipelineRun submitted: ${RUN_NAME}"
+echo ""
+echo " Watch logs:"
+echo "   tkn pipelinerun logs ${RUN_NAME} -f -n ${INFRA_NAMESPACE}"
+echo ""
+echo " Or follow the latest run:"
+echo "   tkn pipelinerun logs --last -f -n ${INFRA_NAMESPACE}"
+echo "============================================================"

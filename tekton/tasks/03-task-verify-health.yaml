@@ -1,11 +1,12 @@
 # Task: verify-health
 #
-# Checks that Kafka and the event generator are running correctly after deployment.
+# Checks that Kafka, NiFi, and the event generator are running correctly after deployment.
 # This is the final step of the pipeline — a sanity check.
 #
 # What it checks:
 #   Step 1: Kafka pod status and recent logs
-#   Step 2: Event generator pod status and recent logs
+#   Step 2: NiFi pod status and recent logs (informational — does not fail)
+#   Step 3: Event generator pod status and recent logs
 #
 # Note: Topics are auto-created by Kafka when the first message is produced,
 # so we don't verify topics here — they show up once the event generator starts.
@@ -30,7 +31,7 @@ metadata:
     component: health-check
 spec:
   description: |
-    Verifies that Kafka and the event generator are running after deployment.
+    Verifies that Kafka, NiFi, and the event generator are running after deployment.
     Prints pod status and recent logs for quick inspection.
 
   params:
@@ -51,6 +52,11 @@ spec:
       description: "Event generator deployment name"
       type: string
       default: event-generator
+
+    - name: external-domain
+      description: "OpenShift cluster wildcard domain (for NiFi UI URL in output)"
+      type: string
+      default: ""
 
   steps:
     # Step 1: Check Kafka status
@@ -96,7 +102,63 @@ spec:
         oc logs "kafka-${TEAM_NAME}-0" -n "$TEAM_NAMESPACE" --tail=5 2>/dev/null || \
           echo "(logs not available yet — pod may still be starting)"
 
-    # Step 2: Check event generator status
+    # Step 2: Check NiFi status (informational — does not exit 1)
+    - name: check-nifi
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
+      script: |
+        #!/bin/bash
+
+        TEAM_NAME="$(params.team-name)"
+        TEAM_NAMESPACE="$(params.team-namespace)"
+        EXTERNAL_DOMAIN="$(params.external-domain)"
+
+        echo "=================================================="
+        echo "NiFi Health Check — $TEAM_NAME ($TEAM_NAMESPACE)"
+        echo "=================================================="
+
+        echo ""
+        echo "--- Pod / Service / PVC status ---"
+        oc get pods,svc,pvc -n "$TEAM_NAMESPACE" -l "app=nifi-${TEAM_NAME}" 2>/dev/null || \
+          echo "WARNING: No nifi resources found in $TEAM_NAMESPACE"
+
+        echo ""
+        echo "--- NiFi pod phase ---"
+        STATUS=$(oc get pod "nifi-${TEAM_NAME}-0" \
+          -n "$TEAM_NAMESPACE" \
+          -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+
+        if [ "$STATUS" = "Running" ]; then
+          echo "NiFi pod is Running — OK"
+        else
+          echo "WARNING: NiFi pod status is '$STATUS'"
+          echo "NiFi startup takes 3-5 min — check with: oc describe pod nifi-${TEAM_NAME}-0 -n $TEAM_NAMESPACE"
+        fi
+
+        echo ""
+        echo "--- Last 5 lines of NiFi logs ---"
+        oc logs "nifi-${TEAM_NAME}-0" -n "$TEAM_NAMESPACE" --tail=5 2>/dev/null || \
+          echo "(logs not available yet — NiFi may still be initializing)"
+
+        echo ""
+        echo "--- NiFi Route ---"
+        oc get route "nifi-${TEAM_NAME}" -n "$TEAM_NAMESPACE" 2>/dev/null || \
+          echo "WARNING: Route nifi-${TEAM_NAME} not found in $TEAM_NAMESPACE"
+
+        NIFI_HOST=$(oc get route "nifi-${TEAM_NAME}" -n "$TEAM_NAMESPACE" \
+          -o jsonpath='{.spec.host}' 2>/dev/null || true)
+        if [ -n "$NIFI_HOST" ]; then
+          echo ""
+          echo "NiFi UI: https://${NIFI_HOST}/nifi"
+        fi
+
+    # Step 3: Check event generator status
     - name: check-event-generator
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
       computeResources:

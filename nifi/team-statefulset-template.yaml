@@ -1,11 +1,11 @@
 # Minimal NiFi StatefulSet for individual teams - Single PVC version
-# Variables: TEAM_NAME, INFRA_NAMESPACE, NIFI_IMAGE, TEAM_PASSWORD
+# Variables: TEAM_NAME, TEAM_NAMESPACE, NIFI_IMAGE, TEAM_PASSWORD, EXTERNAL_DOMAIN
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: nifi-${TEAM_NAME}
-  namespace: ${INFRA_NAMESPACE}
+  namespace: ${TEAM_NAMESPACE}
   labels:
     app: nifi-${TEAM_NAME}
 spec:
@@ -22,7 +22,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: nifi-${TEAM_NAME}
-  namespace: ${INFRA_NAMESPACE}
+  namespace: ${TEAM_NAMESPACE}
   labels:
     app: nifi-${TEAM_NAME}
 spec:
@@ -61,8 +61,8 @@ spec:
               # This avoids SNI errors when accessing via OpenShift route
               rm -f /data/conf/keystore.p12  # Delete old keystore first
               keytool -genkeypair -alias nifi -keyalg RSA -keysize 2048 \
-                -dname "CN=nifi-${TEAM_NAME}.EXTERNAL_DOMAIN" \
-                -ext "SAN=dns:nifi-${TEAM_NAME}.EXTERNAL_DOMAIN" \
+                -dname "CN=nifi-${TEAM_NAME}-${TEAM_NAMESPACE}.${EXTERNAL_DOMAIN}" \
+                -ext "SAN=dns:nifi-${TEAM_NAME}-${TEAM_NAMESPACE}.${EXTERNAL_DOMAIN}" \
                 -keystore /data/conf/keystore.p12 \
                 -storetype PKCS12 \
                 -storepass password -keypass password -validity 365 -noprompt
@@ -88,7 +88,7 @@ spec:
       containers:
         - name: nifi
           image: ${NIFI_IMAGE}
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
 
           ports:
             - containerPort: 8443
@@ -109,13 +109,13 @@ spec:
             - name: NIFI_WEB_HTTPS_PORT
               value: "8443"
             - name: NIFI_WEB_PROXY_HOST
-              value: "nifi-${TEAM_NAME}.EXTERNAL_DOMAIN"
+              value: "nifi-${TEAM_NAME}-${TEAM_NAMESPACE}.${EXTERNAL_DOMAIN}"
             - name: SINGLE_USER_CREDENTIALS_USERNAME
               value: "${TEAM_NAME}"
             - name: SINGLE_USER_CREDENTIALS_PASSWORD
               value: "${TEAM_PASSWORD}"
 
-                      # Sensitive Properties Key (for encrypted configs)
+            # Sensitive Properties Key (for encrypted configs)
             - name: NIFI_SENSITIVE_PROPS_KEY
               value: "YOUR_SENSITIVE_PROPS_KEY"
 
@@ -124,10 +124,6 @@ spec:
               value: "512M"
             - name: NIFI_JVM_HEAP_MAX
               value: "1G"
-
-            # Kubernetes State Management (NiFi 2.0+)
-            - name: NIFI_STATE_MANAGEMENT_CLUSTER_PROVIDER
-              value: "kubernetes-state-provider"
 
           volumeMounts:
             - name: data
@@ -148,19 +144,16 @@ spec:
 
           resources:
             requests:
-              memory: "1Gi"
-              cpu: "500m"
+              memory: "512Mi"
+              cpu: "200m"
             limits:
-              memory: "2560Mi"
-              cpu: "1500m"
+              memory: "2Gi"
+              cpu: "500m"
 
           # Liveness Probe - restart if NiFi becomes unresponsive
           livenessProbe:
-            exec:
-              command:
-                - sh
-                - -c
-                - "curl -k -f -s -H 'Host: nifi-${TEAM_NAME}.EXTERNAL_DOMAIN' https://localhost:8443/nifi/ > /dev/null"
+            tcpSocket:
+              port: 8443
             initialDelaySeconds: 120
             periodSeconds: 30
             timeoutSeconds: 10
@@ -168,11 +161,8 @@ spec:
 
           # Readiness Probe - don't route traffic until NiFi is ready
           readinessProbe:
-            exec:
-              command:
-                - sh
-                - -c
-                - "curl -k -f -s -H 'Host: nifi-${TEAM_NAME}.EXTERNAL_DOMAIN' https://localhost:8443/nifi/ > /dev/null"
+            tcpSocket:
+              port: 8443
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5

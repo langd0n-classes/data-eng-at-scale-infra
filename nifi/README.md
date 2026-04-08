@@ -15,39 +15,23 @@ Each deployment creates:
 
 ### OpenShift
 
-NiFi requires `anyuid` Security Context Constraint:
-
-```bash
-oc adm policy add-scc-to-user anyuid -z default -n ${NAMESPACE}
-```
+No cluster-admin access required. Uses `quay.io/langdon/nifi-openshift:latest` which runs without `anyuid` SCC.
+Source: https://github.com/bu-cds-ds551/ds551-nifi
 
 ### Kubernetes
 
-Configure Pod Security admission to allow NiFi's UID:
-
-```yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: team-01
-  labels:
-    pod-security.kubernetes.io/enforce: baseline
-```
+The Route resource (`route.openshift.io/v1`) is OpenShift-specific and will not apply on vanilla Kubernetes. For external access, create a standard `Ingress` resource pointing to the `nifi-${TEAM_NAME}` service on port 8443. Port-forward can be used for local testing.
 
 ## Deployment
 
 ### Using the Script
 
 ```bash
-# Set variables
-export TEAM_NAME=team01
-export INFRA_NAMESPACE=team-01
-export TEAM_PASSWORD="SecurePassword123"
-export NIFI_IMAGE=apache/nifi:latest
-export STORAGE_CLASS=standard
+# Source configuration
+source ../config.env
 
 # Deploy
-./deploy-team.sh ${TEAM_NAME} ${INFRA_NAMESPACE} ${TEAM_PASSWORD}
+./deploy-team.sh ${TEAM_NAME} ${TEAM_NAMESPACE} password1234
 ```
 
 ### Manual Deployment
@@ -55,13 +39,12 @@ export STORAGE_CLASS=standard
 ```bash
 # Source configuration
 source ../config.env
-export TEAM_NAME=team01
-export TEAM_PASSWORD="SecurePassword123"
 
 # Apply manifests
 envsubst < team-pvc-template.yaml | kubectl apply -f -
 envsubst < team-statefulset-template.yaml | kubectl apply -f -
 envsubst < team-route-template.yaml | kubectl apply -f -
+envsubst < team-networkpolicy-template.yaml | kubectl apply -f -
 ```
 
 ## Access
@@ -71,27 +54,27 @@ envsubst < team-route-template.yaml | kubectl apply -f -
 **OpenShift (Route):**
 
 ```bash
-kubectl get route nifi-${TEAM_NAME} -n ${INFRA_NAMESPACE} \
+kubectl get route nifi-${TEAM_NAME} -n ${TEAM_NAMESPACE} \
   -o jsonpath='{.spec.host}'
 ```
 
 **Kubernetes (Ingress):**
 
 ```bash
-kubectl get ingress nifi-${TEAM_NAME} -n ${INFRA_NAMESPACE}
+kubectl get ingress nifi-${TEAM_NAME} -n ${TEAM_NAMESPACE}
 ```
 
 **Port Forward (for testing):**
 
 ```bash
-kubectl port-forward -n ${INFRA_NAMESPACE} nifi-${TEAM_NAME}-0 8443:8443
+kubectl port-forward -n ${TEAM_NAMESPACE} nifi-${TEAM_NAME}-0 8443:8443
 # Access at https://localhost:8443/nifi
 ```
 
 ### Login Credentials
 
-- **Username:** Value of `${TEAM_NAME}` variable
-- **Password:** Value of `${TEAM_PASSWORD}` variable
+- **Username:** Value of `${TEAM_NAME}` (e.g., `team01`)
+- **Password:** Value of `${TEAM_PASSWORD}` from `config.env` (must be 12+ characters)
 
 ## Configuration
 
@@ -113,7 +96,7 @@ volumeMounts:
   # ... more repositories
 ```
 
-Default PVC size: 5Gi (adjust in template)
+Default PVC size: 1200Mi
 
 ### Resources
 
@@ -122,15 +105,15 @@ Default allocation:
 ```yaml
 resources:
   requests:
-    memory: "1Gi"
-    cpu: "500m"
+    memory: "512Mi"
+    cpu: "200m"
   limits:
-    memory: "2560Mi"
-    cpu: "1500m"
+    memory: "2Gi"
+    cpu: "500m"
 ```
 
 Adjust based on workflow complexity.
-
+ 
 ### JVM Heap
 
 Modify in StatefulSet template:
@@ -148,7 +131,7 @@ env:
 To use a custom image (e.g., with additional NAR files):
 
 ```dockerfile
-FROM apache/nifi:latest
+FROM quay.io/langdon/nifi-openshift:latest
 COPY custom-nar-1.0.nar /opt/nifi/nifi-current/lib/
 ```
 
@@ -196,7 +179,7 @@ The deployment uses single-user mode (username/password). For production:
 # Create secret
 kubectl create secret generic nifi-${TEAM_NAME}-creds \
   --from-literal=password="${TEAM_PASSWORD}" \
-  -n ${INFRA_NAMESPACE}
+  -n ${TEAM_NAMESPACE}
 
 # Reference in StatefulSet
 env:
@@ -231,25 +214,31 @@ For SSL, configure:
 
 ```bash
 # Check pod status
-kubectl describe pod nifi-${TEAM_NAME}-0 -n ${INFRA_NAMESPACE}
+kubectl describe pod nifi-${TEAM_NAME}-0 -n ${TEAM_NAMESPACE}
 
 # Common issues:
-# - SCC not granted (OpenShift)
-# - PVC not bound
+# - PVC not bound (check STORAGE_CLASS in config.env)
 # - Insufficient resources
+# - Init container failed (check: oc logs nifi-${TEAM_NAME}-0 -c init-config -n ${TEAM_NAMESPACE})
 ```
 
 ### Can't access UI
 
 ```bash
 # Check route/ingress
-kubectl get route,ingress -n ${INFRA_NAMESPACE}
+kubectl get route,ingress -n ${TEAM_NAMESPACE}
 
 # Check service
-kubectl get svc nifi-${TEAM_NAME} -n ${INFRA_NAMESPACE}
+kubectl get svc nifi-${TEAM_NAME} -n ${TEAM_NAMESPACE}
 
 # Check pod logs
-kubectl logs -f nifi-${TEAM_NAME}-0 -n ${INFRA_NAMESPACE}
+kubectl logs -f nifi-${TEAM_NAME}-0 -n ${TEAM_NAMESPACE}
+```
+
+If the route returns `ERR_CONNECTION_CLOSED`, a `NetworkPolicy` may be blocking the OpenShift router. Apply the network policy:
+
+```bash
+envsubst < team-networkpolicy-template.yaml | kubectl apply -f -
 ```
 
 ### Login fails
@@ -264,7 +253,7 @@ kubectl logs -f nifi-${TEAM_NAME}-0 -n ${INFRA_NAMESPACE}
 NiFi can take 2-3 minutes to start. Monitor logs:
 
 ```bash
-kubectl logs -f nifi-${TEAM_NAME}-0 -n ${INFRA_NAMESPACE}
+kubectl logs -f nifi-${TEAM_NAME}-0 -n ${TEAM_NAMESPACE}
 ```
 
 Look for: `NiFi has started. The UI is available`
@@ -272,10 +261,10 @@ Look for: `NiFi has started. The UI is available`
 ## Cleanup
 
 ```bash
-./delete-team.sh ${TEAM_NAME} ${INFRA_NAMESPACE}
+./delete-team.sh ${TEAM_NAME} ${TEAM_NAMESPACE}
 
 # To also delete PVC (⚠️ loses all data):
-kubectl delete pvc nifi-${TEAM_NAME}-data -n ${INFRA_NAMESPACE}
+kubectl delete pvc nifi-${TEAM_NAME}-data -n ${TEAM_NAMESPACE}
 ```
 
 ## Advanced Topics

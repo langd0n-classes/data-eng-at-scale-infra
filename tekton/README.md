@@ -1,8 +1,45 @@
-# Tekton — Kafka + Event Generator Deployment
+# Tekton — Kafka + NiFi + Event Generator Deployment
 
-Automates Kafka and event generator deployments on OpenShift. All config comes from `config.env`.
+Automates Kafka, NiFi, and event generator deployments on OpenShift. All config comes from `config.env`.
 
-**What you'll do — in order:**
+## Quick Start
+
+```bash
+# 1. Copy and fill in config.env (if you haven't already)
+cp config.env.example config.env
+# Edit config.env — set INFRA_NAMESPACE, GIT_REPO_URL, EXTERNAL_DOMAIN, STORAGE_CLASS, NIFI_IMAGE
+
+# 2. Run the setup script (full setup: RBAC + tasks + pipelines + PipelineRun)
+bash tekton/setup.sh
+
+# 3. Watch the pipeline
+tkn pipelinerun logs --last -f -n <your-infra-namespace>
+```
+
+**Flags:**
+
+| Flag | Purpose |
+|------|---------|
+| *(none)* | Full setup: RBAC + tasks + pipelines + run |
+| `--skip-rbac` | Skip RBAC step (already applied) |
+| `--skip-tasks` | Skip tasks/pipelines step (already applied) |
+| `--run-only` | Only submit the PipelineRun |
+| `--reset` | Use `run-reset-all-teams.yaml` instead of `run-all-teams.yaml` |
+| `--dry-run` | Print all commands without executing |
+
+The script auto-detects your cluster type (dedicated vs shared/NERC) and chooses the correct RBAC path. It also auto-increments the PipelineRun name (`run-001` → `run-002` → ...) so you never hit name collisions.
+
+**Teardown:**
+
+```bash
+bash tekton/cleanup.sh
+# With namespace deletion (self-provisioned clusters only):
+DELETE_NAMESPACES=true bash tekton/cleanup.sh
+```
+
+---
+
+**Manual setup — step by step:**
 
 1. Verify prerequisites
 2. Apply RBAC (service account + permissions)
@@ -11,7 +48,7 @@ Automates Kafka and event generator deployments on OpenShift. All config comes f
 5. Run the pipeline
 6. Verify deployment
 
-Day-2 operations (add a team, update event generator, health checks, cleanup) follow after the initial setup.
+Day-2 operations (add a team, redeploy NiFi, update event generator, health checks, cleanup) follow after the initial setup.
 
 ---
 
@@ -28,8 +65,9 @@ tekton/
 ├── tasks/
 │   ├── 01-task-deploy-kafka.yaml       deploy/redeploy Kafka for one team
 │   ├── 02-task-deploy-event-generator.yaml  deploy/update event generator
-│   ├── 03-task-verify-health.yaml      check pod status and logs
-│   └── 04-task-teardown-all.yaml       delete Kafka + event generator (used by reset pipeline)
+│   ├── 03-task-verify-health.yaml      check Kafka + NiFi + event generator status
+│   ├── 04-task-teardown-all.yaml       delete Kafka + NiFi + event generator (used by reset pipeline)
+│   └── 05-task-deploy-nifi.yaml        deploy/redeploy NiFi for one team
 │
 ├── pipelines/
 │   ├── 01-pipeline-deploy-all-teams.yaml   N teams in parallel + event generator
@@ -39,9 +77,12 @@ tekton/
     ├── run-all-teams.yaml              PipelineRun: initial classroom deploy
     ├── run-reset-all-teams.yaml        PipelineRun: teardown + full redeploy
     ├── taskrun-deploy-kafka.yaml       TaskRun: one team's Kafka
+    ├── taskrun-deploy-nifi.yaml        TaskRun: one team's NiFi
     ├── taskrun-deploy-event-gen.yaml   TaskRun: event generator
     └── taskrun-verify-health.yaml      TaskRun: health check (no workspace)
 ```
+
+Pipeline flow: `clone-repo` → Kafka per team (parallel) → NiFi per team (parallel, per-team chain) → `deploy-event-generator` → `verify-health` per team (parallel)
 
 ---
 
@@ -136,6 +177,7 @@ source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/task
 source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/02-task-deploy-event-generator.yaml | oc apply -f -
 source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/03-task-verify-health.yaml          | oc apply -f -
 source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/04-task-teardown-all.yaml           | oc apply -f -
+source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/05-task-deploy-nifi.yaml            | oc apply -f -
 
 source config.env && envsubst '${INFRA_NAMESPACE}' < tekton/pipelines/01-pipeline-deploy-all-teams.yaml | oc apply -f -
 source config.env && envsubst '${INFRA_NAMESPACE}' < tekton/pipelines/02-pipeline-reset-and-deploy.yaml | oc apply -f -
@@ -155,8 +197,10 @@ Set active teams and mark unused slots as `"skip"`:
 ```bash
 export TEAM1_NAME=team01
 export TEAM1_NAMESPACE=team-01
+export TEAM1_PASSWORD=SecurePass123   # NiFi login password for this team
 export TEAM2_NAME=team02
 export TEAM2_NAMESPACE=team-02
+export TEAM2_PASSWORD=SecurePass456
 export TEAM3_NAME=skip          # not deploying
 export TEAM3_NAMESPACE=skip
 
@@ -171,7 +215,7 @@ team02=kafka-team02.team-02.svc.cluster.local:9092"
 
 ### Initial Deploy — All Teams
 
-Deploys Kafka for every active team in parallel, then the event generator once with all bootstrap servers.
+Deploys Kafka and NiFi for every active team in parallel, then the event generator once with all bootstrap servers.
 
 ```bash
 # First run
@@ -188,7 +232,7 @@ tkn pipelinerun logs --last -f -n ${INFRA_NAMESPACE}
 oc get pipelinerun -n ${INFRA_NAMESPACE}
 ```
 
-Pipeline flow: `clone-repo` → Kafka per team (parallel) → `deploy-event-generator` → `verify-health` per team (parallel)
+Pipeline flow: `clone-repo` → Kafka per team (parallel) → NiFi per team (per-team chain) → `deploy-event-generator` → `verify-health` per team (parallel)
 
 ---
 
@@ -202,6 +246,12 @@ oc get pods,svc,pvc -n ${TEAM_NAMESPACE} -l component=kafka
 
 # Event generator pod
 oc get pods -n ${INFRA_NAMESPACE} -l app=${EVENT_GENERATOR_NAME}
+
+# NiFi pod and route for each team
+oc get pods,svc,pvc -n ${TEAM_NAMESPACE} -l component=nifi
+oc get route nifi-${TEAM1_NAME} -n ${TEAM1_NAMESPACE}
+# NiFi UI: https://nifi-${TEAM1_NAME}-${TEAM1_NAMESPACE}.${EXTERNAL_DOMAIN}/nifi
+# Username: ${TEAM1_NAME}   Password: set in TEAM1_PASSWORD
 
 # Check events are flowing (consume 5 messages)
 oc run kafka-consumer --rm -it \
@@ -243,7 +293,7 @@ Use the reset pipeline only when you need a true clean slate:
 - **Stale PVC data** — `oc apply` never deletes PVCs. If you want Kafka to start with a fresh disk (e.g. resetting a classroom between semesters), teardown explicitly deletes the PVCs.
 - **Immutable StatefulSet fields** — fields like `volumeClaimTemplates` and storage size cannot be patched in-place. `oc apply` will error; delete + recreate is the only fix.
 
-Tears down all Kafka and the event generator, then redeploys everything fresh.
+Tears down all Kafka, NiFi, and the event generator, then redeploys everything fresh.
 
 The teardown derives which namespaces to wipe from `TEAM1_NAMESPACE` through `TEAM15_NAMESPACE` — any set to `skip` are bypassed automatically. No separate list needed.
 
@@ -252,7 +302,7 @@ source config.env && envsubst < tekton/runs/run-reset-all-teams.yaml | oc create
 tkn pipelinerun logs --last -f -n ${INFRA_NAMESPACE}
 ```
 
-Pipeline flow: `teardown-all` → `clone-repo` → Kafka per team (parallel) → `deploy-event-generator` → `verify-health` per team (parallel)
+Pipeline flow: `teardown-all` → `clone-repo` → Kafka per team (parallel) → NiFi per team (per-team chain) → `deploy-event-generator` → `verify-health` per team (parallel)
 
 ---
 
@@ -268,7 +318,31 @@ envsubst '${TEAM_NAME} ${TEAM_NAMESPACE} ${INFRA_NAMESPACE} ${STORAGE_CLASS} ${T
 tkn taskrun logs --last -f -n ${INFRA_NAMESPACE}
 ```
 
-If adding a new team, run the event generator TaskRun next to add it to the bootstrap servers list.
+If adding a new team, run the NiFi TaskRun and then the event generator TaskRun next.
+
+---
+
+### Deploy / Redeploy One Team's NiFi
+
+Use when adding a new team's NiFi or recovering a crashed NiFi pod. Set `TEAM_PASSWORD` in `config.env` to this team's password before running.
+
+> **Note:** NiFi startup takes 3-5 minutes (keytool init + NiFi startup). `wait-for-nifi` uses a 600s timeout.
+
+```bash
+source config.env && \
+envsubst '${TEAM_NAME} ${TEAM_NAMESPACE} ${INFRA_NAMESPACE} ${NIFI_IMAGE} ${TEAM_PASSWORD} ${STORAGE_CLASS} ${EXTERNAL_DOMAIN} ${TEKTON_WORKSPACE_PVC}' \
+  < tekton/runs/taskrun-deploy-nifi.yaml | oc create -f -
+
+tkn taskrun logs --last -f -n ${INFRA_NAMESPACE}
+```
+
+Access NiFi UI after the TaskRun completes:
+```bash
+# URL printed in task output (hostname auto-generated by OpenShift):
+# https://nifi-${TEAM_NAME}-${TEAM_NAMESPACE}.${EXTERNAL_DOMAIN}/nifi
+# Username: ${TEAM_NAME}  Password: ${TEAM_PASSWORD}
+oc get route nifi-${TEAM_NAME} -n ${TEAM_NAMESPACE}
+```
 
 ---
 
@@ -354,6 +428,16 @@ oc delete statefulset,svc,pvc \
   -l "app=kafka-${TEAM_NAME}" \
   -n ${TEAM_NAMESPACE} --ignore-not-found
 
+# Remove NiFi resources
+oc delete statefulset,svc,pvc \
+  -l "app=nifi-${TEAM_NAME}" \
+  -n ${TEAM_NAMESPACE} --ignore-not-found
+oc delete route \
+  -l "app=nifi-${TEAM_NAME}" \
+  -n ${TEAM_NAMESPACE} --ignore-not-found
+oc delete networkpolicy allow-from-openshift-ingress \
+  -n ${TEAM_NAMESPACE} --ignore-not-found
+
 # Update event generator bootstrap servers and restart
 oc set env deployment/${EVENT_GENERATOR_NAME} \
   TEAM_BOOTSTRAP_SERVERS="${TEAM_BOOTSTRAP_SERVERS}" \
@@ -375,6 +459,21 @@ for i in $(seq 1 15); do
   [[ "$ns" == "skip" ]] && continue
   oc delete statefulset,svc,pvc \
     -l "app=kafka-${name}" \
+    -n "${ns}" --ignore-not-found
+done
+
+# Remove NiFi from every active team namespace
+for i in $(seq 1 15); do
+  ns_var="TEAM${i}_NAMESPACE"; name_var="TEAM${i}_NAME"
+  ns="${!ns_var:-skip}";       name="${!name_var:-skip}"
+  [[ "$ns" == "skip" ]] && continue
+  oc delete statefulset,svc,pvc \
+    -l "app=nifi-${name}" \
+    -n "${ns}" --ignore-not-found
+  oc delete route \
+    -l "app=nifi-${name}" \
+    -n "${ns}" --ignore-not-found
+  oc delete networkpolicy allow-from-openshift-ingress \
     -n "${ns}" --ignore-not-found
 done
 
@@ -421,9 +520,24 @@ for i in $(seq 1 15); do
     -n "${ns}" --ignore-not-found
 done
 
+# Step 3b — Delete NiFi from every active team namespace
+for i in $(seq 1 15); do
+  ns_var="TEAM${i}_NAMESPACE"; name_var="TEAM${i}_NAME"
+  ns="${!ns_var:-skip}";       name="${!name_var:-skip}"
+  [[ "$ns" == "skip" ]] && continue
+  oc delete statefulset,svc,pvc \
+    -l "app=nifi-${name}" \
+    -n "${ns}" --ignore-not-found
+  oc delete route \
+    -l "app=nifi-${name}" \
+    -n "${ns}" --ignore-not-found
+  oc delete networkpolicy allow-from-openshift-ingress \
+    -n "${ns}" --ignore-not-found
+done
+
 # Step 4 — Delete Tekton tasks and pipelines (by name, not --all)
 oc delete task \
-  deploy-kafka deploy-event-generator verify-health teardown-all \
+  deploy-kafka deploy-event-generator verify-health teardown-all deploy-nifi \
   -n ${INFRA_NAMESPACE} --ignore-not-found
 oc delete pipeline.tekton.dev \
   deploy-all-teams reset-and-deploy \
@@ -574,6 +688,13 @@ tkn taskrun delete --keep 5 -n ${INFRA_NAMESPACE}
 tkn task start deploy-kafka -n ${INFRA_NAMESPACE} \
   --param team-name=team01 \
   --param team-namespace=team-01 \
+  --workspace name=source,emptyDir="" \
+  --showlog
+
+tkn task start deploy-nifi -n ${INFRA_NAMESPACE} \
+  --param team-name=team01 \
+  --param team-namespace=team-01 \
+  --param team-password=SecurePass123 \
   --workspace name=source,emptyDir="" \
   --showlog
 ```
