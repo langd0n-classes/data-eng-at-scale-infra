@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-Event Generator
-Produces synthetic health events to Kafka for testing and demos.
+DS-551 Event Generator with Outbreak Scheduling
 
-Supports:
-- Multi-tenant (per-team) Kafka clusters via TEAM_BOOTSTRAP_SERVERS
-- Single shared Kafka cluster via KAFKA_BOOTSTRAP_SERVERS
-- Configurable topic naming and event streams
+Produces synthetic health events to per-team Kafka instances with scheduled outbreak windows.
+Outbreak state flips on Mon/Thu 9am UTC, lasting 36h active + 12h winddown.
+
+Architecture:
+  - Flask health thread (immediate)
+  - RefillThread (every 6h): checks outbreak schedule, generates batch
+  - EmitThread (continuous): drains pool to Kafka at variable pace
+
+Imports outbreak-aware distributions from generate_health_events_dataset.
 """
 
 import os
@@ -14,11 +18,12 @@ import json
 import time
 import random
 import logging
-from datetime import datetime, timedelta
-from threading import Thread
+import queue
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from threading import Thread, Lock
 from flask import Flask
 from kafka import KafkaProducer
-from faker import Faker
 
 # Configure logging
 logging.basicConfig(
@@ -27,34 +32,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-"""Environment configuration"""
+# Configuration from environment
 EVENT_RATE_PER_SEC = float(os.getenv('EVENT_RATE_PER_SEC', '10'))
-RATE_PER_TEAM = os.getenv('RATE_PER_TEAM', 'false').lower() == 'true'  # when true, rate applies per team
-
-# Topic naming
-TOPIC_PREFIX = os.getenv('TOPIC_PREFIX', 'events.team')
+TOPIC_PREFIX = os.getenv('TOPIC_PREFIX', 'ds551-s26.')
 TOPIC_SUFFIX = os.getenv('TOPIC_SUFFIX', '.raw')
-EXPLICIT_TOPIC = os.getenv('TOPIC')  # optional explicit topic name (used for single-cluster mode)
+REGIONS = os.getenv('REGIONS', 'Boston,Cambridge,Somerville,Brookline,Newton').split(',')
 
-# Streams: use consistent names
-DEFAULT_STREAMS = 'symptom_report,clinic_visit,environmental_conditions'
-EVENT_STREAMS = [s.strip() for s in os.getenv('EVENT_STREAMS', DEFAULT_STREAMS).split(',') if s.strip()]
+# Pool configuration
+EVENT_POOL_SIZE = int(os.getenv('EVENT_POOL_SIZE', '50000'))
+EVENT_POOL_REFILL_THRESHOLD = int(os.getenv('EVENT_POOL_REFILL_THRESHOLD', '40000'))
 
-# Regions
-REGIONS = [r.strip() for r in os.getenv('REGIONS', 'Boston,Cambridge,Somerville,Brookline,Newton').split(',') if r.strip()]
+# Bed pressure parameters
+BASE_BEDS = int(os.getenv('BASE_BEDS', '500'))
+BED_PRESSURE_FACTOR = float(os.getenv('BED_PRESSURE_FACTOR', '0.8'))
+SYMPTOM_BURDEN_DECAY = float(os.getenv('SYMPTOM_BURDEN_DECAY', '0.995'))
 
-# Optional deterministic seed
-RANDOM_SEED = os.getenv('RANDOM_SEED')
-if RANDOM_SEED is not None:
-    try:
-        seed_val = int(RANDOM_SEED)
-    except ValueError:
-        seed_val = sum(ord(c) for c in RANDOM_SEED)
-    random.seed(seed_val)
-
-
-"""Kafka bootstrap configuration"""
-# Multi-team mapping: teamId=bootstrap,teamId=bootstrap
+# Parse team bootstrap servers from environment
 TEAM_KAFKA_MAPPING = {}
 team_bootstrap_env = os.getenv('TEAM_BOOTSTRAP_SERVERS', '')
 if team_bootstrap_env:
@@ -63,27 +56,140 @@ if team_bootstrap_env:
             team_id, bootstrap = entry.split('=', 1)
             TEAM_KAFKA_MAPPING[team_id.strip()] = bootstrap.strip()
 
-# Single shared cluster
-SINGLE_BOOTSTRAP = os.getenv('KAFKA_BOOTSTRAP_SERVERS')
-
 logger.info(f"Loaded {len(TEAM_KAFKA_MAPPING)} team Kafka mappings")
-
-# Initialize Faker
-fake = Faker()
 
 # Health check Flask app
 app = Flask(__name__)
+
 @app.route('/health')
 def health():
     return {'status': 'healthy', 'timestamp': datetime.utcnow().isoformat()}
 
 @app.route('/ready')
 def ready():
-    return {'status': 'ready', 'teams': len(TEAM_KAFKA_MAPPING), 'rate': EVENT_RATE_PER_SEC, 'rate_per_team': RATE_PER_TEAM}
+    return {'status': 'ready', 'teams': len(TEAM_KAFKA_MAPPING), 'rate': EVENT_RATE_PER_SEC}
 
+
+# ============================================================================
+# Outbreak State & Event Distribution
+# ============================================================================
+
+@dataclass
+class OutbreakState:
+    """Shared outbreak state for all threads."""
+    active: bool = False
+    profile: str = "baseline"  # baseline | outbreak | winddown
+    intensity: float = 0.0
+    affected_regions: list = field(default_factory=list)
+    symptom_burden: float = 0.0  # rolling count of symptoms
+
+
+def outbreak_event_weights(intensity: float) -> dict:
+    """Outbreak event type weights (imports logic from generate_health_events_dataset)."""
+    emergency = 0.26 + 0.16 * intensity
+    admissions = 0.24 + 0.12 * intensity
+    routine = 0.07 - 0.03 * intensity
+    vaccination = 0.06 - 0.02 * intensity
+    health_mention = 0.18 - 0.04 * intensity
+    general = 1.0 - (emergency + admissions + routine + vaccination + health_mention)
+    return {
+        "hospital_admission": admissions,
+        "vaccination": max(0.01, vaccination),
+        "symptom_report": max(0.05, health_mention),
+        "emergency_incident": emergency,
+        "general_health_report": max(0.05, general),
+        "clinic_visit": max(0.01, routine),
+    }
+
+
+def winddown_event_weights(intensity: float) -> dict:
+    """Winddown event type weights."""
+    baseline = {
+        "hospital_admission": 0.07, "vaccination": 0.15, "symptom_report": 0.25,
+        "emergency_incident": 0.03, "general_health_report": 0.20, "clinic_visit": 0.30,
+    }
+    target = {
+        "hospital_admission": 0.14, "vaccination": 0.11, "symptom_report": 0.24,
+        "emergency_incident": 0.11, "general_health_report": 0.20, "clinic_visit": 0.20,
+    }
+    alpha = min(0.35 + 0.25 * intensity, 0.7)
+    alpha = max(0.3, alpha)
+    return {k: (1 - alpha) * baseline.get(k, 0.0) + alpha * target.get(k, 0.0) for k in baseline}
+
+
+def baseline_event_weights() -> dict:
+    """Baseline event type weights (no outbreak)."""
+    return {
+        "hospital_admission": 0.07, "vaccination": 0.15, "symptom_report": 0.25,
+        "emergency_incident": 0.03, "general_health_report": 0.20, "clinic_visit": 0.30,
+    }
+
+
+def normalize_weights(weights: dict) -> dict:
+    """Normalize weights to sum to 1.0."""
+    total = sum(weights.values())
+    return {k: v / total for k, v in weights.items()} if total > 0 else weights
+
+
+def outbreak_severity_weights(intensity: float) -> dict:
+    """Outbreak severity distribution."""
+    high = 0.48 + 0.12 * intensity
+    medium = 0.30
+    low = max(0.08, 1.0 - high - medium)
+    total = high + medium + low
+    return {"low": low / total, "medium": medium / total, "high": high / total}
+
+
+def winddown_severity_weights(intensity: float) -> dict:
+    """Winddown severity distribution."""
+    baseline = {"low": 0.60, "medium": 0.30, "high": 0.10}
+    target = {"low": 0.35, "medium": 0.35, "high": 0.30}
+    alpha = min(0.35 + 0.20 * intensity, 0.6)
+    alpha = max(0.3, alpha)
+    return {k: (1 - alpha) * baseline[k] + alpha * target[k] for k in baseline}
+
+
+def baseline_severity_weights() -> dict:
+    """Baseline severity distribution."""
+    return {"low": 0.60, "medium": 0.30, "high": 0.10}
+
+
+# ============================================================================
+# Outbreak Scheduling
+# ============================================================================
+
+def is_in_outbreak_window(now: datetime) -> tuple:
+    """
+    Check if current UTC time is in an outbreak window.
+    Returns (is_active, profile, intensity, duration_hours_remaining)
+
+    Mon 09:00-Tue 21:00 UTC = 36h active + 12h winddown
+    Thu 09:00-Fri 21:00 UTC = 36h active + 12h winddown
+    """
+    weekday = now.weekday()  # 0=Mon, 3=Thu
+    hour = now.hour
+
+    # Monday outbreak window: 09:00 Mon - 21:00 Tue (48h total)
+    if weekday == 0 and hour >= 9:  # Mon 09:00 onwards
+        return True, "outbreak", random.uniform(0.6, 0.9), 48 - (hour - 9)
+    elif weekday == 1 and hour < 21:  # Tue before 21:00
+        return True, "outbreak" if hour < 9 else "winddown", random.uniform(0.6, 0.9), 21 - hour
+
+    # Thursday outbreak window: 09:00 Thu - 21:00 Fri (48h total)
+    if weekday == 3 and hour >= 9:  # Thu 09:00 onwards
+        return True, "outbreak", random.uniform(0.6, 0.9), 48 - (hour - 9)
+    elif weekday == 4 and hour < 21:  # Fri before 21:00
+        return True, "outbreak" if hour < 9 else "winddown", random.uniform(0.6, 0.9), 21 - hour
+
+    return False, "baseline", 0.0, 0
+
+
+# ============================================================================
+# Event Generator
+# ============================================================================
 
 class EventGenerator:
-    """Generates synthetic health events"""
+    """Generates synthetic health events with outbreak scheduling."""
 
     SYMPTOMS = [
         'fever', 'cough', 'fatigue', 'headache', 'sore_throat',
@@ -96,19 +202,15 @@ class EventGenerator:
         'vaccination', 'diagnostic_test', 'consultation'
     ]
 
-    CONDITIONS = [
-        'temperature', 'humidity', 'air_quality_index',
-        'pollen_count', 'uv_index'
-    ]
-
     def __init__(self):
-        self.producers = {}  # Map of team_id (or 'shared') -> KafkaProducer
+        self.producers = {}  # Map of team_id -> KafkaProducer
         self.running = False
-        self.total_sent = 0
-        self.last_log_time = time.time()
+        self.event_pool = queue.Queue(maxsize=EVENT_POOL_SIZE)
+        self.state = OutbreakState()
+        self.state_lock = Lock()
 
-    def connect_kafka_for_team(self, team_id, bootstrap_server):
-        """Initialize Kafka producer for a specific team or shared cluster"""
+    def connect_kafka_for_team(self, team_id: str, bootstrap_server: str):
+        """Initialize Kafka producer for a specific team."""
         max_retries = 5
         retry_delay = 3
 
@@ -119,9 +221,7 @@ class EventGenerator:
                     value_serializer=lambda v: json.dumps(v).encode('utf-8'),
                     acks='all',
                     retries=3,
-                    max_in_flight_requests_per_connection=1,
-                    linger_ms=int(os.getenv('PRODUCER_LINGER_MS', '5')),
-                    batch_size=int(os.getenv('PRODUCER_BATCH_SIZE', '16384'))
+                    max_in_flight_requests_per_connection=1
                 )
                 logger.info(f"Connected to Kafka for {team_id}: {bootstrap_server}")
                 return producer
@@ -134,42 +234,34 @@ class EventGenerator:
                     return None
 
     def connect_all_kafka(self):
-        """Initialize Kafka producers for either multi-team or single-cluster mode"""
+        """Initialize Kafka producers for all teams."""
         success_count = 0
-
-        if TEAM_KAFKA_MAPPING:
-            for team_id, bootstrap_server in TEAM_KAFKA_MAPPING.items():
-                logger.info(f"Connecting to Kafka for team {team_id}...")
-                producer = self.connect_kafka_for_team(team_id, bootstrap_server)
-
-                if producer:
-                    self.producers[team_id] = producer
-                    success_count += 1
-                else:
-                    logger.warning(f"Skipping {team_id} - connection failed")
-
-            logger.info(f"Connected to {success_count}/{len(TEAM_KAFKA_MAPPING)} team Kafka instances")
-            if self.producers:
-                connected_teams = sorted(list(self.producers.keys()))
-                logger.info(f"Successfully connected teams: {', '.join(connected_teams)}")
-            return success_count > 0
-
-        elif SINGLE_BOOTSTRAP:
-            logger.info("Connecting to single shared Kafka cluster...")
-            producer = self.connect_kafka_for_team('shared', SINGLE_BOOTSTRAP)
+        for team_id, bootstrap_server in TEAM_KAFKA_MAPPING.items():
+            logger.info(f"Connecting to Kafka for team {team_id}...")
+            producer = self.connect_kafka_for_team(team_id, bootstrap_server)
             if producer:
-                self.producers['shared'] = producer
-                logger.info("Connected to shared Kafka cluster")
-                return True
-            logger.error("Failed to connect to shared Kafka cluster")
-            return False
+                self.producers[team_id] = producer
+                success_count += 1
+            else:
+                logger.warning(f"Skipping {team_id} - connection failed")
 
-        else:
-            logger.error("No Kafka configuration provided. Set TEAM_BOOTSTRAP_SERVERS or KAFKA_BOOTSTRAP_SERVERS.")
-            return False
+        logger.info(f"Connected to {success_count}/{len(TEAM_KAFKA_MAPPING)} team Kafka instances")
+        if self.producers:
+            connected_teams = sorted(list(self.producers.keys()))
+            logger.info(f"Successfully connected teams: {', '.join(connected_teams)}")
+        return success_count > 0
 
-    def generate_symptom_report(self):
-        """Generate a synthetic symptom report event"""
+    def generate_symptom_report(self) -> dict:
+        """Generate a synthetic symptom report event."""
+        with self.state_lock:
+            state = OutbreakState(
+                active=self.state.active, profile=self.state.profile,
+                intensity=self.state.intensity, affected_regions=self.state.affected_regions.copy(),
+                symptom_burden=self.state.symptom_burden
+            )
+
+        available_beds = max(0, int(BASE_BEDS - state.symptom_burden * BED_PRESSURE_FACTOR))
+
         return {
             'event_type': 'symptom_report',
             'timestamp': datetime.utcnow().isoformat(),
@@ -179,11 +271,15 @@ class EventGenerator:
             'symptoms': random.sample(self.SYMPTOMS, random.randint(1, 4)),
             'severity': random.choice(['mild', 'moderate', 'severe']),
             'duration_days': random.randint(1, 14),
-            'reported_via': random.choice(['mobile_app', 'web_portal', 'phone_hotline'])
+            'reported_via': random.choice(['mobile_app', 'web_portal', 'phone_hotline']),
+            'available_beds': available_beds,
         }
 
-    def generate_clinic_visit(self):
-        """Generate a synthetic clinic visit event"""
+    def generate_clinic_visit(self) -> dict:
+        """Generate a synthetic clinic visit event."""
+        with self.state_lock:
+            available_beds = max(0, int(BASE_BEDS - self.state.symptom_burden * BED_PRESSURE_FACTOR))
+
         return {
             'event_type': 'clinic_visit',
             'timestamp': datetime.utcnow().isoformat(),
@@ -196,137 +292,197 @@ class EventGenerator:
             'temperature_f': round(random.uniform(97.0, 104.0), 1),
             'diagnosis_code': f"ICD{random.randint(100, 999)}",
             'prescribed_medication': random.choice([True, False]),
-            'follow_up_required': random.choice([True, False])
+            'follow_up_required': random.choice([True, False]),
+            'available_beds': available_beds,
         }
 
-    def generate_environmental_condition(self):
-        """Generate a synthetic environmental conditions event"""
+    def generate_hospital_admission(self) -> dict:
+        """Generate a synthetic hospital admission event."""
+        with self.state_lock:
+            available_beds = max(0, int(BASE_BEDS - self.state.symptom_burden * BED_PRESSURE_FACTOR))
+
         return {
-            'event_type': 'environmental_conditions',
+            'event_type': 'hospital_admission',
             'timestamp': datetime.utcnow().isoformat(),
+            'admission_id': f"HA{random.randint(100000, 999999)}",
+            'patient_id': f"P{random.randint(10000, 99999)}",
+            'hospital_id': f"H{random.randint(1, 20)}",
             'region': random.choice(REGIONS),
-            'station_id': f"S{random.randint(1, 20)}",
-            'temperature_f': round(random.uniform(20.0, 95.0), 1),
-            'humidity_percent': random.randint(30, 95),
-            'air_quality_index': random.randint(0, 200),
-            'pollen_count': random.randint(0, 500),
-            'uv_index': random.randint(0, 11),
-            'wind_speed_mph': round(random.uniform(0, 25), 1)
+            'admission_reason': random.choice(self.SYMPTOMS),
+            'severity': random.choice(['mild', 'moderate', 'severe', 'critical']),
+            'temperature_f': round(random.uniform(98.0, 105.0), 1),
+            'oxygen_level': round(random.uniform(85.0, 100.0), 1),
+            'expected_los_days': random.randint(1, 21),
+            'available_beds': available_beds,
         }
 
-    def generate_event(self, stream_type):
-        """Generate an event based on stream type"""
-        if stream_type == 'symptom_report':
+    def generate_event(self) -> dict:
+        """Generate an event based on current outbreak state."""
+        with self.state_lock:
+            profile = self.state.profile
+            intensity = self.state.intensity
+
+        # Choose event type and severity distribution based on outbreak profile
+        if profile == "outbreak":
+            event_weights = normalize_weights(outbreak_event_weights(intensity))
+            sev_weights = normalize_weights(outbreak_severity_weights(intensity))
+        elif profile == "winddown":
+            event_weights = normalize_weights(winddown_event_weights(intensity))
+            sev_weights = normalize_weights(winddown_severity_weights(intensity))
+        else:  # baseline
+            event_weights = normalize_weights(baseline_event_weights())
+            sev_weights = normalize_weights(baseline_severity_weights())
+
+        # Weighted choice of event type
+        event_type = random.choices(
+            list(event_weights.keys()),
+            weights=list(event_weights.values()),
+            k=1
+        )[0]
+
+        if event_type == 'symptom_report':
             return self.generate_symptom_report()
-        elif stream_type == 'clinic_visit':
+        elif event_type == 'clinic_visit':
             return self.generate_clinic_visit()
-        elif stream_type == 'environmental_conditions':
-            return self.generate_environmental_condition()
+        elif event_type == 'hospital_admission':
+            return self.generate_hospital_admission()
         else:
-            logger.warning(f"Unknown stream type: {stream_type}")
-            return None
+            # environmental_conditions, vaccination, etc. (simplified)
+            return {
+                'event_type': event_type,
+                'timestamp': datetime.utcnow().isoformat(),
+                'region': random.choice(REGIONS),
+                'data': 'placeholder'
+            }
 
-    def _topic_for_team(self, team_id: str) -> str:
-        if EXPLICIT_TOPIC:
-            return EXPLICIT_TOPIC
-        if team_id == 'shared':
-            return f"{TOPIC_PREFIX}{TOPIC_SUFFIX}"
-        return f"{TOPIC_PREFIX}{team_id}{TOPIC_SUFFIX}"
+    def refill_thread_worker(self):
+        """Refill thread: checks outbreak schedule every 6h, generates batch."""
+        last_refill = datetime.utcnow() - timedelta(hours=6)  # trigger immediate refill on startup
 
-    def produce_events(self):
-        """Main event production loop - sends events to all configured producers"""
-        logger.info(f"Starting event production for {len(self.producers)} producer(s)")
-        if RATE_PER_TEAM or len(self.producers) <= 1:
-            rate_desc = f"{EVENT_RATE_PER_SEC} events/sec per team"
-        else:
-            per_team_rate = round(EVENT_RATE_PER_SEC / len(self.producers), 2)
-            rate_desc = f"{EVENT_RATE_PER_SEC} events/sec total ({per_team_rate}/sec per team)"
-        logger.info(f"Event rate: {rate_desc}")
-        logger.info(f"Event streams: {EVENT_STREAMS}")
+        while self.running:
+            now = datetime.utcnow()
 
-        # Calculate sleep interval per loop iteration
-        # RATE_PER_TEAM=true:  each team gets EVENT_RATE_PER_SEC events/sec
-        # RATE_PER_TEAM=false: EVENT_RATE_PER_SEC is the total budget shared across all teams
-        effective_rate = EVENT_RATE_PER_SEC
-        if not RATE_PER_TEAM and len(self.producers) > 1:
-            effective_rate = EVENT_RATE_PER_SEC / len(self.producers)
-        sleep_interval = 1.0 / max(effective_rate, 0.001)
+            # Check if it's time to refill (every 6 hours)
+            if (now - last_refill).total_seconds() < 21600:  # 6h in seconds
+                time.sleep(60)  # Check every minute
+                continue
+
+            last_refill = now
+
+            # Check outbreak window
+            is_active, profile, intensity, _ = is_in_outbreak_window(now)
+
+            with self.state_lock:
+                self.state.active = is_active
+                self.state.profile = profile
+                self.state.intensity = intensity
+                self.state.affected_regions = random.sample(REGIONS, random.randint(2, 4))
+
+            logger.info(f"[REFILL] Outbreak state updated: active={is_active}, profile={profile}, intensity={intensity:.2f}")
+
+            # Generate batch of events
+            batch_size = max(0, EVENT_POOL_REFILL_THRESHOLD - self.event_pool.qsize())
+            if batch_size > 0:
+                logger.info(f"[REFILL] Generating {batch_size} events...")
+                for _ in range(batch_size):
+                    event = self.generate_event()
+                    try:
+                        self.event_pool.put(event, block=False)
+                    except queue.Full:
+                        logger.warning("[REFILL] Event pool full, dropping event")
+                        break
+                logger.info(f"[REFILL] Pool now has {self.event_pool.qsize()}/{EVENT_POOL_SIZE} events")
+
+    def emit_thread_worker(self):
+        """Emit thread: drains pool to Kafka at variable pace based on outbreak profile."""
+        logger.info(f"Starting emission to {len(self.producers)} teams")
         event_count = 0
-        failed_sends = {}  # Track failures per team
+        failed_sends = {}
 
         while self.running:
             try:
-                # Generate one event
-                stream_type = random.choice(EVENT_STREAMS)
-                event = self.generate_event(stream_type)
+                # Get event from pool (wait max 5s)
+                try:
+                    event = self.event_pool.get(timeout=5)
+                except queue.Empty:
+                    # Pool empty; check if we should sleep
+                    with self.state_lock:
+                        profile = self.state.profile
+                    if self.event_pool.qsize() < 0.2 * EVENT_POOL_SIZE:
+                        logger.warning("[EMIT] Pool below 20%; RefillThread should catch up")
+                    time.sleep(1)
+                    continue
 
-                if event:
-                    # Common metadata
-                    event['source'] = 'event-generator'
-                    event['schema_version'] = '1.0'
+                # Determine pace based on profile
+                with self.state_lock:
+                    profile = self.state.profile
 
-                    # Send same event to all teams
-                    for team_id, producer in self.producers.items():
-                        topic = self._topic_for_team(team_id)
+                if profile == "outbreak":
+                    sleep_time = random.uniform(0.1, 0.5)
+                elif profile == "winddown":
+                    sleep_time = random.uniform(0.5, 1.5)
+                else:  # baseline
+                    sleep_time = random.uniform(1.0, 2.0)
 
+                # Send to all teams
+                for team_id, producer in self.producers.items():
+                    topic = f"{TOPIC_PREFIX}{team_id}{TOPIC_SUFFIX}"
+                    try:
+                        producer.send(topic, value=event)
+                        if team_id in failed_sends:
+                            del failed_sends[team_id]
+                    except Exception as e:
+                        failed_sends[team_id] = failed_sends.get(team_id, 0) + 1
+                        if failed_sends[team_id] % 10 == 1:
+                            logger.error(f"Error sending to {team_id}: {e}")
+
+                # Update symptom burden if applicable
+                event_type = event.get('event_type', '')
+                if event_type in ['symptom_report', 'hospital_admission']:
+                    with self.state_lock:
+                        self.state.symptom_burden += 1
+                else:
+                    # Exponential decay
+                    with self.state_lock:
+                        self.state.symptom_burden *= SYMPTOM_BURDEN_DECAY
+
+                event_count += 1
+
+                # Flush every 100 events
+                if event_count % 100 == 0:
+                    for producer in self.producers.values():
                         try:
-                            # Use a key for partitioning when patient_id or visit_id exists
-                            key_field = event.get('patient_id') or event.get('visit_id') or event.get('station_id')
-                            key_bytes = str(key_field).encode('utf-8') if key_field else None
-                            producer.send(topic, value=event, key=key_bytes)
-
-                            # Reset failure count on success
-                            if team_id in failed_sends:
-                                del failed_sends[team_id]
-
+                            producer.flush(timeout=5)
                         except Exception as e:
-                            failed_sends[team_id] = failed_sends.get(team_id, 0) + 1
+                            logger.error(f"Flush error: {e}")
+                    logger.info(f"[EMIT] Produced {event_count} events to {len(self.producers)} teams")
 
-                            # Log every 10th failure to avoid spam
-                            if failed_sends[team_id] % 10 == 1:
-                                logger.error(f"Error sending to {team_id} (failure #{failed_sends[team_id]}): {e}")
-
-                    event_count += 1
-
-                    # Flush producers every 100 events to ensure delivery
-                    if event_count % 100 == 0:
-                        for team_id, producer in self.producers.items():
-                            try:
-                                producer.flush(timeout=5)
-                            except Exception as e:
-                                logger.error(f"Error flushing producer for {team_id}: {e}")
-                                failed_sends[team_id] = failed_sends.get(team_id, 0) + 1
-
-                        # Log basic stats every 100 events
-                        logger.info(f"Produced {event_count} events to {len(self.producers)} destination(s)")
-
-                        # Log team names every 500 events for verification
-                        if event_count % 500 == 0:
-                            team_list = sorted(list(self.producers.keys()))
-                            logger.info(f"Active destinations: {', '.join(team_list)}")
-
-                        if failed_sends:
-                            logger.warning(f"Failed sends: {failed_sends}")
-
-                time.sleep(sleep_interval)
+                time.sleep(sleep_time)
 
             except Exception as e:
-                logger.error(f"Error in production loop: {e}")
+                logger.error(f"Error in emission loop: {e}")
                 time.sleep(1)
 
     def start(self):
-        """Start the event generator"""
+        """Start the event generator."""
         if not self.connect_all_kafka():
             logger.error("Cannot start generator without at least one Kafka connection")
             return False
 
         self.running = True
-        Thread(target=self.produce_events, daemon=True).start()
-        logger.info("Event generator started")
+
+        # Start RefillThread (generates events periodically)
+        Thread(target=self.refill_thread_worker, daemon=True).start()
+        logger.info("RefillThread started (generates batch every 6h, checks outbreak schedule)")
+
+        # Start EmitThread (drains pool to Kafka)
+        Thread(target=self.emit_thread_worker, daemon=True).start()
+        logger.info("EmitThread started (continuous emission at variable pace)")
+
         return True
 
     def stop(self):
-        """Stop the event generator"""
+        """Stop the event generator."""
         self.running = False
         for team_id, producer in self.producers.items():
             try:
@@ -338,10 +494,10 @@ class EventGenerator:
 
 
 def main():
-    """Main entry point"""
-    if not TEAM_KAFKA_MAPPING and not SINGLE_BOOTSTRAP:
-        logger.error("No Kafka configuration provided.")
-        logger.error("Set TEAM_BOOTSTRAP_SERVERS for multi-team or KAFKA_BOOTSTRAP_SERVERS for single-cluster mode.")
+    """Main entry point."""
+    if not TEAM_KAFKA_MAPPING:
+        logger.error("No team Kafka mappings found in TEAM_BOOTSTRAP_SERVERS environment variable")
+        logger.error("Expected format: team01=host1:9092,team02=host2:9092,...")
         return 1
 
     generator = EventGenerator()
