@@ -71,11 +71,6 @@ spec:
       type: string
       default: "10"
 
-    - name: rate-per-team
-      description: "When true, event-rate-per-sec applies per team not total"
-      type: string
-      default: "false"
-
     - name: topic-prefix
       description: "Prefix for auto-named topics (e.g., events.)"
       type: string
@@ -86,26 +81,10 @@ spec:
       type: string
       default: ".raw"
 
-    - name: event-streams
-      description: "Comma-separated event types to generate"
-      type: string
-      default: "symptom_report,clinic_visit,environmental_conditions"
-
     - name: regions
       description: "Comma-separated geographic regions for simulation"
       type: string
       default: "Boston,NYC,Chicago,Seattle,Austin"
-
-    - name: random-seed
-      description: |
-        Optional seed for Python's random number generator — makes generated events
-        reproducible across restarts. Accepts an integer string (e.g. "42") or any
-        string (hashed to int internally).
-        WARNING: empty string (the default) still seeds with 0 — output will be
-        deterministic. True non-determinism requires changing the ConfigMap template
-        to omit the RANDOM_SEED key when unset.
-      type: string
-      default: ""
 
   workspaces:
     - name: source
@@ -265,14 +244,11 @@ spec:
           -e "s|${DOLLAR}{EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
           -e "s|${DOLLAR}{TEAM_BOOTSTRAP_SERVERS}|$(params.team-bootstrap-servers)|g" \
           -e "s|\${EVENT_RATE_PER_SEC}|$(params.event-rate-per-sec)|g" \
-          -e "s|\${RATE_PER_TEAM}|$(params.rate-per-team)|g" \
           -e "s|\${TOPIC_PREFIX}|$(params.topic-prefix)|g" \
           -e "s|\${TOPIC_SUFFIX}|$(params.topic-suffix)|g" \
-          -e "s|\${EVENT_STREAMS}|$(params.event-streams)|g" \
           -e "s|\${REGIONS}|$(params.regions)|g" \
           -e "s|\${TOPIC}||g" \
           -e "s|\${KAFKA_BOOTSTRAP_SERVERS}||g" \
-          -e "s|\${RANDOM_SEED}|$(params.random-seed)|g" \
           "${SOURCE}/03-configmap.yaml" | oc apply -f -
 
         echo ""

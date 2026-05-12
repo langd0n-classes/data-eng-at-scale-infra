@@ -20,7 +20,7 @@
 #
 # Apply with:
 #   source config.env && \
-#   envsubst '${INFRA_NAMESPACE} ${EVENT_GENERATOR_NAME} ${GIT_REPO_URL} ${GIT_BRANCH} ${TEAM_BOOTSTRAP_SERVERS} ${EVENT_RATE_PER_SEC} ${RATE_PER_TEAM} ${TOPIC_PREFIX} ${TOPIC_SUFFIX} ${EVENT_STREAMS} ${REGIONS} ${RANDOM_SEED} ${TEKTON_WORKSPACE_PVC}' \
+#   envsubst '${INFRA_NAMESPACE} ${EVENT_GENERATOR_NAME} ${GIT_REPO_URL} ${GIT_BRANCH} ${TEAM_BOOTSTRAP_SERVERS} ${EVENT_RATE_PER_SEC} ${TOPIC_PREFIX} ${TOPIC_SUFFIX} ${REGIONS} ${TEKTON_WORKSPACE_PVC}' \
 #     < tekton/runs/taskrun-deploy-event-gen.yaml | oc create -f -
 #
 # Watch:
@@ -33,12 +33,9 @@
 #   ${GIT_BRANCH}               — branch to build from
 #   ${TEAM_BOOTSTRAP_SERVERS}   — full comma-separated team-to-Kafka mapping
 #   ${EVENT_RATE_PER_SEC}       — events per second
-#   ${RATE_PER_TEAM}            — true = rate per team, false = total rate
 #   ${TOPIC_PREFIX}             — topic name prefix (e.g. events.)
 #   ${TOPIC_SUFFIX}             — topic name suffix (e.g. .raw)
-#   ${EVENT_STREAMS}            — comma-separated event types to generate
 #   ${REGIONS}                  — comma-separated regions for simulation
-#   ${RANDOM_SEED}              — optional RNG seed (leave unset in config.env for true randomness)
 #   ${TEKTON_WORKSPACE_PVC}     — PVC name from a previous PipelineRun
 
 apiVersion: tekton.dev/v1
@@ -72,23 +69,14 @@ spec:
     - name: event-rate-per-sec
       value: "${EVENT_RATE_PER_SEC}"         # config.env: EVENT_RATE_PER_SEC
 
-    - name: rate-per-team
-      value: "${RATE_PER_TEAM}"              # config.env: RATE_PER_TEAM
-
     - name: topic-prefix
       value: "${TOPIC_PREFIX}"               # config.env: TOPIC_PREFIX
 
     - name: topic-suffix
       value: "${TOPIC_SUFFIX}"               # config.env: TOPIC_SUFFIX
 
-    - name: event-streams
-      value: "${EVENT_STREAMS}"              # config.env: EVENT_STREAMS
-
     - name: regions
       value: "${REGIONS}"                    # config.env: REGIONS
-
-    - name: random-seed
-      value: "${RANDOM_SEED}"               # config.env: RANDOM_SEED (optional, leave unset for true randomness)
 
   workspaces:
     - name: source

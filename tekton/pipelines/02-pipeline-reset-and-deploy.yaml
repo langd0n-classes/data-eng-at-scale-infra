@@ -215,15 +215,9 @@ spec:
     - name: topic-suffix
       type: string
       default: ".raw"
-    - name: event-streams
-      type: string
-      default: "symptom_report,clinic_visit,environmental_conditions"
     - name: regions
       type: string
       default: "Boston,NYC,Chicago,Seattle,Austin"
-    - name: random-seed
-      type: string
-      default: ""
 
   workspaces:
     - name: shared-data
@@ -1015,18 +1009,12 @@ spec:
           value: $(params.all-team-bootstrap-servers)
         - name: event-rate-per-sec
           value: $(params.event-rate-per-sec)
-        - name: rate-per-team
-          value: "false"
         - name: topic-prefix
           value: $(params.topic-prefix)
         - name: topic-suffix
           value: $(params.topic-suffix)
-        - name: event-streams
-          value: $(params.event-streams)
         - name: regions
           value: $(params.regions)
-        - name: random-seed
-          value: $(params.random-seed)
       workspaces:
         - name: source
           workspace: shared-data

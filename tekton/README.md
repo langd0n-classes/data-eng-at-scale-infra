@@ -354,7 +354,7 @@ The task applies the ConfigMap with your new values and runs `oc rollout restart
 
 ```bash
 source config.env && \
-envsubst '${INFRA_NAMESPACE} ${EVENT_GENERATOR_NAME} ${GIT_REPO_URL} ${GIT_BRANCH} ${TEAM_BOOTSTRAP_SERVERS} ${EVENT_RATE_PER_SEC} ${RATE_PER_TEAM} ${TOPIC_PREFIX} ${TOPIC_SUFFIX} ${EVENT_STREAMS} ${REGIONS} ${TEKTON_WORKSPACE_PVC}' \
+envsubst '${INFRA_NAMESPACE} ${EVENT_GENERATOR_NAME} ${GIT_REPO_URL} ${GIT_BRANCH} ${TEAM_BOOTSTRAP_SERVERS} ${EVENT_RATE_PER_SEC} ${TOPIC_PREFIX} ${TOPIC_SUFFIX} ${REGIONS} ${TEKTON_WORKSPACE_PVC}' \
   < tekton/runs/taskrun-deploy-event-gen.yaml | oc create -f -
 
 tkn taskrun logs --last -f -n ${INFRA_NAMESPACE}

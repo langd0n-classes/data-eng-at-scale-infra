@@ -27,7 +27,7 @@ Kafka: teamXX.raw (mixed events)
   ↓
 NiFi (team namespace): route by event_type
   ↓
-Kafka: typed topics (symptom_report, clinic_visit, environmental_conditions)
+Kafka: typed topics (symptom_report, clinic_visit, hospital_admission, ...)
   ↓
 Spark / DB (team namespace): analytics + storage
 ```
@@ -111,11 +111,14 @@ public-infra/
 │   ├── team-route-template.yaml
 │   ├── deploy-team.sh
 │   └── delete-team.sh
-├── event-generator/               # Synthetic event producer
+├── event-generator/               # Synthetic event producer (outbreak-scheduling)
+│   ├── src/
+│   │   ├── event_generator.py     # Main application
+│   │   ├── check_events.py        # Diagnostic script
+│   │   └── requirements.txt
+│   ├── k8s/                       # Kubernetes/OpenShift manifests
 │   ├── Dockerfile
-│   ├── event_generator.py
-│   ├── deployment.yaml
-│   └── configmap.yaml
+│   └── README.md
 ├── storage/                       # Optional storage services
 │   ├── minio.yaml
 │   └── postgres.yaml
