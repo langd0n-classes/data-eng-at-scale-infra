@@ -4,12 +4,47 @@ Synthetic data producer that generates realistic event streams and publishes the
 
 ## What It Does
 
-Produces three types of events continuously:
-- **Symptom Reports** - Patient-reported health symptoms
-- **Clinic Visits** - Clinical encounter records
-- **Environmental Conditions** - Environmental monitoring data
+Produces synthetic health events with outbreak-aware scheduling, published to per-team
+Kafka topics. Event type distribution shifts automatically during Mon/Thu outbreak windows.
 
-Events are published to Kafka topics for downstream processing and analysis.
+Event types:
+- **Symptom Reports** — patient symptoms, includes available bed count
+- **Clinic Visits** — clinical encounters, includes available bed count
+- **Hospital Admissions** — inpatient records with severity, O2 level, expected LOS
+- **Vaccination** — vaccination events (placeholder, real fields coming soon)
+- **Emergency Incidents** — emergency events (placeholder)
+- **General Health Reports** — general reports (placeholder)
+
+All events include: `source: "event-generator"` and `schema_version: "1.0"`
+
+---
+
+## Architecture
+
+Two threads handle generation and emission separately:
+
+**RefillThread** — wakes every 6 hours
+- Checks Mon 09:00–Tue 21:00 UTC and Thu 09:00–Fri 21:00 UTC outbreak windows
+- Sets state: `baseline` | `outbreak` | `winddown`
+- Fills the event pool (up to EVENT_POOL_REFILL_THRESHOLD events per batch)
+- Fires immediately on startup — no 6-hour wait for the first batch
+
+**EmitThread** — runs continuously
+- Drains pool to all team Kafka topics at once (every team gets the identical event)
+- Pace: outbreak = 0.1–0.5s/event, winddown = 0.5–1.5s, baseline = 1.0–2.0s
+
+**Bed Pressure Model**
+- `symptom_burden` increments with each symptom_report/hospital_admission
+- Decays exponentially each cycle (SYMPTOM_BURDEN_DECAY)
+- `available_beds = BASE_BEDS − (symptom_burden × BED_PRESSURE_FACTOR)`
+- Field injected into: symptom_report, clinic_visit, hospital_admission
+
+**Outbreak event distribution** (approximate, intensity = 0.75):
+| Phase | hospital_admission | emergency_incident | symptom_report | clinic_visit |
+|-------|-------------------|-------------------|----------------|--------------|
+| Baseline | 7% | 3% | 25% | 30% |
+| Outbreak | 33% | 38% | 5% | 1% |
+| Winddown | interpolated between outbreak and baseline |
 
 ---
 
@@ -124,10 +159,14 @@ kubectl logs -f deployment/${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE}
 
 **Expected log output:**
 ```
-INFO - Loaded 2 team Kafka mappings
-INFO - Connected to Kafka for team01
-INFO - Connected to Kafka for team02
-INFO - Produced 20 events to 2 teams (10.0 events/sec each)
+INFO - Connected to Kafka for team00-test: kafka-team00-test...svc.cluster.local:9092
+INFO - Connected to 1/1 team Kafka instances
+INFO - RefillThread started (generates batch every 6h, checks outbreak schedule)
+INFO - [REFILL] Outbreak state updated: active=False, profile=baseline, intensity=0.00
+INFO - [REFILL] Generating 40000 events...
+INFO - [REFILL] Pool now has 40000/50000 events
+INFO - EmitThread started (continuous emission at variable pace)
+INFO - [EMIT] Produced 100 events to 1 teams
 ```
 
 ---
@@ -176,9 +215,9 @@ kubectl exec -it kafka-${TEAM_NAME}-0 -n ${TEAM_NAMESPACE} -- kafka-console-cons
 
 You should see JSON events like:
 ```json
-{"event_type":"symptom_report","timestamp":"2024-01-15T10:30:00Z","patient_id":"P12345",...}
-{"event_type":"clinic_visit","timestamp":"2024-01-15T10:30:15Z","visit_id":"V98765",...}
-{"event_type":"environmental_conditions","timestamp":"2024-01-15T10:30:30Z","region":"Boston",...}
+{"event_type":"symptom_report","timestamp":"2024-01-15T10:30:00Z","patient_id":"P12345","source":"event-generator","schema_version":"1.0",...}
+{"event_type":"clinic_visit","timestamp":"2024-01-15T10:30:15Z","visit_id":"V98765","source":"event-generator","schema_version":"1.0",...}
+{"event_type":"hospital_admission","timestamp":"2024-01-15T10:30:30Z","admission_id":"HA234567","source":"event-generator","schema_version":"1.0",...}
 ```
 
 ---
@@ -261,7 +300,10 @@ kubectl get pods -A | grep kafka-team
   "symptoms": ["fever", "cough", "fatigue"],
   "severity": "moderate",
   "duration_days": 3,
-  "reported_via": "mobile_app"
+  "reported_via": "mobile_app",
+  "available_beds": 342,
+  "source": "event-generator",
+  "schema_version": "1.0"
 }
 ```
 
@@ -278,24 +320,38 @@ kubectl get pods -A | grep kafka-team
   "primary_complaint": "shortness_of_breath",
   "temperature_f": 101.2,
   "diagnosis_code": "ICD456",
-  "prescribed_medication": true
+  "prescribed_medication": true,
+  "follow_up_required": false,
+  "available_beds": 342,
+  "source": "event-generator",
+  "schema_version": "1.0"
 }
 ```
 
-### Environmental Conditions
+### Hospital Admission
 ```json
 {
-  "event_type": "environmental_conditions",
+  "event_type": "hospital_admission",
   "timestamp": "2024-01-15T10:30:00.000Z",
+  "admission_id": "HA234567",
+  "patient_id": "P12345",
+  "hospital_id": "H3",
   "region": "Boston",
-  "station_id": "S5",
-  "temperature_f": 68.5,
-  "humidity_percent": 65,
-  "air_quality_index": 45,
-  "pollen_count": 120,
-  "uv_index": 6
+  "admission_reason": "fever",
+  "severity": "severe",
+  "temperature_f": 103.2,
+  "oxygen_level": 91.5,
+  "expected_los_days": 4,
+  "available_beds": 342,
+  "source": "event-generator",
+  "schema_version": "1.0"
 }
 ```
+
+### Placeholder Event Types
+
+`vaccination`, `emergency_incident`, and `general_health_report` are generated with minimal fields
+(`event_type`, `timestamp`, `region`, `data: "placeholder"`). Full schemas will be added in a future update.
 
 ---
 
@@ -303,16 +359,20 @@ kubectl get pods -A | grep kafka-team
 
 All configuration is done via `config.env`. Key settings:
 
-| Variable | Description | Example |
+| Variable | Description | Default |
 |----------|-------------|---------|
 | `INFRA_NAMESPACE` | Namespace for event generator | `infra` |
-| `EVENT_RATE_PER_SEC` | Events per second (total or per team) | `10` |
-| `RATE_PER_TEAM` | If `true`, rate applies per team; if `false`, total rate | `false` |
-| `TEAM_BOOTSTRAP_SERVERS` | Multi-team Kafka mappings | `team01=kafka-team01.team-01.svc:9092,team02=...` |
+| `EVENT_RATE_PER_SEC` | Events per second (total across all teams) | `10` |
+| `TEAM_BOOTSTRAP_SERVERS` | Multi-team Kafka mappings | — |
+| `KAFKA_BOOTSTRAP_SERVERS` | Single-cluster Kafka bootstrap (Mode 2) | — |
 | `TOPIC_PREFIX` | Topic name prefix | `events.` |
 | `TOPIC_SUFFIX` | Topic name suffix | `.raw` |
-| `EVENT_STREAMS` | Event types to generate | `symptom_report,clinic_visit,environmental_conditions` |
-| `REGIONS` | Geographic regions for events | `Boston,NYC,Chicago` |
+| `REGIONS` | Geographic regions for events | `Boston,Cambridge,...` |
+| `EVENT_POOL_SIZE` | Max events in pool | `50000` |
+| `EVENT_POOL_REFILL_THRESHOLD` | Refill when pool drops below this | `40000` |
+| `BASE_BEDS` | Hospital bed capacity for pressure model | `500` |
+| `BED_PRESSURE_FACTOR` | Symptom burden effect on available beds | `0.8` |
+| `SYMPTOM_BURDEN_DECAY` | Exponential decay rate for symptom burden | `0.995` |
 
 **Topic naming pattern:**
 - Multi-team: `${TOPIC_PREFIX}${TEAM_ID}${TOPIC_SUFFIX}` → `events.team01.raw`
@@ -378,56 +438,32 @@ Refer to `kafka/shared-deployment/` for certificate generation and SSL setup.
 
 ### Adding New Event Types
 
-You can extend the event generator to produce custom event types.
+The new architecture selects event types via outbreak-aware weight functions. To add a new type:
 
-**Step 1: Edit the Python source**
-
-Add your event generator function in `src/event_generator.py`:
+**Step 1: Add a generator method to EventGenerator class:**
 
 ```python
-def generate_custom_event():
+def generate_custom_event(self) -> dict:
     return {
-        "event_type": "custom",
-        "timestamp": datetime.utcnow().isoformat(),
-        "custom_field": "value",
-        "data": random.choice(["option1", "option2", "option3"])
+        'event_type': 'custom_event',
+        'timestamp': datetime.utcnow().isoformat(),
+        'region': random.choice(REGIONS),
+        # add your fields here
     }
-
-# In the generate_event() function, add your new type:
-elif stream_type == 'custom':
-    return generate_custom_event()
 ```
 
-**Step 2: Update ConfigMap**
+**Step 2: Register it in `generate_event()`:**
 
-Edit `config.env` to include your new event type:
-
-```bash
-EVENT_STREAMS="symptom_report,clinic_visit,environmental_conditions,custom"
+```python
+elif event_type == 'custom_event':
+    return self.generate_custom_event()
 ```
 
-**Step 3: Rebuild and redeploy**
+**Step 3: Add it to the weight functions** (`baseline_event_weights`, `outbreak_event_weights`,
+`winddown_event_weights`) with appropriate weights. Make sure weights still sum to 1.0
+after normalization.
 
-```bash
-# Rebuild the image — OpenShift only
-oc start-build ${EVENT_GENERATOR_NAME} --follow -n ${INFRA_NAMESPACE}
-
-# Redeploy with updated config
-source config.env && \
-envsubst < event-generator/k8s/03-configmap.yaml | kubectl apply -f - && \
-kubectl rollout restart deployment/event-generator -n ${INFRA_NAMESPACE}
-```
-
-### Deterministic Event Generation
-
-For testing or demos requiring reproducible event sequences:
-
-Edit `config.env` and add:
-```bash
-RANDOM_SEED="12345"  # Any integer value
-```
-
-Then redeploy. Events will be generated in the same sequence every time.
+**Step 4: Rebuild and redeploy** (same as any code change).
 
 ---
 
@@ -464,21 +500,15 @@ resources:
     cpu: "500m"
 ```
 
-**4. Batch Production**
+**4. Tune the Event Pool**
 
-For very high throughput, modify Kafka producer settings in `src/event_generator.py`:
+The new architecture uses a pre-generated event pool. For high-throughput scenarios, increase:
 
-```python
-producer = KafkaProducer(
-    bootstrap_servers=bootstrap_servers,
-    value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-    linger_ms=10,           # Wait up to 10ms to batch messages
-    batch_size=16384,       # Batch size in bytes
-    compression_type='lz4'  # Enable compression
-)
+```bash
+# in config.env (all optional — defaults shown):
+# export EVENT_POOL_SIZE="50000"           # increase if pool drains faster than RefillThread fills it
+# export EVENT_POOL_REFILL_THRESHOLD="40000"  # lower to trigger refills more aggressively
 ```
-
-Then rebuild and redeploy.
 
 **5. Monitoring**
 
@@ -526,6 +556,23 @@ kubectl apply -f k8s/04-deployment.yaml -n ${INFRA_NAMESPACE}
 
 ---
 
+## Diagnostics
+
+`check_events.py` verifies all configured team topics are receiving events.
+Run it from your local machine — it pipes into the pod via stdin:
+
+```bash
+source config.env
+oc exec $(oc get pod -n ${INFRA_NAMESPACE} -l app=${EVENT_GENERATOR_NAME} \
+   -o jsonpath='{.items[0].metadata.name}') \
+   -n ${INFRA_NAMESPACE} -- python3 - < event-generator/src/check_events.py
+```
+
+Output shows per-team message counts, empty topics, and connection failures.
+TEAM_BOOTSTRAP_SERVERS is read from the pod's ConfigMap environment automatically.
+
+---
+
 ## Cleanup
 
 ```bash
@@ -543,14 +590,16 @@ kubectl delete deployment/${EVENT_GENERATOR_NAME} configmap/${EVENT_GENERATOR_NA
 ```
 event-generator/
 ├── src/                      # Python source code
-│   └── event_generator.py    # Main application
+│   ├── event_generator.py    # Main application (outbreak scheduler + Kafka producer)
+│   ├── check_events.py       # Diagnostic script (run via oc exec)
+│   └── requirements.txt      # Python dependencies
 ├── k8s/                      # Kubernetes manifests
 │   ├── 01-imagestream.yaml   # Image tracking (OpenShift)
 │   ├── 02-buildconfig.yaml   # Build configuration (OpenShift)
-│   ├── 03-configmap.yaml     # Application configuration
-│   └── 04-deployment.yaml    # Deployment spec
-├── Dockerfile                # Container image build
-└── README.md                 # This file
+│   ├── 03-configmap.yaml     # Runtime configuration template
+│   └── 04-deployment.yaml    # Deployment + Service
+├── Dockerfile                # Container image definition
+└── README.md
 ```
 
 ---

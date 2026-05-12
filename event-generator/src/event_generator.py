@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration from environment
 EVENT_RATE_PER_SEC = float(os.getenv('EVENT_RATE_PER_SEC', '10'))
-TOPIC_PREFIX = os.getenv('TOPIC_PREFIX', 'ds551-s26.')
+TOPIC_PREFIX = os.getenv('TOPIC_PREFIX', 'events.')
 TOPIC_SUFFIX = os.getenv('TOPIC_SUFFIX', '.raw')
 REGIONS = os.getenv('REGIONS', 'Boston,Cambridge,Somerville,Brookline,Newton').split(',')
 
@@ -55,6 +55,10 @@ if team_bootstrap_env:
         if '=' in entry:
             team_id, bootstrap = entry.split('=', 1)
             TEAM_KAFKA_MAPPING[team_id.strip()] = bootstrap.strip()
+
+# Single shared cluster (Mode 2 — used when TEAM_BOOTSTRAP_SERVERS is not set)
+SINGLE_BOOTSTRAP = os.getenv('KAFKA_BOOTSTRAP_SERVERS')
+EXPLICIT_TOPIC = os.getenv('TOPIC')
 
 logger.info(f"Loaded {len(TEAM_KAFKA_MAPPING)} team Kafka mappings")
 
@@ -235,21 +239,34 @@ class EventGenerator:
 
     def connect_all_kafka(self):
         """Initialize Kafka producers for all teams."""
-        success_count = 0
-        for team_id, bootstrap_server in TEAM_KAFKA_MAPPING.items():
-            logger.info(f"Connecting to Kafka for team {team_id}...")
-            producer = self.connect_kafka_for_team(team_id, bootstrap_server)
-            if producer:
-                self.producers[team_id] = producer
-                success_count += 1
-            else:
-                logger.warning(f"Skipping {team_id} - connection failed")
+        if TEAM_KAFKA_MAPPING:
+            success_count = 0
+            for team_id, bootstrap_server in TEAM_KAFKA_MAPPING.items():
+                logger.info(f"Connecting to Kafka for team {team_id}...")
+                producer = self.connect_kafka_for_team(team_id, bootstrap_server)
+                if producer:
+                    self.producers[team_id] = producer
+                    success_count += 1
+                else:
+                    logger.warning(f"Skipping {team_id} - connection failed")
 
-        logger.info(f"Connected to {success_count}/{len(TEAM_KAFKA_MAPPING)} team Kafka instances")
-        if self.producers:
-            connected_teams = sorted(list(self.producers.keys()))
-            logger.info(f"Successfully connected teams: {', '.join(connected_teams)}")
-        return success_count > 0
+            logger.info(f"Connected to {success_count}/{len(TEAM_KAFKA_MAPPING)} team Kafka instances")
+            if self.producers:
+                connected_teams = sorted(list(self.producers.keys()))
+                logger.info(f"Successfully connected teams: {', '.join(connected_teams)}")
+            return success_count > 0
+        elif SINGLE_BOOTSTRAP:
+            logger.info("Connecting to single shared Kafka cluster...")
+            producer = self.connect_kafka_for_team('shared', SINGLE_BOOTSTRAP)
+            if producer:
+                self.producers['shared'] = producer
+                logger.info("Connected to shared Kafka cluster")
+                return True
+            logger.error("Failed to connect to shared Kafka cluster")
+            return False
+        else:
+            logger.error("No Kafka configuration provided.")
+            return False
 
     def generate_symptom_report(self) -> dict:
         """Generate a synthetic symptom report event."""
@@ -424,9 +441,15 @@ class EventGenerator:
                 else:  # baseline
                     sleep_time = random.uniform(1.0, 2.0)
 
+                event['source'] = 'event-generator'
+                event['schema_version'] = '1.0'
+
                 # Send to all teams
                 for team_id, producer in self.producers.items():
-                    topic = f"{TOPIC_PREFIX}{team_id}{TOPIC_SUFFIX}"
+                    if team_id == 'shared':
+                        topic = EXPLICIT_TOPIC if EXPLICIT_TOPIC else f"{TOPIC_PREFIX}{TOPIC_SUFFIX}"
+                    else:
+                        topic = f"{TOPIC_PREFIX}{team_id}{TOPIC_SUFFIX}"
                     try:
                         producer.send(topic, value=event)
                         if team_id in failed_sends:
@@ -495,9 +518,9 @@ class EventGenerator:
 
 def main():
     """Main entry point."""
-    if not TEAM_KAFKA_MAPPING:
-        logger.error("No team Kafka mappings found in TEAM_BOOTSTRAP_SERVERS environment variable")
-        logger.error("Expected format: team01=host1:9092,team02=host2:9092,...")
+    if not TEAM_KAFKA_MAPPING and not SINGLE_BOOTSTRAP:
+        logger.error("No Kafka configuration provided.")
+        logger.error("Set TEAM_BOOTSTRAP_SERVERS (multi-team) or KAFKA_BOOTSTRAP_SERVERS (single-cluster).")
         return 1
 
     generator = EventGenerator()

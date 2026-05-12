@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
 Check that the event generator is producing to all team Kafka topics.
-Runs inside the event generator pod via:
-  oc exec <pod> -n ds551-2026-spring-9ab13b -- python3 /dev/stdin < check_events.py
+Run inside the event generator pod via:
+  oc exec <pod> -n <infra-namespace> -- python3 /dev/stdin < check_events.py
 
 Or pipe directly:
-  oc exec $(oc get pod -n ds551-2026-spring-9ab13b -l app=ds551-event-generator -o jsonpath='{.items[0].metadata.name}') \
-     -n ds551-2026-spring-9ab13b -- python3 - < check_events.py
+  oc exec $(oc get pod -n <INFRA_NAMESPACE> -l app=<EVENT_GENERATOR_NAME> \
+     -o jsonpath='{.items[0].metadata.name}') \
+     -n <INFRA_NAMESPACE> -- python3 - < check_events.py
+
+TEAM_BOOTSTRAP_SERVERS must be set in the pod environment (comes from ConfigMap).
 """
 
 import os
@@ -14,8 +17,8 @@ import json
 from kafka import KafkaConsumer, KafkaProducer
 from datetime import datetime
 
-TOPIC_PREFIX = "ds551-s26."
-TOPIC_SUFFIX = ".raw"
+TOPIC_PREFIX = os.getenv('TOPIC_PREFIX', 'events.')
+TOPIC_SUFFIX = os.getenv('TOPIC_SUFFIX', '.raw')
 TIMEOUT_MS = 5000
 
 TEAM_BOOTSTRAP_SERVERS = os.getenv("TEAM_BOOTSTRAP_SERVERS", "")

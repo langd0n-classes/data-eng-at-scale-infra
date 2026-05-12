@@ -33,9 +33,7 @@
 #   ${EVENT_RATE_PER_SEC}        — events per second
 #   ${TOPIC_PREFIX}              — Kafka topic name prefix
 #   ${TOPIC_SUFFIX}              — Kafka topic name suffix
-#   ${EVENT_STREAMS}             — comma-separated event types
 #   ${REGIONS}                   — comma-separated regions
-#   ${RANDOM_SEED}               — optional RNG seed (leave unset in config.env for true randomness)
 #
 # HOW TO WATCH:
 #   tkn pipelinerun logs deploy-all-teams-run-001 -f -n ${INFRA_NAMESPACE}
@@ -205,14 +203,8 @@ spec:
     - name: topic-suffix
       value: "${TOPIC_SUFFIX}"
 
-    - name: event-streams
-      value: "${EVENT_STREAMS}"
-
     - name: regions
       value: "${REGIONS}"
-
-    - name: random-seed
-      value: "${RANDOM_SEED}"
 
   workspaces:
     - name: shared-data

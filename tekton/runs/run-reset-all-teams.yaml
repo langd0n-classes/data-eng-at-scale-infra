@@ -193,9 +193,6 @@ spec:
     - name: topic-suffix
       value: "${TOPIC_SUFFIX}"
 
-    - name: event-streams
-      value: "${EVENT_STREAMS}"
-
     - name: regions
       value: "${REGIONS}"
 
