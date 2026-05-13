@@ -364,7 +364,7 @@ class EventGenerator:
         elif event_type == 'hospital_admission':
             return self.generate_hospital_admission()
         else:
-            # environmental_conditions, vaccination, etc. (simplified)
+            # vaccination, emergency_incident, general_health_report (placeholder events)
             return {
                 'event_type': event_type,
                 'timestamp': datetime.utcnow().isoformat(),
