@@ -4,6 +4,11 @@ Automates Kafka, NiFi, and event generator deployments on OpenShift. All config 
 
 ## Quick Start
 
+**Before running any command:** load your config so `${INFRA_NAMESPACE}` and all other variables are set in your shell:
+```bash
+source config.env
+```
+
 ```bash
 # 1. Copy and fill in config.env (if you haven't already)
 cp config.env.example config.env
@@ -13,7 +18,7 @@ cp config.env.example config.env
 bash tekton/setup.sh
 
 # 3. Watch the pipeline
-tkn pipelinerun logs --last -f -n <your-infra-namespace>
+tkn pipelinerun logs --last -f -n ${INFRA_NAMESPACE}
 ```
 
 **Flags:**
