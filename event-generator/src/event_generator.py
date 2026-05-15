@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from threading import Thread, Lock
 from flask import Flask
+from waitress import serve
 from kafka import KafkaProducer
 
 # Configure logging
@@ -279,14 +280,33 @@ class EventGenerator:
 
         available_beds = max(0, int(BASE_BEDS - state.symptom_burden * BED_PRESSURE_FACTOR))
 
+        # Realistic age distribution: mostly adults, some elderly, few children
+        age_group = random.choices(['child', 'adult', 'elderly'], weights=[10, 70, 20])[0]
+        if age_group == 'child':
+            _age = random.randint(5, 17)
+        elif age_group == 'adult':
+            _age = random.randint(18, 64)
+        else:
+            _age = random.randint(65, 85)
+
+        # Severity shifts with outbreak state
+        with self.state_lock:
+            _profile = self.state.profile
+        if _profile == 'outbreak':
+            _severity = random.choices(['mild', 'moderate', 'severe'], weights=[20, 40, 40])[0]
+        elif _profile == 'winddown':
+            _severity = random.choices(['mild', 'moderate', 'severe'], weights=[40, 35, 25])[0]
+        else:  # baseline
+            _severity = random.choices(['mild', 'moderate', 'severe'], weights=[60, 30, 10])[0]
+
         return {
             'event_type': 'symptom_report',
             'timestamp': datetime.utcnow().isoformat(),
             'patient_id': f"P{random.randint(10000, 99999)}",
-            'age': random.randint(1, 90),
+            'age': _age,
             'region': random.choice(REGIONS),
             'symptoms': random.sample(self.SYMPTOMS, random.randint(1, 4)),
-            'severity': random.choice(['mild', 'moderate', 'severe']),
+            'severity': _severity,
             'duration_days': random.randint(1, 14),
             'reported_via': random.choice(['mobile_app', 'web_portal', 'phone_hotline']),
             'available_beds': available_beds,
@@ -306,10 +326,10 @@ class EventGenerator:
             'region': random.choice(REGIONS),
             'visit_type': random.choice(self.VISIT_TYPES),
             'primary_complaint': random.choice(self.SYMPTOMS),
-            'temperature_f': round(random.uniform(97.0, 104.0), 1),
+            'temperature_f': round(random.triangular(97.5, 103.5, 98.9), 1),
             'diagnosis_code': f"ICD{random.randint(100, 999)}",
-            'prescribed_medication': random.choice([True, False]),
-            'follow_up_required': random.choice([True, False]),
+            'prescribed_medication': random.random() < 0.35,
+            'follow_up_required': random.random() < 0.25,
             'available_beds': available_beds,
         }
 
@@ -317,6 +337,12 @@ class EventGenerator:
         """Generate a synthetic hospital admission event."""
         with self.state_lock:
             available_beds = max(0, int(BASE_BEDS - self.state.symptom_burden * BED_PRESSURE_FACTOR))
+
+        # Realistic oxygen level: 80% moderate/normal, 20% severe
+        if random.random() < 0.20:
+            _o2 = round(random.uniform(85.0, 91.9), 1)
+        else:
+            _o2 = round(random.uniform(92.0, 99.5), 1)
 
         return {
             'event_type': 'hospital_admission',
@@ -327,9 +353,9 @@ class EventGenerator:
             'region': random.choice(REGIONS),
             'admission_reason': random.choice(self.SYMPTOMS),
             'severity': random.choice(['mild', 'moderate', 'severe', 'critical']),
-            'temperature_f': round(random.uniform(98.0, 105.0), 1),
-            'oxygen_level': round(random.uniform(85.0, 100.0), 1),
-            'expected_los_days': random.randint(1, 21),
+            'temperature_f': round(random.triangular(98.5, 105.0, 101.2), 1),
+            'oxygen_level': _o2,
+            'expected_los_days': min(21, max(1, round(random.expovariate(0.35)))),
             'available_beds': available_beds,
         }
 
@@ -478,7 +504,8 @@ class EventGenerator:
                             producer.flush(timeout=5)
                         except Exception as e:
                             logger.error(f"Flush error: {e}")
-                    logger.info(f"[EMIT] Produced {event_count} events to {len(self.producers)} teams")
+                    team_names = ', '.join(sorted(self.producers.keys()))
+                    logger.info(f"[EMIT] Produced {event_count} events → teams: [{team_names}]")
 
                 time.sleep(sleep_time)
 
@@ -531,7 +558,7 @@ def main():
 
     # Start health check server
     logger.info("Starting health check server on port 8000")
-    app.run(host='0.0.0.0', port=8000)
+    serve(app, host='0.0.0.0', port=8000)
 
 
 if __name__ == '__main__':
