@@ -91,7 +91,7 @@ class OutbreakState:
 
 
 def outbreak_event_weights(intensity: float) -> dict:
-    """Outbreak event type weights (imports logic from generate_health_events_dataset)."""
+    """Outbreak event type weights — skews toward emergency and hospital events at high intensity."""
     emergency = 0.26 + 0.16 * intensity
     admissions = 0.24 + 0.12 * intensity
     routine = 0.07 - 0.03 * intensity
@@ -605,9 +605,7 @@ class EventGenerator:
                 try:
                     event = self.event_pool.get(timeout=5)
                 except queue.Empty:
-                    # Pool empty; check if we should sleep
-                    with self.state_lock:
-                        profile = self.state.profile
+                    # Pool empty — warn if critically low and wait for RefillThread
                     if self.event_pool.qsize() < 0.2 * EVENT_POOL_SIZE:
                         logger.warning("[EMIT] Pool below 20%; RefillThread should catch up")
                     time.sleep(1)
