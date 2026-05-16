@@ -21,7 +21,7 @@ import logging
 import queue
 import signal
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from threading import Thread, Lock
 from flask import Flask
 from waitress import serve
@@ -136,28 +136,6 @@ def normalize_weights(weights: dict) -> dict:
     total = sum(weights.values())
     return {k: v / total for k, v in weights.items()} if total > 0 else weights
 
-
-def outbreak_severity_weights(intensity: float) -> dict:
-    """Outbreak severity distribution."""
-    high = 0.48 + 0.12 * intensity
-    medium = 0.30
-    low = max(0.08, 1.0 - high - medium)
-    total = high + medium + low
-    return {"low": low / total, "medium": medium / total, "high": high / total}
-
-
-def winddown_severity_weights(intensity: float) -> dict:
-    """Winddown severity distribution."""
-    baseline = {"low": 0.60, "medium": 0.30, "high": 0.10}
-    target = {"low": 0.35, "medium": 0.35, "high": 0.30}
-    alpha = min(0.35 + 0.20 * intensity, 0.6)
-    alpha = max(0.3, alpha)
-    return {k: (1 - alpha) * baseline[k] + alpha * target[k] for k in baseline}
-
-
-def baseline_severity_weights() -> dict:
-    """Baseline severity distribution."""
-    return {"low": 0.60, "medium": 0.30, "high": 0.10}
 
 
 # ============================================================================
