@@ -294,9 +294,10 @@ class EventGenerator:
         else:
             _age = random.randint(65, 85)
 
-        # Severity shifts with outbreak state
+        # Severity shifts with outbreak state; also grab affected_regions for region skew
         with self.state_lock:
             _profile = self.state.profile
+            _affected = list(self.state.affected_regions)
         if _profile == 'outbreak':
             _severity = random.choices(['mild', 'moderate', 'severe'], weights=[20, 40, 40])[0]
         elif _profile == 'winddown':
@@ -304,12 +305,18 @@ class EventGenerator:
         else:  # baseline
             _severity = random.choices(['mild', 'moderate', 'severe'], weights=[60, 30, 10])[0]
 
+        # During outbreak windows, skew region toward affected areas (75%); baseline stays uniform
+        if _affected:
+            _region = random.choice(_affected) if random.random() < 0.75 else random.choice(REGIONS)
+        else:
+            _region = random.choice(REGIONS)
+
         return {
             'event_type': 'symptom_report',
             'timestamp': datetime.utcnow().isoformat(),
             'patient_id': f"P{random.randint(10000, 99999)}",
             'age': _age,
-            'region': random.choice(REGIONS),
+            'region': _region,
             'symptoms': random.sample(self.SYMPTOMS, random.randint(1, 4)),
             'severity': _severity,
             'duration_days': random.randint(1, 14),
@@ -321,6 +328,7 @@ class EventGenerator:
         """Generate a synthetic clinic visit event."""
         with self.state_lock:
             available_beds = max(0, int(BASE_BEDS - self.state.symptom_burden * BED_PRESSURE_FACTOR))
+            _affected = list(self.state.affected_regions)
 
         age_group = random.choices(['child', 'adult', 'elderly'], weights=[10, 70, 20])[0]
         if age_group == 'child':
@@ -330,6 +338,11 @@ class EventGenerator:
         else:
             _age = random.randint(65, 85)
 
+        if _affected:
+            _region = random.choice(_affected) if random.random() < 0.75 else random.choice(REGIONS)
+        else:
+            _region = random.choice(REGIONS)
+
         return {
             'event_type': 'clinic_visit',
             'timestamp': datetime.utcnow().isoformat(),
@@ -337,7 +350,7 @@ class EventGenerator:
             'patient_id': f"P{random.randint(10000, 99999)}",
             'age': _age,
             'clinic_id': f"C{random.randint(1, 50)}",
-            'region': random.choice(REGIONS),
+            'region': _region,
             'visit_type': random.choice(self.VISIT_TYPES),
             'primary_complaint': random.choice(self.SYMPTOMS),
             'temperature_f': round(random.triangular(97.5, 103.5, 98.9), 1),
@@ -351,6 +364,7 @@ class EventGenerator:
         """Generate a synthetic hospital admission event."""
         with self.state_lock:
             _profile = self.state.profile
+            _affected = list(self.state.affected_regions)
             available_beds = max(0, int(BASE_BEDS - self.state.symptom_burden * BED_PRESSURE_FACTOR))
 
         # Severity is outbreak-aware: more critical/severe cases during outbreak peaks
@@ -360,6 +374,11 @@ class EventGenerator:
             _severity = random.choices(['mild', 'moderate', 'severe', 'critical'], weights=[20, 30, 30, 20])[0]
         else:
             _severity = random.choices(['mild', 'moderate', 'severe', 'critical'], weights=[40, 35, 18, 7])[0]
+
+        if _affected:
+            _region = random.choice(_affected) if random.random() < 0.75 else random.choice(REGIONS)
+        else:
+            _region = random.choice(REGIONS)
 
         # Realistic oxygen level: 80% normal, 20% concerning
         if random.random() < 0.20:
@@ -373,7 +392,7 @@ class EventGenerator:
             'admission_id': f"HA{random.randint(100000, 999999)}",
             'patient_id': f"P{random.randint(10000, 99999)}",
             'hospital_id': f"H{random.randint(1, 20)}",
-            'region': random.choice(REGIONS),
+            'region': _region,
             'admission_reason': random.choice(self.SYMPTOMS),
             'severity': _severity,
             'temperature_f': round(random.triangular(98.5, 105.0, 101.2), 1),
@@ -415,6 +434,7 @@ class EventGenerator:
         """Generate a synthetic emergency incident event."""
         with self.state_lock:
             _profile = self.state.profile
+            _affected = list(self.state.affected_regions)
 
         age_group = random.choices(['child', 'adult', 'elderly'], weights=[10, 55, 35])[0]
         if age_group == 'child':
@@ -450,13 +470,18 @@ class EventGenerator:
         else:
             _outcome = random.choices(['stable', 'admitted', 'critical', 'discharged'], weights=[35, 25, 2, 38])[0]
 
+        if _affected:
+            _region = random.choice(_affected) if random.random() < 0.75 else random.choice(REGIONS)
+        else:
+            _region = random.choice(REGIONS)
+
         return {
             'event_type': 'emergency_incident',
             'timestamp': datetime.utcnow().isoformat(),
             'incident_id': f"EI{random.randint(100000, 999999)}",
             'patient_id': f"P{random.randint(10000, 99999)}",
             'age': _age,
-            'region': random.choice(REGIONS),
+            'region': _region,
             'incident_type': incident_type,
             'severity': severity,
             'response_time_minutes': response_time,
