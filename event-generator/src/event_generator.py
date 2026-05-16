@@ -207,6 +207,11 @@ class EventGenerator:
         'vaccination', 'diagnostic_test', 'consultation'
     ]
 
+    VACCINE_TYPES = ['influenza', 'covid_booster', 'hepatitis_a', 'pneumococcal', 'tdap', 'mmr']
+    INCIDENT_TYPES = ['respiratory_distress', 'cardiac_event', 'trauma', 'allergic_reaction',
+                      'seizure', 'fall', 'overdose']
+    ADMINISTERED_AT = ['clinic', 'pharmacy', 'hospital', 'mobile_unit']
+
     def __init__(self):
         self.producers = {}  # Map of team_id -> KafkaProducer
         self.running = False
@@ -359,6 +364,134 @@ class EventGenerator:
             'available_beds': available_beds,
         }
 
+    def generate_vaccination(self) -> dict:
+        """Generate a synthetic vaccination event."""
+        age_group = random.choices(['child', 'adult', 'elderly'], weights=[20, 55, 25])[0]
+        if age_group == 'child':
+            _age = random.randint(1, 17)
+        elif age_group == 'adult':
+            _age = random.randint(18, 64)
+        else:
+            _age = random.randint(65, 85)
+
+        dose_number = random.choices([1, 2, 3], weights=[60, 30, 10])[0]
+        adverse = random.random() < 0.05
+
+        return {
+            'event_type': 'vaccination',
+            'timestamp': datetime.utcnow().isoformat(),
+            'vaccination_id': f"VAC{random.randint(100000, 999999)}",
+            'patient_id': f"P{random.randint(10000, 99999)}",
+            'age': _age,
+            'region': random.choice(REGIONS),
+            'vaccine_type': random.choice(self.VACCINE_TYPES),
+            'dose_number': dose_number,
+            'administered_at': random.choice(self.ADMINISTERED_AT),
+            'healthcare_provider_id': f"HP{random.randint(100, 999)}",
+            'lot_number': f"LOT{random.randint(1000, 9999)}",
+            'adverse_reaction': adverse,
+            'adverse_reaction_type': random.choice(['mild_soreness', 'fever', 'fatigue', 'allergic_reaction']) if adverse else None,
+        }
+
+    def generate_emergency_incident(self) -> dict:
+        """Generate a synthetic emergency incident event."""
+        with self.state_lock:
+            _profile = self.state.profile
+
+        age_group = random.choices(['child', 'adult', 'elderly'], weights=[10, 55, 35])[0]
+        if age_group == 'child':
+            _age = random.randint(5, 17)
+        elif age_group == 'adult':
+            _age = random.randint(18, 64)
+        else:
+            _age = random.randint(65, 85)
+
+        # During outbreaks: more respiratory_distress and cardiac_event, slower response
+        if _profile == 'outbreak':
+            incident_type = random.choices(
+                self.INCIDENT_TYPES,
+                weights=[35, 25, 10, 10, 8, 7, 5]
+            )[0]
+            severity = random.choices(['moderate', 'severe', 'critical'], weights=[20, 40, 40])[0]
+            response_time = round(random.triangular(5, 40, 18), 1)
+        else:
+            incident_type = random.choices(
+                self.INCIDENT_TYPES,
+                weights=[15, 15, 20, 12, 12, 16, 10]
+            )[0]
+            severity = random.choices(['moderate', 'severe', 'critical'], weights=[50, 35, 15])[0]
+            response_time = round(random.triangular(4, 25, 10), 1)
+
+        transported = random.random() < 0.80
+
+        # Outcome weighted by severity
+        if severity == 'critical':
+            _outcome = random.choices(['stable', 'admitted', 'critical', 'discharged'], weights=[15, 50, 25, 10])[0]
+        elif severity == 'severe':
+            _outcome = random.choices(['stable', 'admitted', 'critical', 'discharged'], weights=[30, 45, 5, 20])[0]
+        else:
+            _outcome = random.choices(['stable', 'admitted', 'critical', 'discharged'], weights=[35, 25, 2, 38])[0]
+
+        return {
+            'event_type': 'emergency_incident',
+            'timestamp': datetime.utcnow().isoformat(),
+            'incident_id': f"EI{random.randint(100000, 999999)}",
+            'patient_id': f"P{random.randint(10000, 99999)}",
+            'age': _age,
+            'region': random.choice(REGIONS),
+            'incident_type': incident_type,
+            'severity': severity,
+            'response_time_minutes': response_time,
+            'triage_level': random.randint(1, 3) if severity == 'critical' else random.randint(2, 5),
+            'transported_to_hospital': transported,
+            'hospital_id': f"H{random.randint(1, 20)}" if transported else None,
+            'outcome': _outcome,
+        }
+
+    def generate_general_health_report(self) -> dict:
+        """Generate a synthetic general health report event."""
+        age_group = random.choices(['child', 'adult', 'elderly'], weights=[10, 65, 25])[0]
+        if age_group == 'child':
+            _age = random.randint(5, 17)
+        elif age_group == 'adult':
+            _age = random.randint(18, 64)
+        else:
+            _age = random.randint(65, 85)
+
+        bmi = round(random.triangular(17.0, 45.0, 27.5), 1)
+
+        # Age-group appropriate blood pressure ranges
+        if _age < 18:
+            bp_systolic = random.randint(90, 120)
+            bp_diastolic = random.randint(55, 80)
+        elif _age < 65:
+            bp_systolic = random.randint(110, 155)
+            bp_diastolic = random.randint(65, 95)
+        else:
+            bp_systolic = random.randint(120, 170)
+            bp_diastolic = random.randint(70, 100)
+
+        cholesterol = round(random.triangular(150, 300, 195))
+        _health_score = max(1, min(10, round(10 - (bmi - 22) * 0.15 - (_age - 30) * 0.03 + random.gauss(0, 1))))
+
+        return {
+            'event_type': 'general_health_report',
+            'timestamp': datetime.utcnow().isoformat(),
+            'report_id': f"GHR{random.randint(100000, 999999)}",
+            'patient_id': f"P{random.randint(10000, 99999)}",
+            'age': _age,
+            'region': random.choice(REGIONS),
+            'bmi': bmi,
+            'blood_pressure_systolic': bp_systolic,
+            'blood_pressure_diastolic': bp_diastolic,
+            'heart_rate_bpm': random.randint(55, 100),
+            'cholesterol_total': cholesterol,
+            'smoking_status': random.choices(['never', 'former', 'current'], weights=[60, 25, 15])[0],
+            'diabetes_status': random.choices(['none', 'pre_diabetic', 'type_2'], weights=[70, 20, 10])[0],
+            'overall_health_score': _health_score,
+            'last_checkup_days_ago': random.randint(0, 730),
+        }
+
     def generate_event(self) -> dict:
         """Generate an event based on current outbreak state."""
         with self.state_lock:
@@ -389,14 +522,12 @@ class EventGenerator:
             return self.generate_clinic_visit()
         elif event_type == 'hospital_admission':
             return self.generate_hospital_admission()
-        else:
-            # vaccination, emergency_incident, general_health_report (placeholder events)
-            return {
-                'event_type': event_type,
-                'timestamp': datetime.utcnow().isoformat(),
-                'region': random.choice(REGIONS),
-                'data': 'placeholder'
-            }
+        elif event_type == 'vaccination':
+            return self.generate_vaccination()
+        elif event_type == 'emergency_incident':
+            return self.generate_emergency_incident()
+        else:  # general_health_report
+            return self.generate_general_health_report()
 
     def refill_thread_worker(self):
         """Refill thread: checks outbreak schedule every 6h, generates batch."""
