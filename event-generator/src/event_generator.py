@@ -14,6 +14,7 @@ Outbreak-aware event and severity distributions are defined inline in this file.
 """
 
 import os
+import sys
 import json
 import time
 import random
@@ -35,19 +36,27 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration from environment
-EVENT_RATE_PER_SEC = float(os.getenv('EVENT_RATE_PER_SEC', '10'))
+EVENT_RATE_PER_SEC = max(0.1, float(os.getenv('EVENT_RATE_PER_SEC', '10')))
 TOPIC_PREFIX = os.getenv('TOPIC_PREFIX', 'events.')
 TOPIC_SUFFIX = os.getenv('TOPIC_SUFFIX', '.raw')
-REGIONS = os.getenv('REGIONS', 'Boston,Cambridge,Somerville,Brookline,Newton').split(',')
+_DEFAULT_REGIONS = 'Boston,Cambridge,Somerville,Brookline,Newton'
+REGIONS = [r.strip() for r in os.getenv('REGIONS', _DEFAULT_REGIONS).split(',') if r.strip()] \
+          or _DEFAULT_REGIONS.split(',')
 
 # Pool configuration
-EVENT_POOL_SIZE = int(os.getenv('EVENT_POOL_SIZE', '50000'))
+EVENT_POOL_SIZE = max(1, int(os.getenv('EVENT_POOL_SIZE', '50000')))
 EVENT_POOL_REFILL_THRESHOLD = int(os.getenv('EVENT_POOL_REFILL_THRESHOLD', '40000'))
+if EVENT_POOL_REFILL_THRESHOLD > EVENT_POOL_SIZE:
+    logger.warning(
+        f"EVENT_POOL_REFILL_THRESHOLD ({EVENT_POOL_REFILL_THRESHOLD}) > "
+        f"EVENT_POOL_SIZE ({EVENT_POOL_SIZE}), clamping threshold to pool size"
+    )
+    EVENT_POOL_REFILL_THRESHOLD = EVENT_POOL_SIZE
 
 # Bed pressure parameters
-BASE_BEDS = int(os.getenv('BASE_BEDS', '500'))
-BED_PRESSURE_FACTOR = float(os.getenv('BED_PRESSURE_FACTOR', '0.8'))
-SYMPTOM_BURDEN_DECAY = float(os.getenv('SYMPTOM_BURDEN_DECAY', '0.995'))
+BASE_BEDS = max(1, int(os.getenv('BASE_BEDS', '500')))
+BED_PRESSURE_FACTOR = max(0.01, float(os.getenv('BED_PRESSURE_FACTOR', '0.8')))
+SYMPTOM_BURDEN_DECAY = max(0.001, min(0.9999, float(os.getenv('SYMPTOM_BURDEN_DECAY', '0.995'))))
 
 # Parse team bootstrap servers from environment
 TEAM_KAFKA_MAPPING = {}
@@ -67,13 +76,27 @@ logger.info(f"Loaded {len(TEAM_KAFKA_MAPPING)} team Kafka mappings")
 # Health check Flask app
 app = Flask(__name__)
 
+_generator = None  # set in main() after generator.start()
+
 @app.route('/health')
 def health():
-    return {'status': 'healthy', 'timestamp': datetime.utcnow().isoformat()}
+    alive = _generator is not None and _generator.running
+    body = {'status': 'healthy' if alive else 'unhealthy',
+            'timestamp': datetime.utcnow().isoformat()}
+    return body, (200 if alive else 503)
 
 @app.route('/ready')
 def ready():
-    return {'status': 'ready', 'teams': len(TEAM_KAFKA_MAPPING), 'rate': EVENT_RATE_PER_SEC}
+    if _generator is None:
+        return {'status': 'not ready', 'reason': 'generator not started'}, 503
+    connected = len(_generator.producers)
+    ok = connected > 0
+    return ({
+        'status': 'ready' if ok else 'not ready',
+        'teams_connected': connected,
+        'teams_configured': len(TEAM_KAFKA_MAPPING),
+        'rate': EVENT_RATE_PER_SEC,
+    }, 200 if ok else 503)
 
 
 # ============================================================================
@@ -83,7 +106,6 @@ def ready():
 @dataclass
 class OutbreakState:
     """Shared outbreak state for all threads."""
-    active: bool = False
     profile: str = "baseline"  # baseline | outbreak | winddown
     intensity: float = 0.0
     affected_regions: list = field(default_factory=list)
@@ -156,13 +178,19 @@ def is_in_outbreak_window(now: datetime) -> tuple:
     if weekday == 0 and hour >= 9:  # Mon 09:00 onwards
         return True, "outbreak", random.uniform(0.6, 0.9), 48 - (hour - 9)
     elif weekday == 1 and hour < 21:  # Tue before 21:00
-        return True, "outbreak" if hour < 9 else "winddown", random.uniform(0.6, 0.9), 21 - hour
+        if hour < 9:
+            return True, "outbreak", random.uniform(0.6, 0.9), 21 - hour
+        else:
+            return True, "winddown", random.uniform(0.2, 0.5), 21 - hour
 
     # Thursday outbreak window: 09:00 Thu - 21:00 Fri (48h total)
     if weekday == 3 and hour >= 9:  # Thu 09:00 onwards
         return True, "outbreak", random.uniform(0.6, 0.9), 48 - (hour - 9)
     elif weekday == 4 and hour < 21:  # Fri before 21:00
-        return True, "outbreak" if hour < 9 else "winddown", random.uniform(0.6, 0.9), 21 - hour
+        if hour < 9:
+            return True, "outbreak", random.uniform(0.6, 0.9), 21 - hour
+        else:
+            return True, "winddown", random.uniform(0.2, 0.5), 21 - hour
 
     return False, "baseline", 0.0, 0
 
@@ -284,6 +312,9 @@ class EventGenerator:
         else:
             _region = random.choice(REGIONS)
 
+        _duration_ranges = {'mild': (1, 5), 'moderate': (3, 10), 'severe': (7, 14)}
+        _lo, _hi = _duration_ranges.get(_severity, (1, 14))
+
         return {
             'event_type': 'symptom_report',
             'timestamp': datetime.utcnow().isoformat(),
@@ -292,7 +323,7 @@ class EventGenerator:
             'region': _region,
             'symptoms': random.sample(self.SYMPTOMS, random.randint(1, 4)),
             'severity': _severity,
-            'duration_days': random.randint(1, 14),
+            'duration_days': random.randint(_lo, _hi),
             'reported_via': random.choice(['mobile_app', 'web_portal', 'phone_hotline']),
             'available_beds': available_beds,
         }
@@ -300,6 +331,7 @@ class EventGenerator:
     def generate_clinic_visit(self) -> dict:
         """Generate a synthetic clinic visit event."""
         with self.state_lock:
+            _profile = self.state.profile
             available_beds = max(0, int(BASE_BEDS - self.state.symptom_burden * BED_PRESSURE_FACTOR))
             _affected = list(self.state.affected_regions)
 
@@ -316,6 +348,17 @@ class EventGenerator:
         else:
             _region = random.choice(REGIONS)
 
+        # VISIT_TYPES order: routine_checkup, emergency, follow_up, preventive_care, diagnostic_test, consultation
+        if _profile == 'outbreak':
+            _visit_type = random.choices(self.VISIT_TYPES, weights=[5, 30, 25, 5, 20, 15])[0]
+            _temp_f = round(random.triangular(97.5, 103.5, 101.0), 1)
+        elif _profile == 'winddown':
+            _visit_type = random.choices(self.VISIT_TYPES, weights=[10, 20, 25, 8, 20, 17])[0]
+            _temp_f = round(random.triangular(97.5, 103.5, 99.8), 1)
+        else:
+            _visit_type = random.choice(self.VISIT_TYPES)
+            _temp_f = round(random.triangular(97.5, 103.5, 98.9), 1)
+
         return {
             'event_type': 'clinic_visit',
             'timestamp': datetime.utcnow().isoformat(),
@@ -324,9 +367,9 @@ class EventGenerator:
             'age': _age,
             'clinic_id': f"C{random.randint(1, 50)}",
             'region': _region,
-            'visit_type': random.choice(self.VISIT_TYPES),
+            'visit_type': _visit_type,
             'primary_complaint': random.choice(self.SYMPTOMS),
-            'temperature_f': round(random.triangular(97.5, 103.5, 98.9), 1),
+            'temperature_f': _temp_f,
             'diagnosis_code': f"ICD{random.randint(100, 999)}",
             'prescribed_medication': random.random() < 0.35,
             'follow_up_required': random.random() < 0.25,
@@ -361,11 +404,21 @@ class EventGenerator:
         else:
             _region = random.choice(REGIONS)
 
-        # Realistic oxygen level: 80% normal, 20% concerning
-        if random.random() < 0.20:
+        _low_o2_prob = {'mild': 0.05, 'moderate': 0.15, 'severe': 0.40, 'critical': 0.65}.get(_severity, 0.20)
+        if random.random() < _low_o2_prob:
             _o2 = round(random.uniform(85.0, 91.9), 1)
         else:
             _o2 = round(random.uniform(92.0, 99.5), 1)
+
+        _temp_params = {
+            'mild':     (98.5, 101.5, 99.5),
+            'moderate': (99.0, 103.0, 100.8),
+            'severe':   (100.0, 104.5, 102.0),
+            'critical': (101.0, 105.5, 103.0),
+        }
+        _lo, _hi, _mode = _temp_params.get(_severity, (98.5, 105.0, 101.2))
+
+        _los_rate = {'mild': 1.0, 'moderate': 0.5, 'severe': 0.25, 'critical': 0.12}.get(_severity, 0.35)
 
         return {
             'event_type': 'hospital_admission',
@@ -377,14 +430,17 @@ class EventGenerator:
             'region': _region,
             'admission_reason': random.choice(self.SYMPTOMS),
             'severity': _severity,
-            'temperature_f': round(random.triangular(98.5, 105.0, 101.2), 1),
+            'temperature_f': round(random.triangular(_lo, _hi, _mode), 1),
             'oxygen_level': _o2,
-            'expected_los_days': min(21, max(1, round(random.expovariate(0.35)))),
+            'expected_los_days': min(21, max(1, round(random.expovariate(_los_rate)))),
             'available_beds': available_beds,
         }
 
     def generate_vaccination(self) -> dict:
         """Generate a synthetic vaccination event."""
+        with self.state_lock:
+            _affected = list(self.state.affected_regions)
+
         age_group = random.choices(['child', 'adult', 'elderly'], weights=[20, 55, 25])[0]
         if age_group == 'child':
             _age = random.randint(1, 17)
@@ -393,7 +449,21 @@ class EventGenerator:
         else:
             _age = random.randint(65, 85)
 
-        dose_number = random.choices([1, 2, 3], weights=[60, 30, 10])[0]
+        if _affected:
+            _region = random.choice(_affected) if random.random() < 0.75 else random.choice(REGIONS)
+        else:
+            _region = random.choice(REGIONS)
+
+        _vaccine_type = random.choice(self.VACCINE_TYPES)
+        _max_doses = {'influenza': 1, 'tdap': 1, 'mmr': 2,
+                      'hepatitis_a': 2, 'pneumococcal': 2, 'covid_booster': 3}.get(_vaccine_type, 2)
+        if _max_doses == 1:
+            dose_number = 1
+        elif _max_doses == 2:
+            dose_number = random.choices([1, 2], weights=[65, 35])[0]
+        else:
+            dose_number = random.choices([1, 2, 3], weights=[60, 30, 10])[0]
+
         adverse = random.random() < 0.05
 
         return {
@@ -402,8 +472,8 @@ class EventGenerator:
             'vaccination_id': f"VAC{random.randint(100000, 999999)}",
             'patient_id': f"P{random.randint(10000, 99999)}",
             'age': _age,
-            'region': random.choice(REGIONS),
-            'vaccine_type': random.choice(self.VACCINE_TYPES),
+            'region': _region,
+            'vaccine_type': _vaccine_type,
             'dose_number': dose_number,
             'administered_at': random.choice(self.ADMINISTERED_AT),
             'healthcare_provider_id': f"HP{random.randint(100, 999)}",
@@ -434,7 +504,14 @@ class EventGenerator:
             )[0]
             severity = random.choices(['moderate', 'severe', 'critical'], weights=[20, 40, 40])[0]
             response_time = round(random.triangular(5, 40, 18), 1)
-        else:
+        elif _profile == 'winddown':
+            incident_type = random.choices(
+                self.INCIDENT_TYPES,
+                weights=[25, 20, 15, 11, 10, 12, 7]
+            )[0]
+            severity = random.choices(['moderate', 'severe', 'critical'], weights=[35, 40, 25])[0]
+            response_time = round(random.triangular(4, 35, 14), 1)
+        else:  # baseline
             incident_type = random.choices(
                 self.INCIDENT_TYPES,
                 weights=[15, 15, 20, 12, 12, 16, 10]
@@ -452,6 +529,10 @@ class EventGenerator:
         else:
             _outcome = random.choices(['stable', 'admitted', 'critical', 'discharged'], weights=[35, 25, 2, 38])[0]
 
+        # Critical/admitted outcomes require hospital transport
+        if _outcome in ('critical', 'admitted'):
+            transported = True
+
         if _affected:
             _region = random.choice(_affected) if random.random() < 0.75 else random.choice(REGIONS)
         else:
@@ -467,7 +548,11 @@ class EventGenerator:
             'incident_type': incident_type,
             'severity': severity,
             'response_time_minutes': response_time,
-            'triage_level': random.randint(1, 3) if severity == 'critical' else random.randint(2, 5),
+            'triage_level': (
+                random.randint(1, 2) if severity == 'critical' else
+                random.randint(2, 3) if severity == 'severe' else
+                random.randint(3, 5)
+            ),
             'transported_to_hospital': transported,
             'hospital_id': f"H{random.randint(1, 20)}" if transported else None,
             'outcome': _outcome,
@@ -475,6 +560,9 @@ class EventGenerator:
 
     def generate_general_health_report(self) -> dict:
         """Generate a synthetic general health report event."""
+        with self.state_lock:
+            _affected = list(self.state.affected_regions)
+
         age_group = random.choices(['child', 'adult', 'elderly'], weights=[10, 65, 25])[0]
         if age_group == 'child':
             _age = random.randint(5, 17)
@@ -497,7 +585,23 @@ class EventGenerator:
             bp_diastolic = random.randint(70, 100)
 
         cholesterol = round(random.triangular(150, 300, 195))
-        _health_score = max(1, min(10, round(10 - (bmi - 22) * 0.15 - (_age - 30) * 0.03 + random.gauss(0, 1))))
+
+        _smoking_status = random.choices(['never', 'former', 'current'], weights=[60, 25, 15])[0]
+        _diabetes_status = random.choices(['none', 'pre_diabetic', 'type_2'], weights=[70, 20, 10])[0]
+        _smoking_penalty = {'never': 0.0, 'former': 0.5, 'current': 1.5}.get(_smoking_status, 0.0)
+        _diabetes_penalty = {'none': 0.0, 'pre_diabetic': 0.5, 'type_2': 1.0}.get(_diabetes_status, 0.0)
+        _health_score = max(1, min(10, round(
+            10 - abs(bmi - 22) * 0.15
+            - max(0, _age - 30) * 0.03
+            - _smoking_penalty
+            - _diabetes_penalty
+            + random.gauss(0, 1)
+        )))
+
+        if _affected:
+            _region = random.choice(_affected) if random.random() < 0.75 else random.choice(REGIONS)
+        else:
+            _region = random.choice(REGIONS)
 
         return {
             'event_type': 'general_health_report',
@@ -505,14 +609,14 @@ class EventGenerator:
             'report_id': f"GHR{random.randint(100000, 999999)}",
             'patient_id': f"P{random.randint(10000, 99999)}",
             'age': _age,
-            'region': random.choice(REGIONS),
+            'region': _region,
             'bmi': bmi,
             'blood_pressure_systolic': bp_systolic,
             'blood_pressure_diastolic': bp_diastolic,
             'heart_rate_bpm': random.randint(55, 100),
             'cholesterol_total': cholesterol,
-            'smoking_status': random.choices(['never', 'former', 'current'], weights=[60, 25, 15])[0],
-            'diabetes_status': random.choices(['none', 'pre_diabetic', 'type_2'], weights=[70, 20, 10])[0],
+            'smoking_status': _smoking_status,
+            'diabetes_status': _diabetes_status,
             'overall_health_score': _health_score,
             'last_checkup_days_ago': random.randint(0, 730),
         }
@@ -536,7 +640,6 @@ class EventGenerator:
         event_type = random.choices(
             list(event_weights.keys()),
             weights=list(event_weights.values()),
-            k=1
         )[0]
 
         if event_type == 'symptom_report':
@@ -564,40 +667,52 @@ class EventGenerator:
                 time.sleep(60)  # Check every minute
                 continue
 
-            last_refill = now
+            try:
+                last_refill = now
 
-            # Check outbreak window
-            is_active, profile, intensity, _ = is_in_outbreak_window(now)
+                # Check outbreak window
+                is_active, profile, intensity, _ = is_in_outbreak_window(now)
 
-            with self.state_lock:
-                self.state.active = is_active
-                self.state.profile = profile
-                self.state.intensity = intensity
-                if is_active:
-                    self.state.affected_regions = random.sample(REGIONS, random.randint(2, 4))
-                else:
-                    self.state.affected_regions = []
+                with self.state_lock:
+                    self.state.profile = profile
+                    self.state.intensity = intensity
+                    if is_active:
+                        k = min(random.randint(2, 4), len(REGIONS))
+                        self.state.affected_regions = random.sample(REGIONS, k)
+                    else:
+                        self.state.affected_regions = []
+                        self.state.symptom_burden = 0.0
 
-            logger.info(f"[REFILL] Outbreak state updated: active={is_active}, profile={profile}, intensity={intensity:.2f}")
+                with self.state_lock:
+                    _logged_regions = list(self.state.affected_regions)
+                logger.info(
+                    f"[REFILL] Outbreak state updated: profile={profile}, intensity={intensity:.2f}, "
+                    f"affected_regions={_logged_regions or 'all (baseline)'}"
+                )
 
-            # Generate batch of events
-            batch_size = max(0, EVENT_POOL_REFILL_THRESHOLD - self.event_pool.qsize())
-            if batch_size > 0:
-                logger.info(f"[REFILL] Generating {batch_size} events...")
-                for _ in range(batch_size):
-                    event = self.generate_event()
-                    try:
-                        self.event_pool.put(event, block=False)
-                    except queue.Full:
-                        logger.warning("[REFILL] Event pool full, dropping event")
-                        break
-                logger.info(f"[REFILL] Pool now has {self.event_pool.qsize()}/{EVENT_POOL_SIZE} events")
+                # Generate batch of events
+                batch_size = max(0, EVENT_POOL_REFILL_THRESHOLD - self.event_pool.qsize())
+                if batch_size > 0:
+                    logger.info(f"[REFILL] Generating {batch_size} events...")
+                    for _ in range(batch_size):
+                        event = self.generate_event()
+                        try:
+                            self.event_pool.put(event, block=False)
+                        except queue.Full:
+                            logger.warning("[REFILL] Event pool full, dropping event")
+                            break
+                    logger.info(f"[REFILL] Pool now has {self.event_pool.qsize()}/{EVENT_POOL_SIZE} events")
+
+            except Exception as e:
+                logger.error(f"Error in refill loop: {e}", exc_info=True)
+                time.sleep(60)
 
     def emit_thread_worker(self):
         """Emit thread: drains pool to Kafka at variable pace based on outbreak profile."""
         logger.info(f"Starting emission to {len(self.producers)} teams")
         event_count = 0
         failed_sends = {}
+        _burden_cap = BASE_BEDS / BED_PRESSURE_FACTOR
 
         while self.running:
             try:
@@ -605,9 +720,7 @@ class EventGenerator:
                 try:
                     event = self.event_pool.get(timeout=5)
                 except queue.Empty:
-                    # Pool empty — warn if critically low and wait for RefillThread
-                    if self.event_pool.qsize() < 0.2 * EVENT_POOL_SIZE:
-                        logger.warning("[EMIT] Pool below 20%; RefillThread should catch up")
+                    logger.warning("[EMIT] Pool empty; waiting for RefillThread to catch up")
                     time.sleep(1)
                     continue
 
@@ -615,12 +728,13 @@ class EventGenerator:
                 with self.state_lock:
                     profile = self.state.profile
 
+                _base_sleep = 1.0 / EVENT_RATE_PER_SEC
                 if profile == "outbreak":
-                    sleep_time = random.uniform(0.1, 0.5)
+                    sleep_time = random.uniform(_base_sleep * 0.5, _base_sleep * 1.5)
                 elif profile == "winddown":
-                    sleep_time = random.uniform(0.5, 1.5)
+                    sleep_time = random.uniform(_base_sleep * 1.5, _base_sleep * 3.0)
                 else:  # baseline
-                    sleep_time = random.uniform(1.0, 2.0)
+                    sleep_time = random.uniform(_base_sleep * 2.0, _base_sleep * 4.0)
 
                 event['source'] = 'event-generator'
                 event['schema_version'] = '1.0'
@@ -628,23 +742,30 @@ class EventGenerator:
                 # Send to all teams
                 for team_id, producer in self.producers.items():
                     if team_id == 'shared':
-                        topic = EXPLICIT_TOPIC if EXPLICIT_TOPIC else f"{TOPIC_PREFIX}{TOPIC_SUFFIX}"
+                        topic = EXPLICIT_TOPIC if EXPLICIT_TOPIC else f"{TOPIC_PREFIX}{TOPIC_SUFFIX.lstrip('.')}"
                     else:
                         topic = f"{TOPIC_PREFIX}{team_id}{TOPIC_SUFFIX}"
+
+                    def _on_error(exc, tid=team_id):
+                        failed_sends[tid] = failed_sends.get(tid, 0) + 1
+                        if failed_sends[tid] % 10 == 1:
+                            logger.error(f"Error sending to {tid}: {exc}")
+
+                    def _on_success(_, tid=team_id):
+                        failed_sends.pop(tid, None)
+
                     try:
-                        producer.send(topic, value=event)
-                        if team_id in failed_sends:
-                            del failed_sends[team_id]
+                        producer.send(topic, value=event).add_callback(_on_success).add_errback(_on_error)
                     except Exception as e:
-                        failed_sends[team_id] = failed_sends.get(team_id, 0) + 1
-                        if failed_sends[team_id] % 10 == 1:
-                            logger.error(f"Error sending to {team_id}: {e}")
+                        _on_error(e)
 
                 # Update symptom burden if applicable
                 event_type = event.get('event_type', '')
                 if event_type in ['symptom_report', 'hospital_admission']:
                     with self.state_lock:
-                        self.state.symptom_burden += 1
+                        self.state.symptom_burden = min(
+                            self.state.symptom_burden + 1, _burden_cap
+                        )
                 else:
                     # Exponential decay
                     with self.state_lock:
@@ -691,7 +812,7 @@ class EventGenerator:
         self.running = False
         for team_id, producer in self.producers.items():
             try:
-                producer.close()
+                producer.close(timeout=5)
                 logger.info(f"Closed producer for {team_id}")
             except Exception as e:
                 logger.error(f"Error closing producer for {team_id}: {e}")
@@ -700,6 +821,8 @@ class EventGenerator:
 
 def main():
     """Main entry point."""
+    global _generator
+
     if not TEAM_KAFKA_MAPPING and not SINGLE_BOOTSTRAP:
         logger.error("No Kafka configuration provided.")
         logger.error("Set TEAM_BOOTSTRAP_SERVERS (multi-team) or KAFKA_BOOTSTRAP_SERVERS (single-cluster).")
@@ -710,6 +833,8 @@ def main():
     if not generator.start():
         logger.error("Failed to start event generator")
         return 1
+
+    _generator = generator
 
     # Graceful shutdown: flush and close Kafka producers on SIGTERM/SIGINT
     def _shutdown(signum, frame):
@@ -726,4 +851,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main() or 0)
