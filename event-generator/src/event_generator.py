@@ -322,11 +322,20 @@ class EventGenerator:
         with self.state_lock:
             available_beds = max(0, int(BASE_BEDS - self.state.symptom_burden * BED_PRESSURE_FACTOR))
 
+        age_group = random.choices(['child', 'adult', 'elderly'], weights=[10, 70, 20])[0]
+        if age_group == 'child':
+            _age = random.randint(5, 17)
+        elif age_group == 'adult':
+            _age = random.randint(18, 64)
+        else:
+            _age = random.randint(65, 85)
+
         return {
             'event_type': 'clinic_visit',
             'timestamp': datetime.utcnow().isoformat(),
             'visit_id': f"V{random.randint(100000, 999999)}",
             'patient_id': f"P{random.randint(10000, 99999)}",
+            'age': _age,
             'clinic_id': f"C{random.randint(1, 50)}",
             'region': random.choice(REGIONS),
             'visit_type': random.choice(self.VISIT_TYPES),
@@ -341,9 +350,18 @@ class EventGenerator:
     def generate_hospital_admission(self) -> dict:
         """Generate a synthetic hospital admission event."""
         with self.state_lock:
+            _profile = self.state.profile
             available_beds = max(0, int(BASE_BEDS - self.state.symptom_burden * BED_PRESSURE_FACTOR))
 
-        # Realistic oxygen level: 80% moderate/normal, 20% severe
+        # Severity is outbreak-aware: more critical/severe cases during outbreak peaks
+        if _profile == 'outbreak':
+            _severity = random.choices(['mild', 'moderate', 'severe', 'critical'], weights=[10, 25, 35, 30])[0]
+        elif _profile == 'winddown':
+            _severity = random.choices(['mild', 'moderate', 'severe', 'critical'], weights=[20, 30, 30, 20])[0]
+        else:
+            _severity = random.choices(['mild', 'moderate', 'severe', 'critical'], weights=[40, 35, 18, 7])[0]
+
+        # Realistic oxygen level: 80% normal, 20% concerning
         if random.random() < 0.20:
             _o2 = round(random.uniform(85.0, 91.9), 1)
         else:
@@ -357,7 +375,7 @@ class EventGenerator:
             'hospital_id': f"H{random.randint(1, 20)}",
             'region': random.choice(REGIONS),
             'admission_reason': random.choice(self.SYMPTOMS),
-            'severity': random.choice(['mild', 'moderate', 'severe', 'critical']),
+            'severity': _severity,
             'temperature_f': round(random.triangular(98.5, 105.0, 101.2), 1),
             'oxygen_level': _o2,
             'expected_los_days': min(21, max(1, round(random.expovariate(0.35)))),
@@ -498,16 +516,14 @@ class EventGenerator:
             profile = self.state.profile
             intensity = self.state.intensity
 
-        # Choose event type and severity distribution based on outbreak profile
+        # Choose event type based on outbreak profile
+        # Note: severity distributions are handled inside each generator method
         if profile == "outbreak":
             event_weights = normalize_weights(outbreak_event_weights(intensity))
-            sev_weights = normalize_weights(outbreak_severity_weights(intensity))
         elif profile == "winddown":
             event_weights = normalize_weights(winddown_event_weights(intensity))
-            sev_weights = normalize_weights(winddown_severity_weights(intensity))
         else:  # baseline
             event_weights = normalize_weights(baseline_event_weights())
-            sev_weights = normalize_weights(baseline_severity_weights())
 
         # Weighted choice of event type
         event_type = random.choices(
