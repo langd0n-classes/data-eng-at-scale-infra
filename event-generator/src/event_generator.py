@@ -591,7 +591,10 @@ class EventGenerator:
                 self.state.active = is_active
                 self.state.profile = profile
                 self.state.intensity = intensity
-                self.state.affected_regions = random.sample(REGIONS, random.randint(2, 4))
+                if is_active:
+                    self.state.affected_regions = random.sample(REGIONS, random.randint(2, 4))
+                else:
+                    self.state.affected_regions = []
 
             logger.info(f"[REFILL] Outbreak state updated: active={is_active}, profile={profile}, intensity={intensity:.2f}")
 
