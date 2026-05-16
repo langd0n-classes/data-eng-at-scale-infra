@@ -10,7 +10,7 @@ Architecture:
   - RefillThread (every 6h): checks outbreak schedule, generates batch
   - EmitThread (continuous): drains pool to Kafka at variable pace
 
-Imports outbreak-aware distributions from generate_health_events_dataset.
+Outbreak-aware event and severity distributions are defined inline in this file.
 """
 
 import os
@@ -137,7 +137,6 @@ def normalize_weights(weights: dict) -> dict:
     return {k: v / total for k, v in weights.items()} if total > 0 else weights
 
 
-
 # ============================================================================
 # Outbreak Scheduling
 # ============================================================================
@@ -256,13 +255,11 @@ class EventGenerator:
     def generate_symptom_report(self) -> dict:
         """Generate a synthetic symptom report event."""
         with self.state_lock:
-            state = OutbreakState(
-                active=self.state.active, profile=self.state.profile,
-                intensity=self.state.intensity, affected_regions=self.state.affected_regions.copy(),
-                symptom_burden=self.state.symptom_burden
-            )
+            _profile = self.state.profile
+            _affected = list(self.state.affected_regions)
+            _symptom_burden = self.state.symptom_burden
 
-        available_beds = max(0, int(BASE_BEDS - state.symptom_burden * BED_PRESSURE_FACTOR))
+        available_beds = max(0, int(BASE_BEDS - _symptom_burden * BED_PRESSURE_FACTOR))
 
         # Realistic age distribution: mostly adults, some elderly, few children
         age_group = random.choices(['child', 'adult', 'elderly'], weights=[10, 70, 20])[0]
@@ -273,10 +270,7 @@ class EventGenerator:
         else:
             _age = random.randint(65, 85)
 
-        # Severity shifts with outbreak state; also grab affected_regions for region skew
-        with self.state_lock:
-            _profile = self.state.profile
-            _affected = list(self.state.affected_regions)
+        # Severity shifts with outbreak state
         if _profile == 'outbreak':
             _severity = random.choices(['mild', 'moderate', 'severe'], weights=[20, 40, 40])[0]
         elif _profile == 'winddown':
