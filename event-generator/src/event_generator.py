@@ -367,6 +367,14 @@ class EventGenerator:
             _affected = list(self.state.affected_regions)
             available_beds = max(0, int(BASE_BEDS - self.state.symptom_burden * BED_PRESSURE_FACTOR))
 
+        age_group = random.choices(['child', 'adult', 'elderly'], weights=[5, 55, 40])[0]
+        if age_group == 'child':
+            _age = random.randint(1, 17)
+        elif age_group == 'adult':
+            _age = random.randint(18, 64)
+        else:
+            _age = random.randint(65, 85)
+
         # Severity is outbreak-aware: more critical/severe cases during outbreak peaks
         if _profile == 'outbreak':
             _severity = random.choices(['mild', 'moderate', 'severe', 'critical'], weights=[10, 25, 35, 30])[0]
@@ -391,6 +399,7 @@ class EventGenerator:
             'timestamp': datetime.utcnow().isoformat(),
             'admission_id': f"HA{random.randint(100000, 999999)}",
             'patient_id': f"P{random.randint(10000, 99999)}",
+            'age': _age,
             'hospital_id': f"H{random.randint(1, 20)}",
             'region': _region,
             'admission_reason': random.choice(self.SYMPTOMS),
