@@ -19,6 +19,7 @@ import time
 import random
 import logging
 import queue
+import signal
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from threading import Thread, Lock
@@ -204,7 +205,7 @@ class EventGenerator:
 
     VISIT_TYPES = [
         'routine_checkup', 'emergency', 'follow_up',
-        'vaccination', 'diagnostic_test', 'consultation'
+        'preventive_care', 'diagnostic_test', 'consultation'
     ]
 
     VACCINE_TYPES = ['influenza', 'covid_booster', 'hepatitis_a', 'pneumococcal', 'tdap', 'mmr']
@@ -740,7 +741,16 @@ def main():
         logger.error("Failed to start event generator")
         return 1
 
-    # Start health check server
+    # Graceful shutdown: flush and close Kafka producers on SIGTERM/SIGINT
+    def _shutdown(signum, frame):
+        logger.info(f"Shutting down (signal {signum})...")
+        generator.stop()
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+
+    # Start health check server (blocks until process is terminated)
     logger.info("Starting health check server on port 8000")
     serve(app, host='0.0.0.0', port=8000)
 
