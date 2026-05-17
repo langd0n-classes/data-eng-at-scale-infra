@@ -83,7 +83,32 @@ spec:
         TEAM_PASSWORD="$(params.team-password)"
         STORAGE_CLASS="$(params.storage-class)"
         EXTERNAL_DOMAIN="$(params.external-domain)"
-        NIFI_DIR="$(workspaces.source.path)/nifi"
+        WORKSPACE="$(workspaces.source.path)"
+        NIFI_DIR="${WORKSPACE}/nifi"
+
+        # Resolve workspace git SHA for idempotency check (same logic as deploy-event-generator)
+        if command -v git &>/dev/null; then
+          CURRENT_SHA=$(git -C "${WORKSPACE}" rev-parse HEAD 2>/dev/null || echo "")
+        else
+          CURRENT_SHA=$(cat "${WORKSPACE}/.git/HEAD" 2>/dev/null \
+            | grep -E '^[0-9a-f]{40}$' || echo "")
+        fi
+        echo "Workspace commit: ${CURRENT_SHA:-unknown}"
+
+        # Skip deploy if this exact commit is already deployed and the pod is Ready.
+        # To force a redeploy after a param-only change (e.g. nifi-image, team-password),
+        # delete the annotation first:
+        #   oc annotate statefulset nifi-${TEAM_NAME} -n ${TEAM_NAMESPACE} tekton.dev/git-sha-
+        if [ -n "$CURRENT_SHA" ]; then
+          DEPLOYED_SHA=$(oc get statefulset "nifi-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" \
+            -o go-template='{{index .metadata.annotations "tekton.dev/git-sha"}}' 2>/dev/null || echo "")
+          POD_READY=$(oc get pod "nifi-${TEAM_NAME}-0" -n "${TEAM_NAMESPACE}" \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+          if [ "${DEPLOYED_SHA}" = "${CURRENT_SHA}" ] && [ "${POD_READY}" = "True" ]; then
+            echo "NiFi already deployed for commit ${CURRENT_SHA} and pod is Ready — skipping."
+            exit 0
+          fi
+        fi
 
         echo "=================================================="
         echo "Deploying NiFi for team: $TEAM_NAME"
@@ -145,6 +170,12 @@ spec:
         sed \
           -e "s|\${TEAM_NAMESPACE}|${TEAM_NAMESPACE}|g" \
           "$NIFI_DIR/team-networkpolicy-template.yaml" | oc apply -f -
+
+        # Record deployed SHA so future runs can skip if nothing changed
+        if [ -n "$CURRENT_SHA" ]; then
+          oc annotate statefulset "nifi-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" \
+            "tekton.dev/git-sha=${CURRENT_SHA}" --overwrite 2>/dev/null || true
+        fi
 
         echo ""
         echo "NiFi resources applied successfully."
