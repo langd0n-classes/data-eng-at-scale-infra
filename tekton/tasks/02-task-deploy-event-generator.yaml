@@ -9,6 +9,11 @@
 #
 # Then restarts the deployment so it picks up any ConfigMap changes immediately.
 #
+# Build idempotency: the wait-for-build step compares the workspace git commit SHA
+# against the SHA recorded in the latest Complete build. If they match, the build is
+# skipped — the image is already up-to-date. If the commit has changed (or the last
+# build failed), a new build is triggered via oc start-build.
+#
 # This Task is idempotent — running it again updates config without recreating resources.
 #
 # Note on topics: KAFKA_AUTO_CREATE_TOPICS_ENABLE=true is set on the Kafka broker,
@@ -134,9 +139,17 @@ spec:
         echo ""
         echo "Build resources applied."
 
-    # Step 2: Start image build and wait for it to complete
-    # oc start-build --follow streams logs to Tekton AND blocks until done.
-    # If the build fails, this step exits non-zero and the pipeline stops.
+    # Step 2: Start image build if needed, then wait for it to complete.
+    #
+    # Idempotency via git SHA comparison:
+    #   - If the latest Complete build was already built from the current workspace
+    #     commit, skip the build — the image is already up-to-date.
+    #   - If the commit has changed (or the last build failed/was cancelled),
+    #     trigger a new build with oc start-build --follow.
+    #
+    # This avoids both problems with the ConfigChange-trigger approach:
+    #   1. Stale builds from prior runs are no longer reused (different SHA → rebuild).
+    #   2. Re-running the pipeline on the same commit does not waste a redundant build.
     - name: wait-for-build
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
       computeResources:
@@ -152,57 +165,83 @@ spec:
 
         INFRA_NS="$(params.infra-namespace)"
         EG_NAME="$(params.event-generator-name)"
+        WORKSPACE="$(workspaces.source.path)"
 
         echo "=================================================="
-        echo "Waiting for image build: ${EG_NAME}"
+        echo "Checking whether a new image build is needed..."
         echo "=================================================="
 
-        # The BuildConfig has a ConfigChange trigger so oc apply already
-        # started a build. Wait for it to appear, then wait for it to leave
-        # New/Pending before following logs (oc logs -f on a New-phase build
-        # returns immediately — no pod exists yet — causing a false failure).
-        # Only start a new build manually if none was auto-triggered.
+        # Resolve the current workspace commit SHA.
+        # Tekton git-clone checks out in detached-HEAD mode so .git/HEAD
+        # contains the 40-char SHA directly (no symbolic ref to follow).
+        # Use git if available; fall back to reading .git/HEAD directly.
+        if command -v git &>/dev/null; then
+          CURRENT_SHA=$(git -C "${WORKSPACE}" rev-parse HEAD 2>/dev/null || echo "")
+        else
+          CURRENT_SHA=$(cat "${WORKSPACE}/.git/HEAD" 2>/dev/null \
+            | grep -E '^[0-9a-f]{40}$' || echo "")
+        fi
+        echo "Workspace commit: ${CURRENT_SHA:-unknown}"
 
-        # Wait up to 30s for the build object to appear
-        BUILD_NAME=""
-        for i in $(seq 1 6); do
-          BUILD_NAME=$(oc get builds -n "${INFRA_NS}" -l "buildconfig=${EG_NAME}" \
-            --sort-by='.metadata.creationTimestamp' \
-            -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null || echo "")
-          [ -n "$BUILD_NAME" ] && break
-          echo "Waiting for build to appear... (${i}/6)"
-          sleep 5
-        done
+        # Find the latest build for this BuildConfig
+        BUILD_NAME=$(oc get builds -n "${INFRA_NS}" -l "buildconfig=${EG_NAME}" \
+          --sort-by='.metadata.creationTimestamp' \
+          -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null || echo "")
+
+        if [ -n "$BUILD_NAME" ] && [ -n "$CURRENT_SHA" ]; then
+          LAST_SHA=$(oc get build "${BUILD_NAME}" -n "${INFRA_NS}" \
+            -o jsonpath='{.spec.revision.git.commit}' 2>/dev/null || echo "")
+          LAST_PHASE=$(oc get build "${BUILD_NAME}" -n "${INFRA_NS}" \
+            -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+
+          echo "Latest build:   ${BUILD_NAME}"
+          echo "  phase:        ${LAST_PHASE}"
+          echo "  built commit: ${LAST_SHA:-not yet recorded}"
+
+          if [ "${LAST_SHA}" = "${CURRENT_SHA}" ] && [ "${LAST_PHASE}" = "Complete" ]; then
+            echo ""
+            echo "Image is already up-to-date for commit ${CURRENT_SHA}."
+            echo "Skipping build — no changes since last successful build."
+            echo ""
+            echo "Image build complete. ImageStream updated."
+            exit 0
+          fi
+
+          echo ""
+          if [ "${LAST_SHA}" != "${CURRENT_SHA}" ]; then
+            echo "Commit changed (${LAST_SHA:-none} → ${CURRENT_SHA}) — starting new build."
+          else
+            echo "Last build phase is '${LAST_PHASE}' (not Complete) — starting new build."
+          fi
+        else
+          echo "No previous build found — starting first build."
+        fi
+
+        echo ""
+        echo "=================================================="
+        echo "Starting image build: ${EG_NAME}"
+        echo "=================================================="
+        # --follow streams build logs to Tekton and blocks until the build finishes.
+        # If the build fails, oc start-build exits non-zero and the pipeline stops.
+        oc start-build "${EG_NAME}" -n "${INFRA_NS}" --follow
+
+        # Verify the build completed successfully
+        echo ""
+        echo "Verifying build result..."
+        BUILD_NAME=$(oc get builds -n "${INFRA_NS}" -l "buildconfig=${EG_NAME}" \
+          --sort-by='.metadata.creationTimestamp' \
+          -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null || echo "")
 
         if [ -z "$BUILD_NAME" ]; then
-          echo "No auto-triggered build found — starting one manually..."
-          oc start-build "${EG_NAME}" -n "${INFRA_NS}" --follow
-        else
-          echo "Found build: ${BUILD_NAME}"
+          echo "ERROR: Could not find build after oc start-build."
+          exit 1
+        fi
 
-          # Wait for build to leave New/Pending before following logs.
-          # A build in New phase has no pod yet — oc logs -f returns immediately.
-          echo "Waiting for build pod to start..."
-          for i in $(seq 1 60); do
-            PHASE=$(oc get build "${BUILD_NAME}" -n "${INFRA_NS}" \
-              -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-            if [ "$PHASE" != "New" ] && [ "$PHASE" != "Pending" ]; then
-              echo "Build phase: ${PHASE} — following logs..."
-              break
-            fi
-            echo "  phase=${PHASE}, waiting... (${i}/60)"
-            sleep 5
-          done
-
-          oc logs -f "build/${BUILD_NAME}" -n "${INFRA_NS}" 2>/dev/null || true
-
-          PHASE=$(oc get build "${BUILD_NAME}" -n "${INFRA_NS}" \
-            -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-          if [ "$PHASE" != "Complete" ]; then
-            echo "ERROR: Build ${BUILD_NAME} ended with phase: ${PHASE}"
-            exit 1
-          fi
-          echo "Build complete."
+        PHASE=$(oc get build "${BUILD_NAME}" -n "${INFRA_NS}" \
+          -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+        if [ "$PHASE" != "Complete" ]; then
+          echo "ERROR: Build ${BUILD_NAME} ended with phase: ${PHASE}"
+          exit 1
         fi
 
         echo ""
