@@ -69,7 +69,32 @@ spec:
         TEAM_NAME="$(params.team-name)"
         TEAM_NAMESPACE="$(params.team-namespace)"
         STORAGE_CLASS="$(params.storage-class)"
-        TEMPLATE="$(workspaces.source.path)/kafka/per-team/kafka-per-team-template.yaml"
+        WORKSPACE="$(workspaces.source.path)"
+        TEMPLATE="${WORKSPACE}/kafka/per-team/kafka-per-team-template.yaml"
+
+        # Resolve workspace git SHA for idempotency check (same logic as deploy-event-generator)
+        if command -v git &>/dev/null; then
+          CURRENT_SHA=$(git -C "${WORKSPACE}" rev-parse HEAD 2>/dev/null || echo "")
+        else
+          CURRENT_SHA=$(cat "${WORKSPACE}/.git/HEAD" 2>/dev/null \
+            | grep -E '^[0-9a-f]{40}$' || echo "")
+        fi
+        echo "Workspace commit: ${CURRENT_SHA:-unknown}"
+
+        # Skip deploy if this exact commit is already deployed and the pod is Ready.
+        # To force a redeploy after a param-only change (e.g. storage-class), delete
+        # the annotation first:
+        #   oc annotate statefulset kafka-${TEAM_NAME} -n ${TEAM_NAMESPACE} tekton.dev/git-sha-
+        if [ -n "$CURRENT_SHA" ]; then
+          DEPLOYED_SHA=$(oc get statefulset "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" \
+            -o go-template='{{index .metadata.annotations "tekton.dev/git-sha"}}' 2>/dev/null || echo "")
+          POD_READY=$(oc get pod "kafka-${TEAM_NAME}-0" -n "${TEAM_NAMESPACE}" \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+          if [ "${DEPLOYED_SHA}" = "${CURRENT_SHA}" ] && [ "${POD_READY}" = "True" ]; then
+            echo "Kafka already deployed for commit ${CURRENT_SHA} and pod is Ready — skipping."
+            exit 0
+          fi
+        fi
 
         echo "=================================================="
         echo "Deploying Kafka for team: $TEAM_NAME"
@@ -82,7 +107,7 @@ spec:
         if [ ! -f "$TEMPLATE" ]; then
           echo "ERROR: Template not found at $TEMPLATE"
           echo "Files in workspace:"
-          ls "$(workspaces.source.path)/kafka/per-team/" || true
+          ls "${WORKSPACE}/kafka/per-team/" || true
           exit 1
         fi
 
@@ -100,6 +125,12 @@ spec:
           -e "s/\${TEAM_NAMESPACE}/${TEAM_NAMESPACE}/g" \
           -e "s/\${STORAGE_CLASS}/${STORAGE_CLASS}/g" \
           "$TEMPLATE" | oc apply -f -
+
+        # Record deployed SHA so future runs can skip if nothing changed
+        if [ -n "$CURRENT_SHA" ]; then
+          oc annotate statefulset "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" \
+            "tekton.dev/git-sha=${CURRENT_SHA}" --overwrite 2>/dev/null || true
+        fi
 
         echo ""
         echo "Kafka resources applied successfully."
