@@ -3,7 +3,7 @@
 DS-551 Event Generator with Outbreak Scheduling
 
 Produces synthetic health events to per-team Kafka instances with scheduled outbreak windows.
-Outbreak state flips on Mon/Thu 9am UTC, lasting 36h active + 12h winddown.
+Outbreak state flips on Mon/Thu 9am UTC, lasting 24h active + 12h winddown (36h total).
 
 Architecture:
   - Flask health thread (immediate)
@@ -168,13 +168,13 @@ def is_in_outbreak_window(now: datetime) -> tuple:
     Check if current UTC time is in an outbreak window.
     Returns (is_active, profile, intensity, duration_hours_remaining)
 
-    Mon 09:00-Tue 21:00 UTC = 36h active + 12h winddown
-    Thu 09:00-Fri 21:00 UTC = 36h active + 12h winddown
+    Mon 09:00-Tue 09:00 UTC = 24h active, Tue 09:00-21:00 = 12h winddown (36h total)
+    Thu 09:00-Fri 09:00 UTC = 24h active, Fri 09:00-21:00 = 12h winddown (36h total)
     """
     weekday = now.weekday()  # 0=Mon, 3=Thu
     hour = now.hour
 
-    # Monday outbreak window: 09:00 Mon - 21:00 Tue (48h total)
+    # Monday outbreak window: 09:00 Mon - 09:00 Tue active, 09:00-21:00 Tue winddown (36h total)
     if weekday == 0 and hour >= 9:  # Mon 09:00 onwards
         return True, "outbreak", random.uniform(0.6, 0.9), 48 - (hour - 9)
     elif weekday == 1 and hour < 21:  # Tue before 21:00
@@ -183,7 +183,7 @@ def is_in_outbreak_window(now: datetime) -> tuple:
         else:
             return True, "winddown", random.uniform(0.2, 0.5), 21 - hour
 
-    # Thursday outbreak window: 09:00 Thu - 21:00 Fri (48h total)
+    # Thursday outbreak window: 09:00 Thu - 09:00 Fri active, 09:00-21:00 Fri winddown (36h total)
     if weekday == 3 and hour >= 9:  # Thu 09:00 onwards
         return True, "outbreak", random.uniform(0.6, 0.9), 48 - (hour - 9)
     elif weekday == 4 and hour < 21:  # Fri before 21:00
