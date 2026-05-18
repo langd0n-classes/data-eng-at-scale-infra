@@ -22,7 +22,7 @@ import logging
 import queue
 import signal
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from threading import Thread, Lock
 from flask import Flask
 from waitress import serve
@@ -82,7 +82,7 @@ _generator = None  # set in main() after generator.start()
 def health():
     alive = _generator is not None and _generator.running
     body = {'status': 'healthy' if alive else 'unhealthy',
-            'timestamp': datetime.utcnow().isoformat()}
+            'timestamp': datetime.now(timezone.utc).isoformat()}
     return body, (200 if alive else 503)
 
 @app.route('/ready')
@@ -317,7 +317,7 @@ class EventGenerator:
 
         return {
             'event_type': 'symptom_report',
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'patient_id': f"P{random.randint(10000, 99999)}",
             'age': _age,
             'region': _region,
@@ -354,14 +354,14 @@ class EventGenerator:
             _temp_f = round(random.triangular(97.5, 103.5, 101.0), 1)
         elif _profile == 'winddown':
             _visit_type = random.choices(self.VISIT_TYPES, weights=[10, 20, 25, 8, 20, 17])[0]
-            _temp_f = round(random.triangular(97.5, 103.5, 99.8), 1)
+            _temp_f = round(random.triangular(97.5, 103.5, 100.0), 1)
         else:
             _visit_type = random.choice(self.VISIT_TYPES)
             _temp_f = round(random.triangular(97.5, 103.5, 98.9), 1)
 
         return {
             'event_type': 'clinic_visit',
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'visit_id': f"V{random.randint(100000, 999999)}",
             'patient_id': f"P{random.randint(10000, 99999)}",
             'age': _age,
@@ -406,7 +406,7 @@ class EventGenerator:
 
         _low_o2_prob = {'mild': 0.05, 'moderate': 0.15, 'severe': 0.40, 'critical': 0.65}.get(_severity, 0.20)
         if random.random() < _low_o2_prob:
-            _o2 = round(random.uniform(85.0, 91.9), 1)
+            _o2 = round(random.uniform(85.0, 92.0), 1)
         else:
             _o2 = round(random.uniform(92.0, 99.5), 1)
 
@@ -422,7 +422,7 @@ class EventGenerator:
 
         return {
             'event_type': 'hospital_admission',
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'admission_id': f"HA{random.randint(100000, 999999)}",
             'patient_id': f"P{random.randint(10000, 99999)}",
             'age': _age,
@@ -468,7 +468,7 @@ class EventGenerator:
 
         return {
             'event_type': 'vaccination',
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'vaccination_id': f"VAC{random.randint(100000, 999999)}",
             'patient_id': f"P{random.randint(10000, 99999)}",
             'age': _age,
@@ -519,8 +519,6 @@ class EventGenerator:
             severity = random.choices(['moderate', 'severe', 'critical'], weights=[50, 35, 15])[0]
             response_time = round(random.triangular(4, 25, 10), 1)
 
-        transported = random.random() < 0.80
-
         # Outcome weighted by severity
         if severity == 'critical':
             _outcome = random.choices(['stable', 'admitted', 'critical', 'discharged'], weights=[15, 50, 25, 10])[0]
@@ -529,9 +527,11 @@ class EventGenerator:
         else:
             _outcome = random.choices(['stable', 'admitted', 'critical', 'discharged'], weights=[35, 25, 2, 38])[0]
 
-        # Critical/admitted outcomes require hospital transport
+        # Critical/admitted outcomes always require hospital transport; others 80% probability
         if _outcome in ('critical', 'admitted'):
             transported = True
+        else:
+            transported = random.random() < 0.80
 
         if _affected:
             _region = random.choice(_affected) if random.random() < 0.75 else random.choice(REGIONS)
@@ -540,7 +540,7 @@ class EventGenerator:
 
         return {
             'event_type': 'emergency_incident',
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'incident_id': f"EI{random.randint(100000, 999999)}",
             'patient_id': f"P{random.randint(10000, 99999)}",
             'age': _age,
@@ -605,7 +605,7 @@ class EventGenerator:
 
         return {
             'event_type': 'general_health_report',
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'report_id': f"GHR{random.randint(100000, 999999)}",
             'patient_id': f"P{random.randint(10000, 99999)}",
             'age': _age,
@@ -657,10 +657,11 @@ class EventGenerator:
 
     def refill_thread_worker(self):
         """Refill thread: checks outbreak schedule every 6h, generates batch."""
-        last_refill = datetime.utcnow() - timedelta(hours=6)  # trigger immediate refill on startup
+        last_refill = datetime.now(timezone.utc) - timedelta(hours=6)  # trigger immediate refill on startup
+        _was_active = False  # track previous outbreak state to detect transitions
 
         while self.running:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
 
             # Check if it's time to refill (every 6 hours)
             if (now - last_refill).total_seconds() < 21600:  # 6h in seconds
@@ -677,11 +678,15 @@ class EventGenerator:
                     self.state.profile = profile
                     self.state.intensity = intensity
                     if is_active:
-                        k = min(random.randint(2, 4), len(REGIONS))
-                        self.state.affected_regions = random.sample(REGIONS, k)
+                        # Only pick new affected regions when transitioning into outbreak;
+                        # keep the same regions for subsequent 6h checks within the same window
+                        if not _was_active:
+                            k = min(random.randint(2, 4), len(REGIONS))
+                            self.state.affected_regions = random.sample(REGIONS, k)
                     else:
                         self.state.affected_regions = []
                         self.state.symptom_burden = 0.0
+                _was_active = is_active
 
                 with self.state_lock:
                     _logged_regions = list(self.state.affected_regions)
@@ -713,6 +718,7 @@ class EventGenerator:
         event_count = 0
         failed_sends = {}
         _burden_cap = BASE_BEDS / BED_PRESSURE_FACTOR
+        _last_burden_decay_time = time.monotonic()
 
         while self.running:
             try:
@@ -759,17 +765,18 @@ class EventGenerator:
                     except Exception as e:
                         _on_error(e)
 
-                # Update symptom burden if applicable
+                # Update symptom burden: increment for high-acuity events, time-based decay always
                 event_type = event.get('event_type', '')
-                if event_type in ['symptom_report', 'hospital_admission']:
-                    with self.state_lock:
+                _now_mono = time.monotonic()
+                _elapsed = _now_mono - _last_burden_decay_time
+                _last_burden_decay_time = _now_mono
+                with self.state_lock:
+                    # Apply time-proportional exponential decay regardless of event type
+                    self.state.symptom_burden *= SYMPTOM_BURDEN_DECAY ** _elapsed
+                    if event_type in ['symptom_report', 'hospital_admission']:
                         self.state.symptom_burden = min(
                             self.state.symptom_burden + 1, _burden_cap
                         )
-                else:
-                    # Exponential decay
-                    with self.state_lock:
-                        self.state.symptom_burden *= SYMPTOM_BURDEN_DECAY
 
                 event_count += 1
 
