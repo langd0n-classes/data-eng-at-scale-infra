@@ -461,8 +461,8 @@ class EventGenerator:
             _region = random.choice(REGIONS)
 
         _vaccine_type = random.choice(self.VACCINE_TYPES)
-        _max_doses = {'influenza': 1, 'tdap': 1, 'mmr': 2,
-                      'hepatitis_a': 2, 'pneumococcal': 2, 'covid_booster': 3}.get(_vaccine_type, 2)
+        _max_doses = {'anti_wobble_serum': 1, 'giggle_pox_booster': 2, 'zorbovian_flu_shot': 3,
+                      'purple_toe_prevention': 2, 'hiccup_guard': 1, 'grumpiness_inhibitor': 2}.get(_vaccine_type, 2)
         if _max_doses == 1:
             dose_number = 1
         elif _max_doses == 2:
