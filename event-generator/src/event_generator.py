@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 EVENT_RATE_PER_SEC = max(0.1, float(os.getenv('EVENT_RATE_PER_SEC', '10')))
 TOPIC_PREFIX = os.getenv('TOPIC_PREFIX', 'events.')
 TOPIC_SUFFIX = os.getenv('TOPIC_SUFFIX', '.raw')
+PATHOGEN_NAME = 'Zorbovian Sniffles'
 _DEFAULT_REGIONS = 'Boston,Cambridge,Somerville,Brookline,Newton'
 REGIONS = [r.strip() for r in os.getenv('REGIONS', _DEFAULT_REGIONS).split(',') if r.strip()] \
           or _DEFAULT_REGIONS.split(',')
@@ -203,9 +204,10 @@ class EventGenerator:
     """Generates synthetic health events with outbreak scheduling."""
 
     SYMPTOMS = [
-        'fever', 'cough', 'fatigue', 'headache', 'sore_throat',
-        'shortness_of_breath', 'body_aches', 'loss_of_taste',
-        'loss_of_smell', 'nausea', 'diarrhea', 'congestion'
+        'fever', 'headache', 'fatigue', 'uncontrollable_hiccups',
+        'temporary_purple_toenails', 'sudden_craving_for_pickles',
+        'spontaneous_sneezing_fits', 'mild_grumpiness',
+        'excessive_yawning', 'random_giggling', 'wobbly_knees', 'dramatic_sighing'
     ]
 
     VISIT_TYPES = [
@@ -213,9 +215,11 @@ class EventGenerator:
         'preventive_care', 'diagnostic_test', 'consultation'
     ]
 
-    VACCINE_TYPES = ['influenza', 'covid_booster', 'hepatitis_a', 'pneumococcal', 'tdap', 'mmr']
-    INCIDENT_TYPES = ['respiratory_distress', 'cardiac_event', 'trauma', 'allergic_reaction',
-                      'seizure', 'fall', 'overdose']
+    VACCINE_TYPES = ['anti_wobble_serum', 'giggle_pox_booster', 'zorbovian_flu_shot',
+                     'purple_toe_prevention', 'hiccup_guard', 'grumpiness_inhibitor']
+    INCIDENT_TYPES = ['acute_wobble_syndrome', 'spontaneous_pickle_craving', 'extreme_hiccup_episode',
+                      'purple_toe_emergency', 'uncontrolled_giggling_fit', 'dramatic_sigh_collapse',
+                      'zorbovian_sniffles_outbreak']
     ADMINISTERED_AT = ['clinic', 'pharmacy', 'hospital', 'mobile_unit']
 
     def __init__(self):
@@ -322,6 +326,7 @@ class EventGenerator:
             'age': _age,
             'region': _region,
             'symptoms': random.sample(self.SYMPTOMS, random.randint(1, 4)),
+            'suspected_pathogen': PATHOGEN_NAME,
             'severity': _severity,
             'duration_days': random.randint(_lo, _hi),
             'reported_via': random.choice(['mobile_app', 'web_portal', 'phone_hotline']),
@@ -429,6 +434,7 @@ class EventGenerator:
             'hospital_id': f"H{random.randint(1, 20)}",
             'region': _region,
             'admission_reason': random.choice(self.SYMPTOMS),
+            'suspected_pathogen': PATHOGEN_NAME,
             'severity': _severity,
             'temperature_f': round(random.triangular(_lo, _hi, _mode), 1),
             'oxygen_level': _o2,
