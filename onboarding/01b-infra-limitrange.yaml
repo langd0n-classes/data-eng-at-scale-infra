@@ -1,0 +1,36 @@
+# onboarding/01b-infra-limitrange.yaml — LimitRange for infra namespace
+#
+# Sets default CPU/memory requests and limits for containers in the infra
+# namespace. Sized larger than team namespaces since infra runs shared
+# cluster-level workloads.
+#
+# Usage:
+#   source onboarding/cluster.env && \
+#   envsubst '${INFRA_NAMESPACE} ${INFRA_LIMIT_POD_CPU_MAX} ${INFRA_LIMIT_POD_MEM_MAX} \
+#             ${INFRA_LIMIT_CONTAINER_CPU_MAX} ${INFRA_LIMIT_CONTAINER_MEM_MAX} \
+#             ${INFRA_LIMIT_CONTAINER_CPU_DEFAULT} ${INFRA_LIMIT_CONTAINER_MEM_DEFAULT} \
+#             ${INFRA_LIMIT_CONTAINER_CPU_REQUEST} ${INFRA_LIMIT_CONTAINER_MEM_REQUEST}' \
+#   < onboarding/01b-infra-limitrange.yaml | oc apply -f -
+#
+# Called by: onboarding/apply-onboarding.sh (Step 3)
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: infra-limits
+  namespace: ${INFRA_NAMESPACE}
+spec:
+  limits:
+    - type: Pod
+      max:
+        cpu: ${INFRA_LIMIT_POD_CPU_MAX}
+        memory: ${INFRA_LIMIT_POD_MEM_MAX}
+    - type: Container
+      max:
+        cpu: ${INFRA_LIMIT_CONTAINER_CPU_MAX}
+        memory: ${INFRA_LIMIT_CONTAINER_MEM_MAX}
+      default:
+        cpu: ${INFRA_LIMIT_CONTAINER_CPU_DEFAULT}
+        memory: ${INFRA_LIMIT_CONTAINER_MEM_DEFAULT}
+      defaultRequest:
+        cpu: ${INFRA_LIMIT_CONTAINER_CPU_REQUEST}
+        memory: ${INFRA_LIMIT_CONTAINER_MEM_REQUEST}

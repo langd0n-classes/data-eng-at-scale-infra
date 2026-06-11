@@ -1,0 +1,45 @@
+# onboarding/03-limitrange.yaml — LimitRange per team namespace
+#
+# Sets default CPU/memory requests and limits for containers in a team namespace.
+# Prevents pods from running without resource constraints, which is required for
+# ResourceQuota enforcement.
+#
+# All values are parameterized — use CRC defaults from cluster.env.example for
+# local development, or NERC values for cloud deployment.
+#
+# Usage (single team, manual):
+#   source onboarding/cluster.env && \
+#   export TEAM_ID=01 && \
+#   envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${LIMIT_POD_CPU_MAX} ${LIMIT_POD_MEM_MAX} \
+#             ${LIMIT_CONTAINER_CPU_MAX} ${LIMIT_CONTAINER_MEM_MAX} \
+#             ${LIMIT_CONTAINER_CPU_DEFAULT} ${LIMIT_CONTAINER_MEM_DEFAULT} \
+#             ${LIMIT_CONTAINER_CPU_REQUEST} ${LIMIT_CONTAINER_MEM_REQUEST}' \
+#   < onboarding/03-limitrange.yaml | oc apply -f -
+#
+# Called by: onboarding/apply-onboarding.sh (Step 6 loop)
+# Required vars: TEAM_NAMESPACE_PREFIX, TEAM_ID,
+#   LIMIT_POD_CPU_MAX, LIMIT_POD_MEM_MAX,
+#   LIMIT_CONTAINER_CPU_MAX, LIMIT_CONTAINER_MEM_MAX,
+#   LIMIT_CONTAINER_CPU_DEFAULT, LIMIT_CONTAINER_MEM_DEFAULT,
+#   LIMIT_CONTAINER_CPU_REQUEST, LIMIT_CONTAINER_MEM_REQUEST
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: team-limits
+  namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+spec:
+  limits:
+    - type: Pod
+      max:
+        cpu: ${LIMIT_POD_CPU_MAX}
+        memory: ${LIMIT_POD_MEM_MAX}
+    - type: Container
+      max:
+        cpu: ${LIMIT_CONTAINER_CPU_MAX}
+        memory: ${LIMIT_CONTAINER_MEM_MAX}
+      default:
+        cpu: ${LIMIT_CONTAINER_CPU_DEFAULT}
+        memory: ${LIMIT_CONTAINER_MEM_DEFAULT}
+      defaultRequest:
+        cpu: ${LIMIT_CONTAINER_CPU_REQUEST}
+        memory: ${LIMIT_CONTAINER_MEM_REQUEST}

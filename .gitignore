@@ -1,5 +1,10 @@
 # Environment configuration (sensitive data)
 config.env
+onboarding/cluster.env
+
+# Claude Code
+.claude/
+CLAUDE.md
 
 # Python
 __pycache__/

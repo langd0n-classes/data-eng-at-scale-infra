@@ -120,6 +120,11 @@ if [[ "$SKIP_RBAC" == "false" ]]; then
   echo ""
   info "Step 4 — Applying RBAC (${CLUSTER_TYPE} path)..."
 
+  # Apply SA first — it must exist before the ClusterRoleBinding references it
+  run "source '${CONFIG_FILE}' && envsubst '\${INFRA_NAMESPACE} \${TEKTON_SA_NAME}' \
+    < '${SCRIPT_DIR}/rbac/01-serviceaccount.yaml' | oc apply -f -"
+  ok "ServiceAccount applied"
+
   if [[ "$CLUSTER_TYPE" == "dedicated" ]]; then
     run "source '${CONFIG_FILE}' && envsubst '\${INFRA_NAMESPACE} \${TEKTON_SA_NAME}' \
       < '${SCRIPT_DIR}/rbac/02-clusterrolebinding.yaml' | oc apply -f -"
