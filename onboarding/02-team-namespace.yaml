@@ -1,0 +1,21 @@
+# onboarding/02-team-namespace.yaml — Team namespace
+#
+# Creates one team namespace. Apply once per team via the loop in
+# apply-onboarding.sh, which sets TEAM_ID to 01, 02, 03, etc.
+#
+# Usage (single team, manual):
+#   source onboarding/cluster.env && \
+#   export TEAM_ID=01 && \
+#   envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID}' < onboarding/02-team-namespace.yaml | oc apply -f -
+#
+# Called by: onboarding/apply-onboarding.sh (Step 6 loop)
+# Required vars: TEAM_NAMESPACE_PREFIX, TEAM_ID (e.g. "01", "02")
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+  labels:
+    app: data-eng-infra
+    team: team-${TEAM_ID}
+  annotations:
+    openshift.io/description: "Team ${TEAM_ID} project namespace — Kafka, NiFi, student workloads"

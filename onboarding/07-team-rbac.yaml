@@ -1,0 +1,47 @@
+# onboarding/07-team-rbac.yaml — RBAC for one team namespace
+#
+# Creates two RoleBindings per team namespace:
+#   1. Teachers (infra-admins group) — edit access so they can rerun Tekton to
+#      restore Kafka/NiFi if a student deletes them
+#   2. Students (team-XX-devs group) — full edit access so they can deploy
+#      their own apps, build NiFi pipelines, produce/consume Kafka messages,
+#      and manage any resource in their namespace (including Kafka/NiFi)
+#
+# Students have NO binding in the infra namespace — this file only touches the
+# team namespace.
+#
+# Usage (single team, manual):
+#   source onboarding/cluster.env && \
+#   export TEAM_ID=01 && \
+#   envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${INFRA_ADMIN_GROUP}' \
+#   < onboarding/07-team-rbac.yaml | oc apply -f -
+#
+# Called by: onboarding/apply-onboarding.sh (Step 6 loop)
+# Required vars: TEAM_NAMESPACE_PREFIX, TEAM_ID, INFRA_ADMIN_GROUP, TEAM_GROUP_SUFFIX
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: infra-admins-edit
+  namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+subjects:
+  - kind: Group
+    name: ${INFRA_ADMIN_GROUP}
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: edit
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: team-devs-edit
+  namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+subjects:
+  - kind: Group
+    name: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}-${TEAM_GROUP_SUFFIX}
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: edit
+  apiGroup: rbac.authorization.k8s.io

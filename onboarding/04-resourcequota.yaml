@@ -1,0 +1,27 @@
+# onboarding/04-resourcequota.yaml — ResourceQuota per team namespace
+#
+# Caps total CPU, memory, and storage a team can consume in their namespace.
+# Prevents one team from exhausting shared cluster resources.
+#
+# Usage (single team, manual):
+#   source onboarding/cluster.env && \
+#   export TEAM_ID=01 && \
+#   envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} \
+#             ${RESOURCE_QUOTA_CPU} ${RESOURCE_QUOTA_MEMORY} ${RESOURCE_QUOTA_STORAGE}' \
+#   < onboarding/04-resourcequota.yaml | oc apply -f -
+#
+# Called by: onboarding/apply-onboarding.sh (Step 6 loop)
+# Required vars: TEAM_NAMESPACE_PREFIX, TEAM_ID,
+#   RESOURCE_QUOTA_CPU, RESOURCE_QUOTA_MEMORY, RESOURCE_QUOTA_STORAGE
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: team-quota
+  namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+spec:
+  hard:
+    requests.cpu: ${RESOURCE_QUOTA_CPU}
+    requests.memory: ${RESOURCE_QUOTA_MEMORY}
+    limits.cpu: ${RESOURCE_QUOTA_CPU}
+    limits.memory: ${RESOURCE_QUOTA_MEMORY}
+    requests.storage: ${RESOURCE_QUOTA_STORAGE}

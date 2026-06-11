@@ -1,0 +1,29 @@
+# onboarding/06-infra-rbac.yaml — Teacher RBAC for infra namespace
+#
+# Grants the infra-admins group (teachers/TAs) full edit rights in the infra
+# namespace so they can run Tekton pipelines, manage the event generator, and
+# deploy Kafka/NiFi to team namespaces via the pipeline service account.
+#
+# Students have NO binding in this file — they cannot see or access the infra
+# namespace at all.
+#
+# Usage:
+#   source onboarding/cluster.env && \
+#   envsubst '${INFRA_NAMESPACE} ${INFRA_ADMIN_GROUP}' \
+#   < onboarding/06-infra-rbac.yaml | oc apply -f -
+#
+# Called by: onboarding/apply-onboarding.sh (Step 5)
+# Required vars: INFRA_NAMESPACE, INFRA_ADMIN_GROUP
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: infra-admins-edit
+  namespace: ${INFRA_NAMESPACE}
+subjects:
+  - kind: Group
+    name: ${INFRA_ADMIN_GROUP}
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: edit
+  apiGroup: rbac.authorization.k8s.io

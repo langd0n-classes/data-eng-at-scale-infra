@@ -1,0 +1,20 @@
+# onboarding/01-infra-namespace.yaml — Infra namespace
+#
+# Creates the shared infrastructure namespace where the event generator,
+# Tekton pipelines, and other shared resources live.
+#
+# Usage:
+#   source onboarding/cluster.env && \
+#   envsubst '${INFRA_NAMESPACE}' < onboarding/01-infra-namespace.yaml | oc apply -f -
+#
+# Called by: onboarding/apply-onboarding.sh (Step 3)
+# Required vars: INFRA_NAMESPACE
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${INFRA_NAMESPACE}
+  labels:
+    app: data-eng-infra
+    component: infra
+  annotations:
+    openshift.io/description: "Shared infrastructure namespace — managed by infra team"
