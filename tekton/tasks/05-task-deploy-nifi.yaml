@@ -4,7 +4,13 @@
 #
 # What it does:
 #   Step 1 (apply-nifi): substitutes template variables and runs oc apply
-#   Step 2 (wait-for-nifi): waits until the NiFi pod is Ready (up to 10 min — NiFi init is slow)
+#   Step 2 (wait-for-nifi): waits until the NiFi pod is Ready (up to 25 min on first run)
+#
+# Wait time breakdown (first run on a fresh cluster):
+#   - Image pull: quay.io/langdon/nifi-openshift:latest is ~3.5 GB — can take 10-15 min
+#   - Init container (keytool/TLS setup): ~30s
+#   - NiFi startup (NAR loading, Jetty, Spring): 3-5 min
+#   Total first-run budget: ~20 min. Subsequent runs skip the image pull (~5 min).
 #
 # This Task is idempotent — running it again when NiFi is already deployed
 # will update the resources if anything changed, or do nothing if unchanged.
@@ -30,7 +36,8 @@ metadata:
 spec:
   description: |
     Deploys a NiFi StatefulSet for a single team namespace using the
-    nifi template files. Waits until the NiFi pod is Ready (up to 10 min).
+    nifi template files. Waits until the NiFi pod is Ready (up to 25 min
+    on first run — image pull alone can take 10-15 min for the 3.5 GB image).
 
   params:
     - name: team-name
@@ -205,23 +212,26 @@ spec:
         EXTERNAL_DOMAIN="$(params.external-domain)"
 
         echo "Waiting for nifi-${TEAM_NAME}-0 to be Ready..."
-        echo "(NiFi has a slow init — keytool + startup can take 3-5 minutes)"
+        echo "(NiFi image is ~3.5 GB — first-run image pull alone can take 10-15 min)"
+        echo "(Subsequent runs skip the pull and complete in ~5 min)"
 
-        # Wait for the pod to exist first (init container runs keytool, takes ~30s)
-        for i in $(seq 1 18); do
+        # Wait for the pod to exist first.
+        # On first run the node must pull the 3.5 GB image before the pod appears —
+        # poll for up to 20 min to cover slow connections.
+        for i in $(seq 1 120); do
           if oc get pod "nifi-${TEAM_NAME}-0" -n "$TEAM_NAMESPACE" &>/dev/null; then
             echo "Pod nifi-${TEAM_NAME}-0 found."
             break
           fi
-          echo "Waiting for pod to be scheduled... (${i}/18)"
+          echo "Waiting for pod to be scheduled... (${i}/120, up to 20 min for image pull)"
           sleep 10
         done
 
-        # Now wait for it to be Ready (including init container completion)
+        # Now wait for it to be Ready (init container + NiFi startup ~5 min after pod appears)
         oc wait "pod/nifi-${TEAM_NAME}-0" \
           -n "$TEAM_NAMESPACE" \
           --for=condition=Ready \
-          --timeout=600s
+          --timeout=1500s
 
         echo ""
         echo "NiFi is Ready!"
