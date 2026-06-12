@@ -316,4 +316,15 @@ echo "   # On CRC (only 'developer' user available):"
 echo "   oc adm groups add-users ${INFRA_ADMIN_GROUP} developer"
 echo "   oc adm groups add-users ${TEAM_NAMESPACE_PREFIX}-01-${TEAM_GROUP_SUFFIX} developer"
 echo ""
+echo " IMPORTANT — Grant namespace-scoped admin so 'developer' can run tekton/setup.sh:"
+echo "   (groups give 'edit'; Tekton RBAC setup requires 'admin' — same as NERC instructors grant)"
+echo ""
+if [[ "$TEAMS_ONLY" == "false" ]]; then
+  echo "   oc adm policy add-role-to-user admin developer -n ${INFRA_NAMESPACE}"
+fi
+for i in $(seq "${FROM_TEAM}" "${ONBOARDING_NUM_TEAMS}"); do
+  TEAM_ID="$(printf '%02d' "$i")"
+  echo "   oc adm policy add-role-to-user admin developer -n ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}"
+done
+echo ""
 echo "============================================================"
