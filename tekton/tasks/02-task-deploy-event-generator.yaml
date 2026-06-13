@@ -221,21 +221,29 @@ spec:
         echo "=================================================="
         echo "Starting image build: ${EG_NAME}"
         echo "=================================================="
-        # --follow streams build logs to Tekton and blocks until the build finishes.
-        # If the build fails, oc start-build exits non-zero and the pipeline stops.
-        oc start-build "${EG_NAME}" -n "${INFRA_NS}" --follow
+        # Start build without --follow to avoid log-stream timeout.
+        # --follow fails when the build pod takes a moment to leave "New" phase —
+        # the log stream connection times out even though the build itself succeeds.
+        # Instead: start, capture build name, then poll for completion.
+        BUILD_REF=$(oc start-build "${EG_NAME}" -n "${INFRA_NS}" -o name)
+        BUILD_NAME="${BUILD_REF#build.build.openshift.io/}"
+        echo "Build started: ${BUILD_NAME}"
 
-        # Verify the build completed successfully
-        echo ""
-        echo "Verifying build result..."
-        BUILD_NAME=$(oc get builds -n "${INFRA_NS}" -l "buildconfig=${EG_NAME}" \
-          --sort-by='.metadata.creationTimestamp' \
-          -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null || echo "")
-
-        if [ -z "$BUILD_NAME" ]; then
-          echo "ERROR: Could not find build after oc start-build."
-          exit 1
-        fi
+        # Poll every 10s — budget 10 min (image is small Python app, usually < 2 min)
+        echo "Polling for build completion (up to 10 min)..."
+        for i in $(seq 1 60); do
+          PHASE=$(oc get build "${BUILD_NAME}" -n "${INFRA_NS}" \
+            -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+          echo "  [${i}/60] phase: ${PHASE}"
+          if [ "$PHASE" = "Complete" ]; then
+            break
+          elif [ "$PHASE" = "Failed" ] || [ "$PHASE" = "Error" ] || [ "$PHASE" = "Cancelled" ]; then
+            echo "ERROR: Build ${BUILD_NAME} ended with phase: ${PHASE}"
+            echo "       Run: oc logs build/${BUILD_NAME} -n ${INFRA_NS}"
+            exit 1
+          fi
+          sleep 10
+        done
 
         PHASE=$(oc get build "${BUILD_NAME}" -n "${INFRA_NS}" \
           -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
