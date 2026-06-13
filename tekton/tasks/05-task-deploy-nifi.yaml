@@ -175,6 +175,7 @@ spec:
         echo ""
         echo "Applying NetworkPolicy..."
         sed \
+          -e "s|\${TEAM_NAME}|${TEAM_NAME}|g" \
           -e "s|\${TEAM_NAMESPACE}|${TEAM_NAMESPACE}|g" \
           "$NIFI_DIR/team-networkpolicy-template.yaml" | oc apply -f -
 
