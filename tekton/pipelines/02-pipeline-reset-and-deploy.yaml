@@ -1047,6 +1047,10 @@ spec:
           value: $(params.nifi-image)
         - name: external-domain
           value: $(params.external-domain)
+        - name: git-repo-url
+          value: $(params.git-url)
+        - name: git-branch
+          value: $(params.git-revision)
       workspaces:
         - name: source
           workspace: shared-data

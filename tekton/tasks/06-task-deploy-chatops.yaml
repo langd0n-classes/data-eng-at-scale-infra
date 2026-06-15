@@ -78,6 +78,15 @@ spec:
       type: string
       default: ""
 
+    - name: git-repo-url
+      description: "Git repository URL for the BuildConfig source"
+      type: string
+
+    - name: git-branch
+      description: "Git branch for the BuildConfig source"
+      type: string
+      default: main
+
   workspaces:
     - name: source
       description: "Git repository containing chatops/k8s/ files"
@@ -166,6 +175,8 @@ spec:
 
         INFRA_NS="$(params.infra-namespace)"
         CHATOPS_NAME="$(params.chatops-name)"
+        GIT_REPO_URL="$(params.git-repo-url)"
+        GIT_BRANCH="$(params.git-branch)"
         SOURCE="$(workspaces.source.path)/chatops/k8s"
 
         echo "Applying ImageStream..."
@@ -175,12 +186,11 @@ spec:
           "${SOURCE}/01-imagestream.yaml" | oc apply -f -
 
         echo "Applying BuildConfig..."
-        # BuildConfig needs GIT_REPO_URL and GIT_BRANCH but these vary by cluster.
-        # The task reads them from the workspace (already substituted in the PipelineRun YAML).
-        # Here we substitute the remaining vars from params.
         sed \
           -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
           -e "s|\${CHATOPS_NAME}|${CHATOPS_NAME}|g" \
+          -e "s|\${GIT_REPO_URL}|${GIT_REPO_URL}|g" \
+          -e "s|\${GIT_BRANCH}|${GIT_BRANCH}|g" \
           "${SOURCE}/02-buildconfig.yaml" | oc apply -f -
 
         echo "Build resources applied — ConfigChange trigger will start the build."

@@ -774,11 +774,11 @@ def cmd_remove_nifi(name: str, ns: str) -> str:
     # Route
     try:
         routes = custom.list_namespaced_custom_object(
-            "route.openshift.io", "v1", ns, "routes", label_selector=label
+            "route.openshift.io", "v1", "routes", ns, label_selector=label
         )
         for r in routes.get("items", []):
             custom.delete_namespaced_custom_object(
-                "route.openshift.io", "v1", ns, "routes", r["metadata"]["name"]
+                "route.openshift.io", "v1", "routes", ns, r["metadata"]["name"]
             )
     except Exception:
         pass
@@ -886,11 +886,11 @@ def cmd_remove_events() -> str:
     ]:
         try:
             items = custom.list_namespaced_custom_object(
-                group, "v1", ns, plural, label_selector=label
+                group, "v1", plural, ns, label_selector=label
             )
             for item in items.get("items", []):
                 custom.delete_namespaced_custom_object(
-                    group, "v1", ns, plural, item["metadata"]["name"]
+                    group, "v1", plural, ns, item["metadata"]["name"]
                 )
         except Exception:
             pass
