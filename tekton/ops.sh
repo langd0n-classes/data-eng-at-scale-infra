@@ -300,11 +300,29 @@ cmd_reset_password() {
   local name="${1:?Usage: reset-password <name> <ns> <pwd>}"
   local ns="${2:?Usage: reset-password <name> <ns> <pwd>}"
   local pwd="${3:?Usage: reset-password <name> <ns> <pwd>}"
-  # Clear SHA annotation and redeploy with new password
-  run "oc annotate statefulset 'nifi-${name}' -n '${ns}' \
-    tekton.dev/git-sha- --ignore-not-found 2>/dev/null || true"
-  run "cd '${REPO_ROOT}/nifi' && bash deploy-team.sh '${name}' '${ns}' '${pwd}'"
-  ok "Password reset for ${name} in ${ns}"
+
+  if [[ ${#pwd} -lt 12 ]]; then
+    err "Password must be at least 12 characters (NiFi requirement)."
+    exit 1
+  fi
+
+  if ! oc get pod "nifi-${name}-0" -n "${ns}" &>/dev/null; then
+    err "Pod nifi-${name}-0 not found in ${ns} — is NiFi deployed?"
+    exit 1
+  fi
+
+  # NiFi stores the bcrypt hash in conf/login-identity-providers.xml on the PVC.
+  # The SINGLE_USER_CREDENTIALS_PASSWORD env var is only read when that file has
+  # no existing credentials. The only reliable way to change the password on a
+  # running instance is via the nifi.sh CLI, then restart the pod to reload.
+  info "Setting new credentials in NiFi pod..."
+  run "oc exec 'nifi-${name}-0' -n '${ns}' -- \
+    /opt/nifi/nifi-current/bin/nifi.sh set-single-user-credentials '${name}' '${pwd}'"
+
+  info "Restarting NiFi pod to reload credentials from disk..."
+  run "oc delete pod 'nifi-${name}-0' -n '${ns}'"
+
+  ok "Password reset for ${name} in ${ns}. NiFi pod restarting — ready in ~2 min."
 }
 
 cmd_restart_kafka() {
