@@ -115,6 +115,16 @@ if [[ "$SKIP_RBAC" == "false" ]]; then
     run "source '${CONFIG_FILE}' && envsubst '\${INFRA_NAMESPACE} \${TEKTON_SA_NAME}' \
       < '${SCRIPT_DIR}/rbac/02-clusterrolebinding.yaml' | oc apply -f -"
     ok "ClusterRoleBinding applied"
+
+    # Apply ChatOps ClusterRole + ClusterRoleBinding here (pipeline-runner SA
+    # cannot create cluster-scoped RBAC, so it must be done by the operator).
+    if [[ "${CHATOPS_ENABLED:-false}" == "true" ]]; then
+      CHATOPS_NAME_VAL="${CHATOPS_NAME:-slack-chatops}"
+      run "INFRA_NAMESPACE='${INFRA_NAMESPACE}' CHATOPS_NAME='${CHATOPS_NAME_VAL}' \
+        envsubst '\${INFRA_NAMESPACE} \${CHATOPS_NAME}' \
+        < '${REPO_ROOT}/chatops/k8s/rbac/clusterrolebinding.yaml' | oc apply -f -"
+      ok "ChatOps ClusterRole + ClusterRoleBinding applied"
+    fi
   else
     # Shared cluster — apply Role + RoleBinding to every active namespace
     ALL_NS=("${INFRA_NAMESPACE}")
