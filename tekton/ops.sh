@@ -393,6 +393,76 @@ cmd_status() {
     --no-headers 2>/dev/null | tail -10 || echo "  (none)"
 }
 
+cmd_status_all() {
+  # status-all is read-only — always executes, even in --dry-run mode
+  echo "======================================================"
+  echo "  Cluster-wide status"
+  echo "======================================================"
+
+  # ── infra namespace ──────────────────────────────────────
+  echo ""
+  echo "── infra (${INFRA_NAMESPACE}) ─────────────────────────────────────"
+
+  echo "Event Generator:"
+  oc get deployment "${EVENT_GENERATOR_NAME}" -n "${INFRA_NAMESPACE}" \
+    --no-headers \
+    -o custom-columns='  NAME:.metadata.name,READY:.status.readyReplicas,REPLICAS:.spec.replicas' \
+    2>/dev/null || echo "  (not deployed)"
+
+  local chatops_name="${CHATOPS_NAME:-slack-chatops}"
+  echo "ChatOps:"
+  oc get deployment "${chatops_name}" -n "${INFRA_NAMESPACE}" \
+    --no-headers \
+    -o custom-columns='  NAME:.metadata.name,READY:.status.readyReplicas,REPLICAS:.spec.replicas' \
+    2>/dev/null || echo "  (not deployed)"
+
+  echo "Pipeline runs (last 3):"
+  oc get pipelinerun -n "${INFRA_NAMESPACE}" \
+    --sort-by='.metadata.creationTimestamp' --no-headers \
+    -o custom-columns='  NAME:.metadata.name,STATUS:.status.conditions[0].reason,STARTED:.metadata.creationTimestamp' \
+    2>/dev/null | tail -3 || echo "  (none)"
+
+  # ── team namespaces ─────────────────────────────────────
+  local namespaces
+  namespaces=$(oc get projects --no-headers \
+    -o custom-columns='NAME:.metadata.name' 2>/dev/null \
+    | grep -v "^${INFRA_NAMESPACE}$" \
+    | grep -v "^openshift" \
+    | grep -v "^kube" \
+    | grep -v "^default$" \
+    || true)
+
+  if [[ -z "${namespaces}" ]]; then
+    echo ""
+    echo "No team namespaces found."
+  else
+    while IFS= read -r ns; do
+      [[ -z "${ns}" ]] && continue
+      echo ""
+      echo "── ${ns} ─────────────────────────────────────────────────"
+
+      echo "Pods:"
+      oc get pods -n "${ns}" --no-headers \
+        -o custom-columns='  NAME:.metadata.name,STATUS:.status.phase,READY:.status.containerStatuses[0].ready' \
+        2>/dev/null || echo "  (none)"
+
+      echo "PVCs:"
+      oc get pvc -n "${ns}" --no-headers \
+        -o custom-columns='  NAME:.metadata.name,STATUS:.status.phase,CAPACITY:.status.capacity.storage' \
+        2>/dev/null || echo "  (none)"
+
+      echo "Routes:"
+      oc get route -n "${ns}" --no-headers \
+        -o custom-columns='  NAME:.metadata.name,HOST:.spec.host' \
+        2>/dev/null || echo "  (none)"
+
+    done <<< "${namespaces}"
+  fi
+
+  echo ""
+  echo "======================================================"
+}
+
 cmd_help() {
   cat <<'HELP'
 tekton/ops.sh — Day-to-day classroom operations
@@ -429,7 +499,8 @@ Bulk operations:
   cleanup-runs       Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
 
 Observability:
-  status <name> <ns>   Show pods, services, PVCs, routes, and recent events
+  status      <name> <ns>   Show pods, services, PVCs, routes, and events for one team
+  status-all                Show pods, PVCs, routes, and pipeline runs across all namespaces
 
 Note: namespaces are NEVER deleted by ops.sh.
       For full decommission, use: bash tekton/cleanup.sh
@@ -458,6 +529,7 @@ case "$COMMAND" in
   reset-all)          cmd_reset_all ;;
   cleanup-runs)       cmd_cleanup_runs ;;
   status)             cmd_status              "${ARGS[@]}" ;;
+  status-all)         cmd_status_all ;;
   help|--help|-h)     cmd_help ;;
   *)
     err "Unknown command: ${COMMAND}"
