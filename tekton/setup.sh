@@ -115,16 +115,6 @@ if [[ "$SKIP_RBAC" == "false" ]]; then
     run "source '${CONFIG_FILE}' && envsubst '\${INFRA_NAMESPACE} \${TEKTON_SA_NAME}' \
       < '${SCRIPT_DIR}/rbac/02-clusterrolebinding.yaml' | oc apply -f -"
     ok "ClusterRoleBinding applied"
-
-    # Apply ChatOps ClusterRole + ClusterRoleBinding here (pipeline-runner SA
-    # cannot create cluster-scoped RBAC, so it must be done by the operator).
-    if [[ "${CHATOPS_ENABLED:-false}" == "true" ]]; then
-      CHATOPS_NAME_VAL="${CHATOPS_NAME:-slack-chatops}"
-      run "INFRA_NAMESPACE='${INFRA_NAMESPACE}' CHATOPS_NAME='${CHATOPS_NAME_VAL}' \
-        envsubst '\${INFRA_NAMESPACE} \${CHATOPS_NAME}' \
-        < '${REPO_ROOT}/chatops/k8s/rbac/clusterrolebinding.yaml' | oc apply -f -"
-      ok "ChatOps ClusterRole + ClusterRoleBinding applied"
-    fi
   else
     # Shared cluster — apply Role + RoleBinding to every active namespace
     ALL_NS=("${INFRA_NAMESPACE}")
@@ -142,6 +132,26 @@ if [[ "$SKIP_RBAC" == "false" ]]; then
         < '${SCRIPT_DIR}/rbac/04-role-rolebinding-namespace.yaml' | oc apply -f - -n '${ns}'"
     done
     ok "Role + RoleBinding applied to ${#ALL_NS[@]} namespaces"
+  fi
+
+  # Apply ChatOps RoleBinding per namespace (namespace-scoped, no cluster-admin needed).
+  # Binds slack-chatops-sa to the built-in 'admin' ClusterRole in infra + each team namespace.
+  if [[ "${CHATOPS_ENABLED:-false}" == "true" ]]; then
+    CHATOPS_NAME_VAL="${CHATOPS_NAME:-slack-chatops}"
+    ALL_CHATOPS_NS=("${INFRA_NAMESPACE}")
+    for i in $(seq 1 15); do
+      ns_var="TEAM${i}_NAMESPACE"
+      ns="${!ns_var:-skip}"
+      [[ "$ns" == "skip" ]] && continue
+      ALL_CHATOPS_NS+=("$ns")
+    done
+    for ns in "${ALL_CHATOPS_NS[@]}"; do
+      echo "         chatops binding → namespace: ${ns}"
+      run "INFRA_NAMESPACE='${INFRA_NAMESPACE}' CHATOPS_NAME='${CHATOPS_NAME_VAL}' \
+        envsubst '\${INFRA_NAMESPACE} \${CHATOPS_NAME}' \
+        < '${REPO_ROOT}/chatops/k8s/rbac/rolebinding-namespace.yaml' | oc apply -f - -n '${ns}'"
+    done
+    ok "ChatOps RoleBindings applied to ${#ALL_CHATOPS_NS[@]} namespaces"
   fi
 else
   info "Step 4 — RBAC (skipped)"

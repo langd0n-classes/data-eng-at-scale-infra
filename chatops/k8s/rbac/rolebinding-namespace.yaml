@@ -1,0 +1,30 @@
+# RoleBinding for slack-chatops-sa — namespace-scoped
+#
+# Binds slack-chatops-sa to the built-in 'admin' ClusterRole scoped to a single
+# namespace. Using a RoleBinding (not ClusterRoleBinding) means no cluster-admin
+# required — the developer user can apply this to any namespace they own.
+#
+# Applied per namespace by setup.sh when CHATOPS_ENABLED=true:
+#   - infra namespace  (event-generator, pipelineruns, imagestreams)
+#   - each team namespace  (kafka, nifi, pvcs, routes)
+#
+# Variables substituted via envsubst (source config.env first):
+#   ${CHATOPS_NAME}     — config.env: CHATOPS_NAME    (default: slack-chatops)
+#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE (where the SA lives)
+#
+# Applied by setup.sh — do not apply manually.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: chatops-runner-binding
+  labels:
+    app: ${CHATOPS_NAME}
+subjects:
+  - kind: ServiceAccount
+    name: ${CHATOPS_NAME}-sa
+    namespace: ${INFRA_NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: admin
