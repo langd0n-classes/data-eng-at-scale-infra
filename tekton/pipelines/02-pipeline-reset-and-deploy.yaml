@@ -41,9 +41,6 @@ spec:
     - name: event-generator-name
       type: string
       default: event-generator
-    - name: git-repo-url
-      type: string
-
     # ── Teams 1-15 (set to "skip" in config.env to bypass) ───────────────────
     - name: team1-name
       type: string
@@ -1001,10 +998,6 @@ spec:
           value: $(context.pipelineRun.namespace)
         - name: event-generator-name
           value: $(params.event-generator-name)
-        - name: git-repo-url
-          value: $(params.git-repo-url)
-        - name: git-branch
-          value: $(params.git-revision)
         - name: team-bootstrap-servers
           value: $(params.all-team-bootstrap-servers)
         - name: event-rate-per-sec

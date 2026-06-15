@@ -1,26 +1,18 @@
 # TaskRun: deploy-event-generator (initial deploy)
 #
-# Deploys the event generator for the first time as a standalone operation,
-# outside of a pipeline. Applies ImageStream, BuildConfig, ConfigMap, and
-# Deployment in order, then restarts the deployment.
-#
-# Difference from taskrun-update-event-gen.yaml:
-#   deploy   → use when the event generator does not exist yet in the infra namespace
-#   update   → use when it already exists and you are changing config (rate, topics, etc.)
-#   Both files run the same task and are idempotent — if unsure, either is safe to run.
-#
-# When to use:
-#   - Event generator was never deployed (fresh infra namespace)
-#   - Recovering from a full infra namespace wipe
+# Deploys or updates the event generator as a standalone operation,
+# outside of a pipeline. Applies ConfigMap and Deployment, then restarts
+# the deployment to pick up config changes.
 #
 # Prerequisites:
+#   - setup.sh has been run at least once (ImageStream + BuildConfig must exist)
 #   - At least one PipelineRun has completed (workspace PVC must exist)
 #   - TEKTON_WORKSPACE_PVC is set in config.env
 #     Find it with: oc get pvc -n ${INFRA_NAMESPACE} | grep shared-data
 #
 # Apply with:
 #   source config.env && \
-#   envsubst '${INFRA_NAMESPACE} ${EVENT_GENERATOR_NAME} ${GIT_REPO_URL} ${GIT_BRANCH} ${TEAM_BOOTSTRAP_SERVERS} ${EVENT_RATE_PER_SEC} ${TOPIC_PREFIX} ${TOPIC_SUFFIX} ${REGIONS} ${TEKTON_WORKSPACE_PVC}' \
+#   envsubst '${INFRA_NAMESPACE} ${EVENT_GENERATOR_NAME} ${TEAM_BOOTSTRAP_SERVERS} ${EVENT_RATE_PER_SEC} ${TOPIC_PREFIX} ${TOPIC_SUFFIX} ${REGIONS} ${TEKTON_WORKSPACE_PVC}' \
 #     < tekton/runs/taskrun-deploy-event-gen.yaml | oc create -f -
 #
 # Watch:
@@ -29,8 +21,6 @@
 # Variables (all from config.env):
 #   ${INFRA_NAMESPACE}          — shared infra namespace
 #   ${EVENT_GENERATOR_NAME}     — event generator deployment name
-#   ${GIT_REPO_URL}             — git repo URL (used by OpenShift BuildConfig)
-#   ${GIT_BRANCH}               — branch to build from
 #   ${TEAM_BOOTSTRAP_SERVERS}   — full comma-separated team-to-Kafka mapping
 #   ${EVENT_RATE_PER_SEC}       — events per second
 #   ${TOPIC_PREFIX}             — topic name prefix (e.g. events.)
@@ -56,12 +46,6 @@ spec:
 
     - name: event-generator-name
       value: "${EVENT_GENERATOR_NAME}"        # config.env: EVENT_GENERATOR_NAME
-
-    - name: git-repo-url
-      value: "${GIT_REPO_URL}"               # config.env: GIT_REPO_URL
-
-    - name: git-branch
-      value: "${GIT_BRANCH}"                 # config.env: GIT_BRANCH
 
     - name: team-bootstrap-servers
       value: "${TEAM_BOOTSTRAP_SERVERS}"     # config.env: TEAM_BOOTSTRAP_SERVERS

@@ -71,9 +71,6 @@ spec:
     - name: event-generator-name
       value: ${EVENT_GENERATOR_NAME}
 
-    - name: git-repo-url
-      value: ${GIT_REPO_URL}
-
     # ── Teams 1-15 (set to "skip" in config.env to bypass) ──────────────────
     - name: team1-name
       value: ${TEAM1_NAME}
