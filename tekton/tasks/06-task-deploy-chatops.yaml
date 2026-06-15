@@ -1,0 +1,250 @@
+# Task: deploy-chatops
+#
+# Deploys or updates the ChatOps (Slack) FastAPI app in the infra namespace.
+#
+# What this task does:
+#   Step 1 (apply-chatops-rbac):     creates ServiceAccount and ClusterRoleBinding
+#   Step 2 (check-slack-secret):     verifies slack-credentials Secret exists
+#   Step 3 (apply-build-resources):  applies ImageStream + BuildConfig (ConfigChange
+#                                    trigger fires the Docker build automatically)
+#   Step 4 (apply-deployment):       applies Deployment + Service + Route; waits
+#                                    for rollout; prints the slash command URL
+#
+# Prerequisites (done once before pipeline runs):
+#   oc create secret generic slack-credentials \
+#     --from-literal=signing-secret=<from Slack App Basic Info page> \
+#     -n ${INFRA_NAMESPACE}
+#
+# Variables substituted via envsubst (source config.env first):
+#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE
+#   ${OC_CLI_IMAGE}     — config.env: OC_CLI_IMAGE
+#
+# Apply with:
+#   source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' \
+#     < tekton/tasks/06-task-deploy-chatops.yaml | oc apply -f -
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-chatops
+  namespace: ${INFRA_NAMESPACE}  # config.env: INFRA_NAMESPACE
+  labels:
+    app: tekton-pipeline
+    component: chatops
+spec:
+  description: |
+    Deploys or updates the ChatOps FastAPI app (Slack /infra slash command handler).
+    Applies RBAC, verifies Slack secret exists, applies ImageStream + BuildConfig,
+    then deploys the app and prints the Route URL for Slack slash command config.
+
+  params:
+    - name: chatops-name
+      description: "Name of the ChatOps deployment"
+      type: string
+      default: slack-chatops
+
+    - name: infra-namespace
+      description: "Namespace where ChatOps runs"
+      type: string
+      default: infra
+
+    - name: event-generator-name
+      description: "Name of the event generator deployment (passed as env var)"
+      type: string
+      default: event-generator
+
+    - name: admin-channel-id
+      description: "Slack channel ID that gets admin-level command access"
+      type: string
+      default: ""
+
+    - name: slack-secret-name
+      description: "Name of the Secret containing signing-secret key"
+      type: string
+      default: slack-credentials
+
+    - name: storage-class
+      description: "Storage class name (passed as env var for add-kafka / add-nifi)"
+      type: string
+      default: standard
+
+    - name: nifi-image
+      description: "NiFi container image (passed as env var for add-nifi)"
+      type: string
+      default: ""
+
+    - name: external-domain
+      description: "Cluster wildcard domain (passed as env var for add-nifi)"
+      type: string
+      default: ""
+
+  workspaces:
+    - name: source
+      description: "Git repository containing chatops/k8s/ files"
+
+  steps:
+    # Step 1: Apply ServiceAccount and ClusterRoleBinding.
+    # Must run before the Deployment (pod needs the SA to exist at schedule time).
+    - name: apply-chatops-rbac
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        INFRA_NS="$(params.infra-namespace)"
+        CHATOPS_NAME="$(params.chatops-name)"
+        SOURCE="$(workspaces.source.path)/chatops/k8s/rbac"
+
+        echo "Applying ChatOps RBAC..."
+        sed \
+          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|\${CHATOPS_NAME}|${CHATOPS_NAME}|g" \
+          "${SOURCE}/serviceaccount.yaml" | oc apply -f -
+
+        sed \
+          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|\${CHATOPS_NAME}|${CHATOPS_NAME}|g" \
+          "${SOURCE}/clusterrolebinding.yaml" | oc apply -f -
+
+        echo "RBAC applied."
+
+    # Step 2: Verify Slack credentials Secret exists.
+    # This Secret is created manually by the teacher before running the pipeline.
+    # Fail fast with clear instructions if missing.
+    - name: check-slack-secret
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        INFRA_NS="$(params.infra-namespace)"
+        SECRET_NAME="$(params.slack-secret-name)"
+
+        if ! oc get secret "${SECRET_NAME}" -n "${INFRA_NS}" &>/dev/null; then
+          echo ""
+          echo "ERROR: Secret '${SECRET_NAME}' not found in namespace '${INFRA_NS}'."
+          echo "  Create it before running the pipeline:"
+          echo ""
+          echo "    oc create secret generic ${SECRET_NAME} \\"
+          echo "      --from-literal=signing-secret=<SIGNING_SECRET_FROM_SLACK_APP> \\"
+          echo "      -n ${INFRA_NS}"
+          echo ""
+          echo "  Find signing-secret: Slack App → Basic Information → App Credentials → Signing Secret"
+          exit 1
+        fi
+
+        echo "Slack credentials secret '${SECRET_NAME}' found."
+
+    # Step 3: Apply ImageStream and BuildConfig.
+    # ConfigChange trigger fires the Docker build automatically on apply.
+    - name: apply-build-resources
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        INFRA_NS="$(params.infra-namespace)"
+        CHATOPS_NAME="$(params.chatops-name)"
+        SOURCE="$(workspaces.source.path)/chatops/k8s"
+
+        echo "Applying ImageStream..."
+        sed \
+          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|\${CHATOPS_NAME}|${CHATOPS_NAME}|g" \
+          "${SOURCE}/01-imagestream.yaml" | oc apply -f -
+
+        echo "Applying BuildConfig..."
+        # BuildConfig needs GIT_REPO_URL and GIT_BRANCH but these vary by cluster.
+        # The task reads them from the workspace (already substituted in the PipelineRun YAML).
+        # Here we substitute the remaining vars from params.
+        sed \
+          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|\${CHATOPS_NAME}|${CHATOPS_NAME}|g" \
+          "${SOURCE}/02-buildconfig.yaml" | oc apply -f -
+
+        echo "Build resources applied — ConfigChange trigger will start the build."
+        echo "Build progress: oc logs -f bc/${CHATOPS_NAME} -n ${INFRA_NS}"
+
+    # Step 4: Apply Deployment + Service + Route; wait for rollout; print URL.
+    # 600s timeout: first build (Python deps + source copy) takes 5-10 min.
+    - name: apply-deployment
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "500m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        INFRA_NS="$(params.infra-namespace)"
+        CHATOPS_NAME="$(params.chatops-name)"
+        EG_NAME="$(params.event-generator-name)"
+        ADMIN_CHANNEL="$(params.admin-channel-id)"
+        STORAGE_CLASS_V="$(params.storage-class)"
+        NIFI_IMAGE_V="$(params.nifi-image)"
+        EXTERNAL_DOMAIN_V="$(params.external-domain)"
+        SOURCE="$(workspaces.source.path)/chatops/k8s"
+
+        echo "Applying Deployment + Service..."
+        sed \
+          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|\${CHATOPS_NAME}|${CHATOPS_NAME}|g" \
+          -e "s|\${EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
+          -e "s|\${ADMIN_CHANNEL_ID}|${ADMIN_CHANNEL}|g" \
+          -e "s|\${STORAGE_CLASS}|${STORAGE_CLASS_V}|g" \
+          -e "s|\${NIFI_IMAGE}|${NIFI_IMAGE_V}|g" \
+          -e "s|\${EXTERNAL_DOMAIN}|${EXTERNAL_DOMAIN_V}|g" \
+          "${SOURCE}/03-deployment.yaml" | oc apply -f -
+
+        echo "Applying Route..."
+        sed \
+          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|\${CHATOPS_NAME}|${CHATOPS_NAME}|g" \
+          "${SOURCE}/04-route.yaml" | oc apply -f -
+
+        # Restart if already deployed to pick up any config changes.
+        # '|| true' prevents failure on first deploy (no existing rollout to restart).
+        oc rollout restart "deployment/${CHATOPS_NAME}" -n "${INFRA_NS}" 2>/dev/null || true
+
+        echo "Waiting for rollout (timeout: 600s — build may still be in progress)..."
+        oc rollout status "deployment/${CHATOPS_NAME}" -n "${INFRA_NS}" --timeout=600s
+
+        ROUTE=$(oc get route "${CHATOPS_NAME}" -n "${INFRA_NS}" \
+          -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+
+        echo ""
+        echo "======================================================"
+        echo "ChatOps deployed successfully."
+        if [[ -n "${ROUTE}" ]]; then
+          echo ""
+          echo "  Slash command URL: https://${ROUTE}/slack/command"
+          echo ""
+          echo "  Set this as the Request URL in your Slack App:"
+          echo "  Slack App → Slash Commands → /infra → Request URL"
+        fi
+        echo "======================================================"

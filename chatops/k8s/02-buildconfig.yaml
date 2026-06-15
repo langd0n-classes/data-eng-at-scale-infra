@@ -1,0 +1,26 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: ${CHATOPS_NAME}
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: ${CHATOPS_NAME}
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: ${CHATOPS_NAME}:latest
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO_URL}
+      ref: ${GIT_BRANCH}
+    contextDir: chatops
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  triggers:
+    - type: ConfigChange
+    - type: ImageChange
+      imageChange: {}

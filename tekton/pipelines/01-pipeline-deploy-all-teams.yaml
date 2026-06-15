@@ -215,6 +215,17 @@ spec:
       type: string
       default: "Boston,NYC,Chicago,Seattle,Austin"
 
+    # ── ChatOps ──────────────────────────────────────────────────────────────
+    - name: chatops-enabled
+      type: string
+      default: "true"
+    - name: chatops-name
+      type: string
+      default: slack-chatops
+    - name: admin-channel-id
+      type: string
+      default: ""
+
   workspaces:
     - name: shared-data
 
@@ -938,6 +949,34 @@ spec:
           value: $(params.topic-suffix)
         - name: regions
           value: $(params.regions)
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    # ── Deploy ChatOps — runs in parallel with Kafka deploys after clone-repo ──
+    - name: deploy-chatops
+      runAfter: [clone-repo]
+      when:
+        - input: "$(params.chatops-enabled)"
+          operator: in
+          values: ["true"]
+      taskRef:
+        name: deploy-chatops
+      params:
+        - name: chatops-name
+          value: $(params.chatops-name)
+        - name: infra-namespace
+          value: $(context.pipelineRun.namespace)
+        - name: event-generator-name
+          value: $(params.event-generator-name)
+        - name: admin-channel-id
+          value: $(params.admin-channel-id)
+        - name: storage-class
+          value: $(params.storage-class)
+        - name: nifi-image
+          value: $(params.nifi-image)
+        - name: external-domain
+          value: $(params.external-domain)
       workspaces:
         - name: source
           workspace: shared-data
