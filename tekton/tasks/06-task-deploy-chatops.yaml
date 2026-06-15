@@ -110,15 +110,18 @@ spec:
         INFRA_NS="$(params.infra-namespace)"
         CHATOPS_NAME="$(params.chatops-name)"
         SOURCE="$(workspaces.source.path)/chatops/k8s/rbac"
+        # DOLLAR is used to build ${INFRA_NAMESPACE} at runtime so envsubst
+        # (applied at task-apply time) cannot corrupt the sed pattern.
+        DOLLAR='$'
 
         echo "Applying ChatOps RBAC..."
         sed \
-          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|${DOLLAR}{INFRA_NAMESPACE}|${INFRA_NS}|g" \
           -e "s|\${CHATOPS_NAME}|${CHATOPS_NAME}|g" \
           "${SOURCE}/serviceaccount.yaml" | oc apply -f -
 
         sed \
-          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|${DOLLAR}{INFRA_NAMESPACE}|${INFRA_NS}|g" \
           -e "s|\${CHATOPS_NAME}|${CHATOPS_NAME}|g" \
           "${SOURCE}/clusterrolebinding.yaml" | oc apply -f -
 
@@ -178,16 +181,17 @@ spec:
         GIT_REPO_URL="$(params.git-repo-url)"
         GIT_BRANCH="$(params.git-branch)"
         SOURCE="$(workspaces.source.path)/chatops/k8s"
+        DOLLAR='$'
 
         echo "Applying ImageStream..."
         sed \
-          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|${DOLLAR}{INFRA_NAMESPACE}|${INFRA_NS}|g" \
           -e "s|\${CHATOPS_NAME}|${CHATOPS_NAME}|g" \
           "${SOURCE}/01-imagestream.yaml" | oc apply -f -
 
         echo "Applying BuildConfig..."
         sed \
-          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|${DOLLAR}{INFRA_NAMESPACE}|${INFRA_NS}|g" \
           -e "s|\${CHATOPS_NAME}|${CHATOPS_NAME}|g" \
           -e "s|\${GIT_REPO_URL}|${GIT_REPO_URL}|g" \
           -e "s|\${GIT_BRANCH}|${GIT_BRANCH}|g" \
@@ -219,10 +223,11 @@ spec:
         NIFI_IMAGE_V="$(params.nifi-image)"
         EXTERNAL_DOMAIN_V="$(params.external-domain)"
         SOURCE="$(workspaces.source.path)/chatops/k8s"
+        DOLLAR='$'
 
         echo "Applying Deployment + Service..."
         sed \
-          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|${DOLLAR}{INFRA_NAMESPACE}|${INFRA_NS}|g" \
           -e "s|\${CHATOPS_NAME}|${CHATOPS_NAME}|g" \
           -e "s|\${EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
           -e "s|\${ADMIN_CHANNEL_ID}|${ADMIN_CHANNEL}|g" \
@@ -233,7 +238,7 @@ spec:
 
         echo "Applying Route..."
         sed \
-          -e "s|\${INFRA_NAMESPACE}|${INFRA_NS}|g" \
+          -e "s|${DOLLAR}{INFRA_NAMESPACE}|${INFRA_NS}|g" \
           -e "s|\${CHATOPS_NAME}|${CHATOPS_NAME}|g" \
           "${SOURCE}/04-route.yaml" | oc apply -f -
 
