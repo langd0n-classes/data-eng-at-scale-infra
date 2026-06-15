@@ -114,16 +114,13 @@ spec:
         # (applied at task-apply time) cannot corrupt the sed pattern.
         DOLLAR='$'
 
-        echo "Applying ChatOps RBAC..."
+        # ServiceAccount only — ClusterRole + ClusterRoleBinding are applied
+        # by setup.sh (step 4) since pipeline-runner cannot create cluster-scoped RBAC.
+        echo "Applying ChatOps ServiceAccount..."
         sed \
           -e "s|${DOLLAR}{INFRA_NAMESPACE}|${INFRA_NS}|g" \
           -e "s|\${CHATOPS_NAME}|${CHATOPS_NAME}|g" \
           "${SOURCE}/serviceaccount.yaml" | oc apply -f -
-
-        sed \
-          -e "s|${DOLLAR}{INFRA_NAMESPACE}|${INFRA_NS}|g" \
-          -e "s|\${CHATOPS_NAME}|${CHATOPS_NAME}|g" \
-          "${SOURCE}/clusterrolebinding.yaml" | oc apply -f -
 
         echo "RBAC applied."
 
