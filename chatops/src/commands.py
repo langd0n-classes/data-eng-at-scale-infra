@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 from kubernetes import client as k8s_client
+from kubernetes.stream import stream as k8s_stream
 
 from settings import settings
 
@@ -73,9 +74,10 @@ def dispatch(subcmd: str, args: list[str], channel_id: str) -> str:
         case "remove-team":     return cmd_remove_team(*args)
         case "remove-kafka":    return cmd_remove_kafka(*args)
         case "remove-nifi":     return cmd_remove_nifi(*args)
-        case "wipe-kafka-data": return cmd_wipe_kafka_data(*args)
-        case "restart-kafka":   return cmd_restart_kafka(*args)
-        case "restart-nifi":    return cmd_restart_nifi(*args)
+        case "wipe-kafka-data":  return cmd_wipe_kafka_data(*args)
+        case "restart-kafka":    return cmd_restart_kafka(*args)
+        case "restart-nifi":     return cmd_restart_nifi(*args)
+        case "reset-password":   return cmd_reset_password(*args)
         case "pause-events":    return cmd_pause_events()
         case "resume-events":   return cmd_resume_events()
         case "remove-events":   return cmd_remove_events()
@@ -844,6 +846,43 @@ def cmd_restart_nifi(name: str, ns: str) -> str:
     return f"nifi-{name}-0 deleted — StatefulSet will restart it"
 
 
+def cmd_reset_password(name: str, ns: str, pwd: str) -> str:
+    if len(pwd) < 12:
+        raise ValueError("Password must be at least 12 characters (NiFi requirement).")
+
+    pod_name = f"nifi-{name}-0"
+    try:
+        core_v1.read_namespaced_pod(pod_name, ns)
+    except k8s_client.ApiException as exc:
+        if exc.status == 404:
+            raise RuntimeError(f"Pod {pod_name} not found in {ns} — is NiFi deployed?")
+        raise
+
+    # NiFi stores the bcrypt hash in conf/login-identity-providers.xml on the PVC.
+    # The env var is only read when no credentials file exists yet.
+    # Use the nifi.sh CLI to update the hash, then restart the pod to reload it.
+    resp = k8s_stream(
+        core_v1.connect_get_namespaced_pod_exec,
+        pod_name,
+        ns,
+        command=[
+            "/opt/nifi/nifi-current/bin/nifi.sh",
+            "set-single-user-credentials",
+            name,
+            pwd,
+        ],
+        stderr=True,
+        stdin=False,
+        stdout=True,
+        tty=False,
+    )
+    if "ERROR" in resp:
+        raise RuntimeError(f"nifi.sh set-single-user-credentials failed: {resp.strip()}")
+
+    core_v1.delete_namespaced_pod(pod_name, ns, body=k8s_client.V1DeleteOptions())
+    return f"Password reset for {name} in {ns}. Pod restarting — NiFi ready in ~2 min."
+
+
 def cmd_pause_events() -> str:
     apps_v1.patch_namespaced_deployment_scale(
         settings.event_generator_name,
@@ -1012,9 +1051,10 @@ HELP_TEXT = """\
   `remove-team <name> <ns>`         Remove Kafka + NiFi
   `remove-kafka <name> <ns>`        Remove only Kafka
   `remove-nifi <name> <ns>`         Remove only NiFi
-  `wipe-kafka-data <name> <ns>`     Delete Kafka PVC (data wiped, pod restarts fresh)
-  `restart-kafka <name> <ns>`       Restart Kafka pod
-  `restart-nifi <name> <ns>`        Restart NiFi pod
+  `wipe-kafka-data <name> <ns>`          Delete Kafka PVC (data wiped, pod restarts fresh)
+  `restart-kafka <name> <ns>`            Restart Kafka pod
+  `restart-nifi <name> <ns>`             Restart NiFi pod
+  `reset-password <name> <ns> <pwd>`     Reset NiFi login password (min 12 chars)
 
 *Event generator*
   `pause-events`     Scale to 0 replicas
