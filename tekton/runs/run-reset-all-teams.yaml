@@ -193,6 +193,13 @@ spec:
     - name: regions
       value: "${REGIONS}"
 
+    - name: chatops-enabled
+      value: "${CHATOPS_ENABLED}"
+    - name: chatops-name
+      value: "${CHATOPS_NAME}"
+    - name: admin-channel-id
+      value: "${ADMIN_CHANNEL_ID}"
+
   workspaces:
     - name: shared-data
       volumeClaimTemplate:

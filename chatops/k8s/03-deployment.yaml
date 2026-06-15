@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${CHATOPS_NAME}
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: ${CHATOPS_NAME}
+  annotations:
+    image.openshift.io/triggers: '[{"from":{"kind":"ImageStreamTag","name":"${CHATOPS_NAME}:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"chatops\")].image"}]'
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${CHATOPS_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${CHATOPS_NAME}
+    spec:
+      serviceAccountName: ${CHATOPS_NAME}-sa
+      containers:
+        - name: chatops
+          image: image-registry.openshift-image-registry.svc:5000/${INFRA_NAMESPACE}/${CHATOPS_NAME}:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SLACK_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: slack-credentials
+                  key: signing-secret
+            - name: INFRA_NAMESPACE
+              value: ${INFRA_NAMESPACE}
+            - name: EVENT_GENERATOR_NAME
+              value: ${EVENT_GENERATOR_NAME}
+            - name: ADMIN_CHANNEL_ID
+              value: ${ADMIN_CHANNEL_ID}
+            - name: STORAGE_CLASS
+              value: ${STORAGE_CLASS}
+            - name: NIFI_IMAGE
+              value: ${NIFI_IMAGE}
+            - name: EXTERNAL_DOMAIN
+              value: ${EXTERNAL_DOMAIN}
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 50m
+            limits:
+              memory: 256Mi
+              cpu: 200m
+          readinessProbe:
+            httpGet:
+              path: /docs
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /docs
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${CHATOPS_NAME}
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: ${CHATOPS_NAME}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  selector:
+    app: ${CHATOPS_NAME}
