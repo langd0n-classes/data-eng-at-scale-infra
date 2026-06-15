@@ -1,18 +1,20 @@
 # Task: deploy-event-generator
 #
 # Deploys or updates the event generator in the infra namespace.
-# Applies all 4 k8s resource files in order:
-#   1. ImageStream (OpenShift image registry entry)
-#   2. BuildConfig (builds the Docker image from Git source)
-#   3. ConfigMap  (runtime config: Kafka addresses, event rate, topics prefix, etc.)
-#   4. Deployment (runs the Python event generator)
 #
-# Then restarts the deployment so it picks up any ConfigMap changes immediately.
+# Prerequisites (applied once by setup.sh before this task runs):
+#   - ImageStream: registered in OpenShift's internal registry
+#   - BuildConfig: builds the Docker image from Git source
+#     The BuildConfig's ConfigChange trigger fires the build automatically on
+#     first apply. Subsequent applies only rebuild if the BuildConfig spec changes.
 #
-# Build idempotency: the wait-for-build step compares the workspace git commit SHA
-# against the SHA recorded in the latest Complete build. If they match, the build is
-# skipped — the image is already up-to-date. If the commit has changed (or the last
-# build failed), a new build is triggered via oc start-build.
+# What this task does:
+#   Step 1 (check-prerequisites): verifies ImageStream and BuildConfig exist.
+#                                  Fails fast with instructions if missing.
+#   Step 2 (apply-configmap):     applies ConfigMap with current runtime config
+#                                  (Kafka addresses, event rate, topics, regions)
+#   Step 3 (apply-deployment):    applies Deployment and restarts it so the pod
+#                                  picks up ConfigMap changes immediately.
 #
 # This Task is idempotent — running it again updates config without recreating resources.
 #
@@ -41,8 +43,8 @@ metadata:
 spec:
   description: |
     Deploys or updates the event generator in the infra namespace.
-    Applies ImageStream, BuildConfig, ConfigMap, and Deployment.
-    Restarts the deployment to pick up config changes.
+    Applies ConfigMap and Deployment; restarts the pod to pick up config changes.
+    Requires ImageStream and BuildConfig to be pre-applied (setup.sh does this).
 
   params:
     - name: infra-namespace
@@ -54,15 +56,6 @@ spec:
       description: "Name of the event generator deployment"
       type: string
       default: event-generator
-
-    - name: git-repo-url
-      description: "Git URL for OpenShift to build the event generator image from"
-      type: string
-
-    - name: git-branch
-      description: "Git branch to build from"
-      type: string
-      default: main
 
     - name: team-bootstrap-servers
       description: |
@@ -96,166 +89,63 @@ spec:
       description: "Git repository containing event-generator/k8s/ files"
 
   steps:
-    # Step 1: Apply ImageStream and BuildConfig
-    # ImageStream: registers the image in OpenShift's internal registry
-    # BuildConfig: tells OpenShift how to build the image from Git source
-    - name: apply-build-resources
+    # Step 1: Verify ImageStream and BuildConfig exist before proceeding.
+    # These are applied once by setup.sh. If missing, the image can't be built
+    # and the Deployment will fail to pull. Fail fast with clear instructions.
+    - name: check-prerequisites
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
       computeResources:
         requests:
-          memory: "128Mi"
-          cpu: "100m"
+          memory: "64Mi"
+          cpu: "50m"
         limits:
-          memory: "256Mi"
-          cpu: "500m"
+          memory: "128Mi"
+          cpu: "200m"
       script: |
         #!/bin/bash
         set -e
 
         INFRA_NS="$(params.infra-namespace)"
         EG_NAME="$(params.event-generator-name)"
-        SOURCE="$(workspaces.source.path)/event-generator/k8s"
-        DOLLAR='$'
+        MISSING=false
 
-        echo "=================================================="
-        echo "Applying ImageStream..."
-        echo "=================================================="
-        sed \
-          -e "s|${DOLLAR}{INFRA_NAMESPACE}|${INFRA_NS}|g" \
-          -e "s|${DOLLAR}{EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
-          "${SOURCE}/01-imagestream.yaml" | oc apply -f -
+        echo "Checking prerequisites for event generator deploy..."
 
-        echo ""
-        echo "=================================================="
-        echo "Applying BuildConfig (builds image from Git)..."
-        echo "=================================================="
-        sed \
-          -e "s|${DOLLAR}{INFRA_NAMESPACE}|${INFRA_NS}|g" \
-          -e "s|${DOLLAR}{EVENT_GENERATOR_NAME}|${EG_NAME}|g" \
-          -e "s|${DOLLAR}{GIT_REPO_URL}|$(params.git-repo-url)|g" \
-          -e "s|${DOLLAR}{GIT_BRANCH}|$(params.git-branch)|g" \
-          "${SOURCE}/02-buildconfig.yaml" | oc apply -f -
-
-        echo ""
-        echo "Build resources applied."
-
-    # Step 2: Start image build if needed, then wait for it to complete.
-    #
-    # Idempotency via git SHA comparison:
-    #   - If the latest Complete build was already built from the current workspace
-    #     commit, skip the build — the image is already up-to-date.
-    #   - If the commit has changed (or the last build failed/was cancelled),
-    #     trigger a new build with oc start-build --follow.
-    #
-    # This avoids both problems with the ConfigChange-trigger approach:
-    #   1. Stale builds from prior runs are no longer reused (different SHA → rebuild).
-    #   2. Re-running the pipeline on the same commit does not waste a redundant build.
-    - name: wait-for-build
-      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
-      computeResources:
-        requests:
-          memory: "128Mi"
-          cpu: "100m"
-        limits:
-          memory: "256Mi"
-          cpu: "500m"
-      script: |
-        #!/bin/bash
-        set -e
-
-        INFRA_NS="$(params.infra-namespace)"
-        EG_NAME="$(params.event-generator-name)"
-        WORKSPACE="$(workspaces.source.path)"
-
-        echo "=================================================="
-        echo "Checking whether a new image build is needed..."
-        echo "=================================================="
-
-        # Resolve the current workspace commit SHA.
-        # Tekton git-clone checks out in detached-HEAD mode so .git/HEAD
-        # contains the 40-char SHA directly (no symbolic ref to follow).
-        # Use git if available; fall back to reading .git/HEAD directly.
-        if command -v git &>/dev/null; then
-          CURRENT_SHA=$(git -C "${WORKSPACE}" rev-parse HEAD 2>/dev/null || echo "")
-        else
-          CURRENT_SHA=$(cat "${WORKSPACE}/.git/HEAD" 2>/dev/null \
-            | grep -E '^[0-9a-f]{40}$' || echo "")
-        fi
-        echo "Workspace commit: ${CURRENT_SHA:-unknown}"
-
-        # Find the latest build for this BuildConfig
-        BUILD_NAME=$(oc get builds -n "${INFRA_NS}" -l "buildconfig=${EG_NAME}" \
-          --sort-by='.metadata.creationTimestamp' \
-          -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null || echo "")
-
-        if [ -n "$BUILD_NAME" ] && [ -n "$CURRENT_SHA" ]; then
-          LAST_SHA=$(oc get build "${BUILD_NAME}" -n "${INFRA_NS}" \
-            -o jsonpath='{.spec.revision.git.commit}' 2>/dev/null || echo "")
-          LAST_PHASE=$(oc get build "${BUILD_NAME}" -n "${INFRA_NS}" \
-            -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-
-          echo "Latest build:   ${BUILD_NAME}"
-          echo "  phase:        ${LAST_PHASE}"
-          echo "  built commit: ${LAST_SHA:-not yet recorded}"
-
-          if [ "${LAST_SHA}" = "${CURRENT_SHA}" ] && [ "${LAST_PHASE}" = "Complete" ]; then
-            echo ""
-            echo "Image is already up-to-date for commit ${CURRENT_SHA}."
-            echo "Skipping build — no changes since last successful build."
-            echo ""
-            echo "Image build complete. ImageStream updated."
-            exit 0
-          fi
-
+        if ! oc get imagestream "${EG_NAME}" -n "${INFRA_NS}" &>/dev/null; then
           echo ""
-          if [ "${LAST_SHA}" != "${CURRENT_SHA}" ]; then
-            echo "Commit changed (${LAST_SHA:-none} → ${CURRENT_SHA}) — starting new build."
-          else
-            echo "Last build phase is '${LAST_PHASE}' (not Complete) — starting new build."
-          fi
-        else
-          echo "No previous build found — starting first build."
+          echo "ERROR: ImageStream '${EG_NAME}' not found in namespace '${INFRA_NS}'."
+          echo "  The image build resources must be created before running this task."
+          echo "  Run setup.sh first (it applies them automatically):"
+          echo ""
+          echo "    bash tekton/setup.sh"
+          echo ""
+          echo "  Or apply manually:"
+          echo "    source config.env && envsubst '\${INFRA_NAMESPACE} \${EVENT_GENERATOR_NAME}' \\"
+          echo "      < event-generator/k8s/01-imagestream.yaml | oc apply -f -"
+          MISSING=true
         fi
 
-        echo ""
-        echo "=================================================="
-        echo "Starting image build: ${EG_NAME}"
-        echo "=================================================="
-        # Start build without --follow to avoid log-stream timeout.
-        # --follow fails when the build pod takes a moment to leave "New" phase —
-        # the log stream connection times out even though the build itself succeeds.
-        # Instead: start, capture build name, then poll for completion.
-        BUILD_REF=$(oc start-build "${EG_NAME}" -n "${INFRA_NS}" -o name)
-        BUILD_NAME="${BUILD_REF#build.build.openshift.io/}"
-        echo "Build started: ${BUILD_NAME}"
+        if ! oc get buildconfig "${EG_NAME}" -n "${INFRA_NS}" &>/dev/null; then
+          echo ""
+          echo "ERROR: BuildConfig '${EG_NAME}' not found in namespace '${INFRA_NS}'."
+          echo "  The image build resources must be created before running this task."
+          echo "  Run setup.sh first (it applies them automatically):"
+          echo ""
+          echo "    bash tekton/setup.sh"
+          echo ""
+          echo "  Or apply manually:"
+          echo "    source config.env && envsubst '\${INFRA_NAMESPACE} \${EVENT_GENERATOR_NAME} \${GIT_REPO_URL} \${GIT_BRANCH}' \\"
+          echo "      < event-generator/k8s/02-buildconfig.yaml | oc apply -f -"
+          MISSING=true
+        fi
 
-        # Poll every 10s — budget 10 min (image is small Python app, usually < 2 min)
-        echo "Polling for build completion (up to 10 min)..."
-        for i in $(seq 1 60); do
-          PHASE=$(oc get build "${BUILD_NAME}" -n "${INFRA_NS}" \
-            -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-          echo "  [${i}/60] phase: ${PHASE}"
-          if [ "$PHASE" = "Complete" ]; then
-            break
-          elif [ "$PHASE" = "Failed" ] || [ "$PHASE" = "Error" ] || [ "$PHASE" = "Cancelled" ]; then
-            echo "ERROR: Build ${BUILD_NAME} ended with phase: ${PHASE}"
-            echo "       Run: oc logs build/${BUILD_NAME} -n ${INFRA_NS}"
-            exit 1
-          fi
-          sleep 10
-        done
-
-        PHASE=$(oc get build "${BUILD_NAME}" -n "${INFRA_NS}" \
-          -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-        if [ "$PHASE" != "Complete" ]; then
-          echo "ERROR: Build ${BUILD_NAME} ended with phase: ${PHASE}"
+        if [ "${MISSING}" = "true" ]; then
           exit 1
         fi
 
-        echo ""
-        echo "Image build complete. ImageStream updated."
+        echo "Prerequisites OK — ImageStream and BuildConfig exist."
 
-    # Step 3: Apply ConfigMap with current runtime configuration
+    # Step 2: Apply ConfigMap with current runtime configuration.
     # This is what controls event rate, topic names, Kafka addresses, etc.
     # Changing any param and re-running the pipeline updates this ConfigMap.
     - name: apply-configmap
@@ -301,7 +191,7 @@ spec:
         echo ""
         echo "ConfigMap applied."
 
-    # Step 3: Apply Deployment and restart to pick up ConfigMap changes
+    # Step 3: Apply Deployment and restart to pick up ConfigMap changes.
     - name: apply-deployment
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
       computeResources:

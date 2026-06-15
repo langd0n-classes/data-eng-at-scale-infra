@@ -16,6 +16,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+source "${SCRIPT_DIR}/lib/common.sh"
+
 # ── Parse flags ────────────────────────────────────────────────────────────────
 SKIP_RBAC=false
 SKIP_TASKS=false
@@ -34,19 +36,6 @@ for arg in "$@"; do
   esac
 done
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
-info() { echo "▶ $*"; }
-ok()   { echo "  ✓ $*"; }
-warn() { echo "  ⚠ $*"; }
-
-run() {
-  if [[ "$DRY_RUN" == "true" ]]; then
-    echo "  [dry-run] $*"
-  else
-    eval "$@"
-  fi
-}
-
 # ── Step 1: Load & Validate Config ─────────────────────────────────────────────
 echo "============================================================"
 echo " Tekton Setup"
@@ -55,13 +44,7 @@ echo ""
 info "Step 1 — Loading config..."
 
 CONFIG_FILE="${REPO_ROOT}/config.env"
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo "ERROR: config.env not found at ${CONFIG_FILE}"
-  echo "       Copy config.env.example to config.env and fill in your values."
-  exit 1
-fi
-
-source "$CONFIG_FILE"
+load_config "${REPO_ROOT}"
 
 # Validate required variables
 MISSING=()
@@ -82,6 +65,9 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
 fi
 
 ok "Config loaded — infra namespace: ${INFRA_NAMESPACE}"
+
+# Default for EVENT_GENERATOR_NAME — set in config.env.example, safe to default here
+EVENT_GENERATOR_NAME="${EVENT_GENERATOR_NAME:-event-generator}"
 
 # ── Step 2: Prerequisite Checks ────────────────────────────────────────────────
 info "Step 2 — Checking prerequisites..."
@@ -172,6 +158,24 @@ if [[ "$SKIP_TASKS" == "false" ]]; then
       < '${pipeline_file}' | oc apply -f -"
   done
   ok "Pipelines applied"
+
+  # ── Step 5b: Apply event generator build resources (one-time setup) ──────────
+  # ImageStream + BuildConfig are applied here so the Tekton deploy-event-generator
+  # task can focus only on ConfigMap + Deployment. The BuildConfig's ConfigChange
+  # trigger starts the image build automatically on first apply.
+  info "Step 5b — Applying event generator build resources..."
+  EG_SOURCE="${REPO_ROOT}/event-generator/k8s"
+  run "sed \
+    -e 's|\${INFRA_NAMESPACE}|${INFRA_NAMESPACE}|g' \
+    -e 's|\${EVENT_GENERATOR_NAME}|${EVENT_GENERATOR_NAME}|g' \
+    '${EG_SOURCE}/01-imagestream.yaml' | oc apply -f -"
+  run "sed \
+    -e 's|\${INFRA_NAMESPACE}|${INFRA_NAMESPACE}|g' \
+    -e 's|\${EVENT_GENERATOR_NAME}|${EVENT_GENERATOR_NAME}|g' \
+    -e 's|\${GIT_REPO_URL}|${GIT_REPO_URL}|g' \
+    -e 's|\${GIT_BRANCH}|${GIT_BRANCH:-main}|g' \
+    '${EG_SOURCE}/02-buildconfig.yaml' | oc apply -f -"
+  ok "BuildConfig applied — ConfigChange trigger starts build automatically"
 else
   info "Step 5 — Tasks/pipelines (skipped)"
 fi
