@@ -186,6 +186,20 @@ _do_teardown_body() {
   ok "Teardown complete — namespaces, Tekton tasks/pipelines/RBAC untouched."
 }
 
+_do_clean_history() {
+  # Deletes all PipelineRuns, TaskRuns, and workspace PVCs — full clean slate.
+  echo "Deleting all PipelineRuns..."
+  run "oc delete pipelinerun --all -n '${INFRA_NAMESPACE}' --ignore-not-found"
+
+  echo "Deleting all TaskRuns..."
+  run "oc delete taskrun --all -n '${INFRA_NAMESPACE}' --ignore-not-found"
+
+  echo "Deleting all workspace PVCs..."
+  run "oc delete pvc --all -n '${INFRA_NAMESPACE}' --ignore-not-found"
+
+  ok "Pipeline history and workspace PVCs deleted."
+}
+
 # ── Command functions ──────────────────────────────────────────────────────────
 
 cmd_add_team() {
@@ -337,8 +351,22 @@ cmd_remove_all_teams() {
 }
 
 cmd_teardown_all() {
-  confirm "Teardown all deployed apps (events + all teams)? Tekton tasks/pipelines/RBAC and namespaces are untouched."
+  local clean=false
+  for arg in "${ARGS[@]:-}"; do
+    [[ "$arg" == "--clean" ]] && clean=true
+  done
+
+  if [[ "$clean" == "true" ]]; then
+    confirm "Teardown all apps AND delete pipeline history + workspace PVCs? (full clean slate — Tekton tasks/pipelines/RBAC untouched)"
+  else
+    confirm "Teardown all deployed apps (events + all teams)? Tekton tasks/pipelines/RBAC and namespaces are untouched."
+  fi
+
   _do_teardown_body
+
+  if [[ "$clean" == "true" ]]; then
+    _do_clean_history
+  fi
 }
 
 cmd_reset_all() {
@@ -493,10 +521,11 @@ Event generator:
   remove-events   Delete entire event generator deployment
 
 Bulk operations:
-  remove-all-teams   Remove all configured teams (Kafka + NiFi, namespaces kept)
-  teardown-all       Cancel runs → remove events → remove all teams
-  reset-all          teardown-all then re-run the reset pipeline
-  cleanup-runs       Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
+  remove-all-teams      Remove all configured teams (Kafka + NiFi, namespaces kept)
+  teardown-all          Cancel runs → remove events → remove all teams
+  teardown-all --clean  Same + delete all PipelineRuns, TaskRuns, and workspace PVCs (full clean slate)
+  reset-all             teardown-all then re-run the reset pipeline
+  cleanup-runs          Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
 
 Observability:
   status      <name> <ns>   Show pods, services, PVCs, routes, and events for one team
