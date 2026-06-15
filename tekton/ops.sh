@@ -311,15 +311,15 @@ cmd_reset_password() {
     exit 1
   fi
 
-  # NiFi stores the bcrypt hash in conf/login-identity-providers.xml on the PVC.
-  # The SINGLE_USER_CREDENTIALS_PASSWORD env var is only read when that file has
-  # no existing credentials. The only reliable way to change the password on a
-  # running instance is via the nifi.sh CLI, then restart the pod to reload.
-  info "Setting new credentials in NiFi pod..."
-  run "oc exec 'nifi-${name}-0' -n '${ns}' -- \
-    /opt/nifi/nifi-current/bin/nifi.sh set-single-user-credentials '${name}' '${pwd}'"
+  # This NiFi image regenerates the bcrypt hash from SINGLE_USER_CREDENTIALS_PASSWORD
+  # on every pod start, overwriting anything written by nifi.sh set-single-user-credentials.
+  # The only reliable way to change the password is to update the env var in the
+  # StatefulSet spec, then delete the pod so it restarts with the new value.
+  info "Patching SINGLE_USER_CREDENTIALS_PASSWORD in StatefulSet..."
+  run "oc set env statefulset/'nifi-${name}' \
+    SINGLE_USER_CREDENTIALS_PASSWORD='${pwd}' -n '${ns}'"
 
-  info "Restarting NiFi pod to reload credentials from disk..."
+  info "Restarting NiFi pod to pick up new password..."
   run "oc delete pod 'nifi-${name}-0' -n '${ns}'"
 
   ok "Password reset for ${name} in ${ns}. NiFi pod restarting — ready in ~2 min."

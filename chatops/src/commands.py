@@ -858,27 +858,25 @@ def cmd_reset_password(name: str, ns: str, pwd: str) -> str:
             raise RuntimeError(f"Pod {pod_name} not found in {ns} — is NiFi deployed?")
         raise
 
-    # NiFi stores the bcrypt hash in conf/login-identity-providers.xml on the PVC.
-    # The env var is only read when no credentials file exists yet.
-    # Use the nifi.sh CLI to update the hash, then restart the pod to reload it.
-    resp = k8s_stream(
-        core_v1.connect_get_namespaced_pod_exec,
-        pod_name,
-        ns,
-        command=[
-            "/opt/nifi/nifi-current/bin/nifi.sh",
-            "set-single-user-credentials",
-            name,
-            pwd,
-        ],
-        stderr=True,
-        stdin=False,
-        stdout=True,
-        tty=False,
-    )
-    if "ERROR" in resp:
-        raise RuntimeError(f"nifi.sh set-single-user-credentials failed: {resp.strip()}")
-
+    # This NiFi image regenerates the bcrypt hash from SINGLE_USER_CREDENTIALS_PASSWORD
+    # on every pod start, overwriting anything written by nifi.sh set-single-user-credentials.
+    # Patch the env var in the StatefulSet spec, then delete the pod so it restarts
+    # with the new password value.
+    sts_name = f"nifi-{name}"
+    sts = apps_v1.read_namespaced_stateful_set(sts_name, ns)
+    containers = sts.spec.template.spec.containers
+    for container in containers:
+        if container.name == "nifi":
+            for env_var in (container.env or []):
+                if env_var.name == "SINGLE_USER_CREDENTIALS_PASSWORD":
+                    env_var.value = pwd
+                    break
+            else:
+                (container.env or []).append(
+                    k8s_client.V1EnvVar(name="SINGLE_USER_CREDENTIALS_PASSWORD", value=pwd)
+                )
+            break
+    apps_v1.patch_namespaced_stateful_set(sts_name, ns, sts)
     core_v1.delete_namespaced_pod(pod_name, ns, body=k8s_client.V1DeleteOptions())
     return f"Password reset for {name} in {ns}. Pod restarting — NiFi ready in ~2 min."
 
