@@ -151,7 +151,7 @@ oc adm policy remove-role-from-user edit <username> -n infra
 
 ## Grant namespace-scoped admin (CRC / replicating NERC)
 
-**Why this is needed:** The groups above give `edit` access, which is enough for students to deploy workloads. However, `tekton/setup.sh` creates Roles and RoleBindings inside namespaces — this requires `admin` role, not just `edit`. On NERC, the instructor grants namespace-scoped `admin` to the deploying user. On CRC, you must do the same for the `developer` user.
+**Why this is needed:** The groups above give `edit` access, which is enough for students to deploy workloads. However, `pipeline/setup.sh` creates Roles and RoleBindings inside namespaces — this requires `admin` role, not just `edit`. On NERC, the instructor grants namespace-scoped `admin` to the deploying user. On CRC, you must do the same for the `developer` user.
 
 Run as `kubeadmin` after onboarding:
 
@@ -165,11 +165,11 @@ oc adm policy add-role-to-user admin developer -n team-03
 Add one line per team namespace you created. If you added more teams, repeat for each.
 
 **What this unlocks for `developer`:**
-- Can create Roles and RoleBindings within these namespaces (required by `tekton/setup.sh`)
+- Can create Roles and RoleBindings within these namespaces (required by `pipeline/setup.sh`)
 - Can manage ServiceAccounts, Deployments, StatefulSets, PVCs — everything needed for Kafka + NiFi
-- Still cannot create ClusterRoleBindings or access other namespaces — this is correct (Option B in `tekton/setup.sh`)
+- Still cannot create ClusterRoleBindings or access other namespaces — this is correct (Option B in `pipeline/setup.sh`)
 
-Without this step, `tekton/setup.sh` fails immediately with `Forbidden` when it tries to create pipeline RBAC resources.
+Without this step, `pipeline/setup.sh` fails immediately with `Forbidden` when it tries to create pipeline RBAC resources.
 
 > **On NERC:** The instructor ran the equivalent command for each student's namespace. On CRC you do it yourself as `kubeadmin`.
 

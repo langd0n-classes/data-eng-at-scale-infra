@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # onboarding/apply-onboarding.sh — Cluster onboarding: namespaces, quotas, RBAC
 #
-# Run this ONCE as kubeadmin before running tekton/setup.sh.
+# Run this ONCE as kubeadmin before running pipeline/setup.sh.
 # Creates: infra namespace, team namespaces, ResourceQuota, LimitRange,
 #          ConfigMap/Secret per team, OpenShift Groups, RoleBindings.
 #
@@ -149,7 +149,7 @@ if ! oc get storageclass "${STORAGE_CLASS}" &>/dev/null; then
 fi
 ok "Storage class '${STORAGE_CLASS}' found"
 
-# Auto-detect cluster type (same logic as tekton/setup.sh)
+# Auto-detect cluster type 
 if oc auth can-i create clusterrolebindings &>/dev/null; then
   CLUSTER_TYPE="dedicated"
 else
@@ -316,7 +316,7 @@ echo "   # On CRC (only 'developer' user available):"
 echo "   oc adm groups add-users ${INFRA_ADMIN_GROUP} developer"
 echo "   oc adm groups add-users ${TEAM_NAMESPACE_PREFIX}-01-${TEAM_GROUP_SUFFIX} developer"
 echo ""
-echo " IMPORTANT — Grant namespace-scoped admin so 'developer' can run tekton/setup.sh:"
+echo " IMPORTANT — Grant namespace-scoped admin so 'developer' can run pipeline/setup.sh:"
 echo "   (groups give 'edit'; Tekton RBAC setup requires 'admin' — same as NERC instructors grant)"
 echo ""
 if [[ "$TEAMS_ONLY" == "false" ]]; then

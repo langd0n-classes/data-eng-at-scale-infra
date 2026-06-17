@@ -29,7 +29,7 @@ data:
   deployment-mode: "per-team"
 ---
 # Credential placeholder — update NiFi password after Tekton deploys NiFi
-# (tekton/setup.sh injects the real password via TEAM_PASSWORD at deploy time)
+# (pipeline/setup.sh injects the real password via TEAM_PASSWORD at deploy time)
 apiVersion: v1
 kind: Secret
 metadata:

@@ -13,7 +13,7 @@ an always-on OpenShift Deployment in the `infra` namespace.
      -n ${INFRA_NAMESPACE}
    ```
 3. Set in `config.env`: `CHATOPS_ENABLED=true`, `ADMIN_CHANNEL_ID`, `CHATOPS_NAME`
-4. Run `bash tekton/setup.sh` — deploys everything including ChatOps
+4. Run `bash pipeline/setup.sh` — deploys everything including ChatOps
 5. Copy the Route URL from task output and paste it into your Slack App slash command settings
 
 For local testing when the cluster isn't internet-accessible:

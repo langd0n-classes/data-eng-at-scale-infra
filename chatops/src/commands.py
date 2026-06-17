@@ -222,7 +222,7 @@ def _get_last_pipeline_params() -> dict[str, str]:
                 for p in run.get("spec", {}).get("params", [])
             }
     raise RuntimeError(
-        "No successful PipelineRun found. Run `bash tekton/setup.sh` first, "
+        "No successful PipelineRun found. Run `bash pipeline/setup.sh` first, "
         "then retry."
     )
 

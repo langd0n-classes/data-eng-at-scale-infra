@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# tekton/ops.sh — Day-to-day classroom operations
+# pipeline/ops.sh — Day-to-day classroom operations
 #
 # All commands use plain oc calls — no Tekton involvement (except cleanup-runs).
-# Run from repo root or from tekton/ — the script finds config.env automatically.
+# Run from repo root or from pipeline/ — the script finds config.env automatically.
 #
 # Usage:
-#   bash tekton/ops.sh <command> [args...]  [--dry-run]
+#   bash pipeline/ops.sh <command> [args...]  [--dry-run]
 #
 # Flags:
 #   --dry-run      Print commands without executing
@@ -391,7 +391,7 @@ cmd_reset_all() {
   confirm "Reset all: teardown all deployed apps then re-run the reset pipeline? Namespaces and Tekton infra are untouched."
   _do_teardown_body
   info "Launching reset pipeline..."
-  run "bash '${REPO_ROOT}/tekton/setup.sh' --reset"
+  run "bash '${REPO_ROOT}/pipeline/setup.sh' --reset"
 }
 
 cmd_cleanup_runs() {
@@ -511,11 +511,11 @@ cmd_status_all() {
 
 cmd_help() {
   cat <<'HELP'
-tekton/ops.sh — Day-to-day classroom operations
+pipeline/ops.sh — Day-to-day classroom operations
 
-Usage: bash tekton/ops.sh <command> [args...] [--dry-run]
-       FORCE=true bash tekton/ops.sh <command>
-       WIPE_PVCS=true bash tekton/ops.sh teardown-all
+Usage: bash pipeline/ops.sh <command> [args...] [--dry-run]
+       FORCE=true bash pipeline/ops.sh <command>
+       WIPE_PVCS=true bash pipeline/ops.sh teardown-all
 
 Team lifecycle:
   add-team      <name> <ns> <pwd>   Deploy Kafka + NiFi for a team
@@ -550,7 +550,7 @@ Observability:
   status-all                Show pods, PVCs, routes, and pipeline runs across all namespaces
 
 Note: namespaces are NEVER deleted by ops.sh.
-      For full decommission, use: bash tekton/cleanup.sh
+      For full decommission, use: bash pipeline/cleanup.sh
 HELP
 }
 

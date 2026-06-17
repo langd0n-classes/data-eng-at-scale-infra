@@ -15,7 +15,7 @@
 # Apply with:
 #   source config.env && \
 #   envsubst '${TEAM_NAME} ${TEAM_NAMESPACE} ${INFRA_NAMESPACE} ${NIFI_IMAGE} ${TEAM_PASSWORD} ${STORAGE_CLASS} ${EXTERNAL_DOMAIN} ${TEKTON_WORKSPACE_PVC}' \
-#     < tekton/runs/taskrun-deploy-nifi.yaml | oc create -f -
+#     < pipeline/runs/taskrun-deploy-nifi.yaml | oc create -f -
 #
 # Watch:
 #   tkn taskrun logs --last -f -n ${INFRA_NAMESPACE}
