@@ -23,7 +23,7 @@
 #
 # Apply with:
 #   source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' \
-#     < tekton/tasks/04-task-teardown-all.yaml | oc apply -f -
+#     < pipeline/tasks/04-task-teardown-all.yaml | oc apply -f -
 
 apiVersion: tekton.dev/v1
 kind: Task

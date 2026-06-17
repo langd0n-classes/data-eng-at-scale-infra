@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tekton/lib/common.sh — Shared helpers for tekton/*.sh scripts
+# pipeline/lib/common.sh — Shared helpers for pipeline/*.sh scripts
 # Source this file; do not run it directly.
 #
 # Usage:

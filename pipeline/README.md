@@ -15,7 +15,7 @@ cp config.env.example config.env
 # Edit config.env — set INFRA_NAMESPACE, GIT_REPO_URL, EXTERNAL_DOMAIN, STORAGE_CLASS, NIFI_IMAGE
 
 # 2. Run the setup script (full setup: RBAC + tasks + pipelines + PipelineRun)
-bash tekton/setup.sh
+bash pipeline/setup.sh
 
 # 3. Watch the pipeline
 tkn pipelinerun logs --last -f -n ${INFRA_NAMESPACE}
@@ -37,9 +37,9 @@ The script auto-detects your cluster type (dedicated vs shared/NERC) and chooses
 **Teardown:**
 
 ```bash
-bash tekton/cleanup.sh
+bash pipeline/cleanup.sh
 # With namespace deletion (self-provisioned clusters only):
-DELETE_NAMESPACES=true bash tekton/cleanup.sh
+DELETE_NAMESPACES=true bash pipeline/cleanup.sh
 ```
 
 ---
@@ -60,7 +60,7 @@ Day-2 operations (add a team, redeploy NiFi, update event generator, health chec
 ## Directory Structure
 
 ```
-tekton/
+pipeline/
 ├── rbac/
 │   ├── 01-serviceaccount.yaml          optional: custom SA (not needed on most clusters)
 │   ├── 02-clusterrolebinding.yaml      cross-namespace permissions (dedicated cluster, cluster-admin only)
@@ -136,7 +136,7 @@ oc auth can-i create clusterrolebindings
 
 ```bash
 source config.env && envsubst '${INFRA_NAMESPACE} ${TEKTON_SA_NAME}' \
-  < tekton/rbac/02-clusterrolebinding.yaml | oc apply -f -
+  < pipeline/rbac/02-clusterrolebinding.yaml | oc apply -f -
 ```
 
 **Option B — Shared cluster (e.g. NERC) — no ClusterRoleBinding allowed:**
@@ -154,7 +154,7 @@ for ns in ${INFRA_NAMESPACE} \
   ${TEAM13_NAMESPACE} ${TEAM14_NAMESPACE} ${TEAM15_NAMESPACE}; do
   [[ "$ns" == "skip" ]] && continue
   envsubst '${INFRA_NAMESPACE}' \
-    < tekton/rbac/04-role-rolebinding-namespace.yaml | oc apply -f - -n $ns
+    < pipeline/rbac/04-role-rolebinding-namespace.yaml | oc apply -f - -n $ns
 done
 ```
 
@@ -178,14 +178,14 @@ oc auth can-i create statefulsets -n ${TEAM_NAMESPACE} \
 # Running source separately then envsubst in the next command can cause
 # variables to not be substituted (shell scope issue).
 
-source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/01-task-deploy-kafka.yaml          | oc apply -f -
-source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/02-task-deploy-event-generator.yaml | oc apply -f -
-source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/03-task-verify-health.yaml          | oc apply -f -
-source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/04-task-teardown-all.yaml           | oc apply -f -
-source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < tekton/tasks/05-task-deploy-nifi.yaml            | oc apply -f -
+source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < pipeline/tasks/01-task-deploy-kafka.yaml          | oc apply -f -
+source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < pipeline/tasks/02-task-deploy-event-generator.yaml | oc apply -f -
+source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < pipeline/tasks/03-task-verify-health.yaml          | oc apply -f -
+source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < pipeline/tasks/04-task-teardown-all.yaml           | oc apply -f -
+source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' < pipeline/tasks/05-task-deploy-nifi.yaml            | oc apply -f -
 
-source config.env && envsubst '${INFRA_NAMESPACE}' < tekton/pipelines/01-pipeline-deploy-all-teams.yaml | oc apply -f -
-source config.env && envsubst '${INFRA_NAMESPACE}' < tekton/pipelines/02-pipeline-reset-and-deploy.yaml | oc apply -f -
+source config.env && envsubst '${INFRA_NAMESPACE}' < pipeline/pipelines/01-pipeline-deploy-all-teams.yaml | oc apply -f -
+source config.env && envsubst '${INFRA_NAMESPACE}' < pipeline/pipelines/02-pipeline-reset-and-deploy.yaml | oc apply -f -
 
 # Verify all objects are registered
 # Note: use pipelines.tekton.dev to avoid collision with Kubeflow's "pipeline" resource
@@ -224,10 +224,10 @@ Deploys Kafka and NiFi for every active team in parallel, then the event generat
 
 ```bash
 # First run
-source config.env && envsubst < tekton/runs/run-all-teams.yaml | sed 's/run-001/run-001/' | oc create -f -
+source config.env && envsubst < pipeline/runs/run-all-teams.yaml | sed 's/run-001/run-001/' | oc create -f -
 
 # Each subsequent run — increment the suffix to avoid name collision
-source config.env && envsubst < tekton/runs/run-all-teams.yaml | sed 's/run-001/run-002/' | oc create -f -
+source config.env && envsubst < pipeline/runs/run-all-teams.yaml | sed 's/run-001/run-002/' | oc create -f -
 ```
 
 Watch progress:
@@ -303,7 +303,7 @@ Tears down all Kafka, NiFi, and the event generator, then redeploys everything f
 The teardown derives which namespaces to wipe from `TEAM1_NAMESPACE` through `TEAM15_NAMESPACE` — any set to `skip` are bypassed automatically. No separate list needed.
 
 ```bash
-source config.env && envsubst < tekton/runs/run-reset-all-teams.yaml | oc create -f -
+source config.env && envsubst < pipeline/runs/run-reset-all-teams.yaml | oc create -f -
 tkn pipelinerun logs --last -f -n ${INFRA_NAMESPACE}
 ```
 
@@ -318,7 +318,7 @@ Use when adding a new team or recovering a crashed Kafka pod. Tasks are idempote
 ```bash
 source config.env && \
 envsubst '${TEAM_NAME} ${TEAM_NAMESPACE} ${INFRA_NAMESPACE} ${STORAGE_CLASS} ${TEKTON_WORKSPACE_PVC}' \
-  < tekton/runs/taskrun-deploy-kafka.yaml | oc create -f -
+  < pipeline/runs/taskrun-deploy-kafka.yaml | oc create -f -
 
 tkn taskrun logs --last -f -n ${INFRA_NAMESPACE}
 ```
@@ -336,7 +336,7 @@ Use when adding a new team's NiFi or recovering a crashed NiFi pod. Set `TEAM_PA
 ```bash
 source config.env && \
 envsubst '${TEAM_NAME} ${TEAM_NAMESPACE} ${INFRA_NAMESPACE} ${NIFI_IMAGE} ${TEAM_PASSWORD} ${STORAGE_CLASS} ${EXTERNAL_DOMAIN} ${TEKTON_WORKSPACE_PVC}' \
-  < tekton/runs/taskrun-deploy-nifi.yaml | oc create -f -
+  < pipeline/runs/taskrun-deploy-nifi.yaml | oc create -f -
 
 tkn taskrun logs --last -f -n ${INFRA_NAMESPACE}
 ```
@@ -360,7 +360,7 @@ The task applies the ConfigMap with your new values and runs `oc rollout restart
 ```bash
 source config.env && \
 envsubst '${INFRA_NAMESPACE} ${EVENT_GENERATOR_NAME} ${GIT_REPO_URL} ${GIT_BRANCH} ${TEAM_BOOTSTRAP_SERVERS} ${EVENT_RATE_PER_SEC} ${TOPIC_PREFIX} ${TOPIC_SUFFIX} ${REGIONS} ${TEKTON_WORKSPACE_PVC}' \
-  < tekton/runs/taskrun-deploy-event-gen.yaml | oc create -f -
+  < pipeline/runs/taskrun-deploy-event-gen.yaml | oc create -f -
 
 tkn taskrun logs --last -f -n ${INFRA_NAMESPACE}
 ```
@@ -374,7 +374,7 @@ Both pipelines run `verify-health` automatically as the final step. For a manual
 ```bash
 source config.env && \
 envsubst '${TEAM_NAME} ${TEAM_NAMESPACE} ${INFRA_NAMESPACE} ${EVENT_GENERATOR_NAME}' \
-  < tekton/runs/taskrun-verify-health.yaml | oc create -f -
+  < pipeline/runs/taskrun-verify-health.yaml | oc create -f -
 
 tkn taskrun logs --last -f -n ${INFRA_NAMESPACE}
 ```
@@ -493,9 +493,9 @@ oc scale deployment/${EVENT_GENERATOR_NAME} --replicas=0 -n ${INFRA_NAMESPACE}
 **Quickest option — single command:**
 
 ```bash
-bash tekton/cleanup.sh
+bash pipeline/cleanup.sh
 # With namespace deletion (self-provisioned clusters only):
-# DELETE_NAMESPACES=true bash tekton/cleanup.sh
+# DELETE_NAMESPACES=true bash pipeline/cleanup.sh
 ```
 
 **Or run each step manually in order** — order matters, do not rearrange:
@@ -628,7 +628,7 @@ taskRef:
 
 ### "Kafka pod not found" in wait step
 
-The `oc wait` command needs the pod to exist before it can watch it. If Kafka takes too long to schedule, increase `--timeout=300s` to `--timeout=600s` in `tekton/tasks/01-task-deploy-kafka.yaml`.
+The `oc wait` command needs the pod to exist before it can watch it. If Kafka takes too long to schedule, increase `--timeout=300s` to `--timeout=600s` in `pipeline/tasks/01-task-deploy-kafka.yaml`.
 
 ### RBAC errors: "cannot create statefulsets"
 

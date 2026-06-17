@@ -14,7 +14,7 @@
 #
 # Apply for a single team:
 #   source config.env && envsubst '${TEKTON_SA_NAME} ${INFRA_NAMESPACE}' \
-#     < tekton/rbac/03-rolebinding-per-team.yaml | oc apply -f - -n <team-namespace>
+#     < pipeline/rbac/03-rolebinding-per-team.yaml | oc apply -f - -n <team-namespace>
 #
 # Or loop over all teams (see IMPLEMENTATION.md).
 

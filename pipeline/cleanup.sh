@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# tekton/cleanup.sh — Full teardown of everything deployed by the Tekton setup.
+# pipeline/cleanup.sh — Full teardown of everything deployed by the Tekton setup.
 #
 # Only deletes resources created by this repo's config.env values.
 # Does NOT touch namespaces, the default pipeline SA, or anything else.
 #
 # Usage:
-#   bash tekton/cleanup.sh                                      # interactive prompts, skips namespaces
-#   DELETE_NAMESPACES=true bash tekton/cleanup.sh               # also delete namespaces (self-provisioned clusters)
-#   FORCE=true bash tekton/cleanup.sh                           # skip all confirmation prompts (CI/automation)
-#   FORCE=true DELETE_NAMESPACES=true bash tekton/cleanup.sh    # skip prompts + delete namespaces
+#   bash pipeline/cleanup.sh                                      # interactive prompts, skips namespaces
+#   DELETE_NAMESPACES=true bash pipeline/cleanup.sh               # also delete namespaces (self-provisioned clusters)
+#   FORCE=true bash pipeline/cleanup.sh                           # skip all confirmation prompts (CI/automation)
+#   FORCE=true DELETE_NAMESPACES=true bash pipeline/cleanup.sh    # skip prompts + delete namespaces
 #
 # Prerequisites:
 #   - oc CLI logged into the target cluster
 #   - tkn CLI installed (https://tekton.dev/docs/cli/#installation)
 #   - config.env present at repo root
 #
-# Run from repo root or from tekton/ — the script finds config.env automatically.
+# Run from repo root or from pipeline/ — the script finds config.env automatically.
 
 set -euo pipefail
 

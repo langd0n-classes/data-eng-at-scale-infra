@@ -1,18 +1,20 @@
-# PipelineRun: deploy all teams
+# PipelineRun: reset-and-deploy all teams
 #
-# Deploys Kafka + NiFi for every team that is NOT set to "skip" in config.env,
-# then updates the event generator once with all bootstrap servers.
+# Tears down all Kafka, NiFi, and the event generator, then redeploys everything fresh.
+# Use this after config changes, broken deployments, or a full classroom reset.
 #
 # All values come from config.env — source it first, then run:
 #
-#   source config.env && envsubst < tekton/runs/run-all-teams.yaml | oc create -f -
+#   source config.env && envsubst < pipeline/runs/run-reset-all-teams.yaml | oc create -f -
+#   tkn pipelinerun logs --last -f -n ${INFRA_NAMESPACE}
 #
 # HOW TO USE:
-#   1. Set TEAM1_NAME/NAMESPACE through TEAM15_NAME/NAMESPACE in config.env.
-#      Set unused teams to "skip" — their tasks are automatically bypassed.
-#   2. Set TEAM_BOOTSTRAP_SERVERS to ALL teams you are deploying (comma-separated).
+#   1. Set TEAM1_NAME/NAMESPACE through TEAM15_NAME/NAMESPACE in config.env (unused = "skip").
+#   2. Update TEAM_BOOTSTRAP_SERVERS to list all active teams.
 #   3. Set TEAM1_PASSWORD through TEAM15_PASSWORD (use "skip" for unused teams).
 #   4. Run the command above.
+#
+# IMPORTANT: Change the run name suffix (run-001 → run-002) on each new execution.
 #
 # Variables used (all from config.env):
 #   ${INFRA_NAMESPACE}           — shared infra namespace
@@ -22,29 +24,18 @@
 #   ${EVENT_GENERATOR_NAME}      — event generator deployment name
 #   serviceAccountName           — hardcoded as "pipeline" (default OpenShift Pipelines SA)
 #   ${TEKTON_WORKSPACE_SIZE}     — shared workspace PVC size
-#   ${TEAM_BOOTSTRAP_SERVERS}    — all Kafka addresses comma-separated (ALL active teams)
-#   ${TEAM1_NAME} / ${TEAM1_NAMESPACE}   — team 1  (set to "skip" to bypass)
-#   ${TEAM2_NAME} / ${TEAM2_NAMESPACE}   — team 2
+#   ${TEAM_BOOTSTRAP_SERVERS}    — all Kafka addresses comma-separated
+#   ${TEAM1_NAME} / ${TEAM1_NAMESPACE}   — team 1 (set to "skip" to bypass)
 #   ...
 #   ${TEAM15_NAME} / ${TEAM15_NAMESPACE} — team 15
 #   ${NIFI_IMAGE}                — NiFi container image
 #   ${EXTERNAL_DOMAIN}           — OpenShift cluster wildcard domain
 #   ${TEAM1_PASSWORD} ... ${TEAM15_PASSWORD} — per-team NiFi passwords
-#   ${EVENT_RATE_PER_SEC}        — events per second
-#   ${TOPIC_PREFIX}              — Kafka topic name prefix
-#   ${TOPIC_SUFFIX}              — Kafka topic name suffix
-#   ${REGIONS}                   — comma-separated regions
-#
-# HOW TO WATCH:
-#   tkn pipelinerun logs deploy-all-teams-run-001 -f -n ${INFRA_NAMESPACE}
-#
-# IMPORTANT: Change the run name suffix (run-001 → run-002) on each new execution
-# to avoid name collisions — Tekton PipelineRun names must be unique.
 
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  name: deploy-all-teams-run-001        # change suffix for each new run
+  name: reset-all-teams-run-001        # change suffix for each new run
   namespace: ${INFRA_NAMESPACE}
   labels:
     app: tekton-pipeline
@@ -52,7 +43,7 @@ spec:
   serviceAccountName: pipeline  # default SA created by OpenShift Pipelines in every namespace
 
   pipelineRef:
-    name: deploy-all-teams
+    name: reset-and-deploy
 
   params:
     # ── Git source ──────────────────────────────────────────────────────────
@@ -187,7 +178,6 @@ spec:
       value: "${TEAM15_PASSWORD}"
 
     # ── Event generator config ───────────────────────────────────────────────
-    # TEAM_BOOTSTRAP_SERVERS must list ALL active teams comma-separated
     - name: all-team-bootstrap-servers
       value: "${TEAM_BOOTSTRAP_SERVERS}"
 

@@ -1,33 +1,24 @@
-# Role + RoleBinding for the `pipeline` ServiceAccount — fully namespace-scoped
+# RBAC for Tekton pipeline ServiceAccount (dedicated cluster)
 #
-# USE THIS FILE on shared clusters (e.g. NERC, any namespace-admin-only cluster)
-# where you cannot create ClusterRoles or ClusterRoleBindings.
+# The pipeline needs to deploy resources into:
+#   - infra namespace (event generator, imagestream, buildconfig)
+#   - team-XX namespaces (kafka statefulset, services, pvcs)
 #
-# Why `pipeline` SA?
-#   OpenShift Pipelines automatically creates a `pipeline` ServiceAccount in every
-#   namespace. Using it means zero SA setup — no custom SA to create or manage.
-#   PipelineRun and TaskRun files do NOT need a serviceAccountName field.
-#
-# Apply once per namespace the pipeline needs to operate in:
-#   - infra namespace (for event generator, imagestream, buildconfig)
-#   - each team namespace (for Kafka statefulset, services, pvcs)
+# A ClusterRole lets us grant these permissions once for all namespaces
+# instead of creating a Role in every team namespace.
 #
 # Variables substituted via envsubst (source config.env first):
-#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE  (where the pipeline SA lives)
+#   ${TEKTON_SA_NAME}   — config.env: TEKTON_SA_NAME   (default: pipeline)
+#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE  (e.g. ds551-2026-spring-9ab13b)
 #
 # Apply with:
-#   source config.env && envsubst '${INFRA_NAMESPACE}' \
-#     < tekton/rbac/04-role-rolebinding-namespace.yaml | oc apply -f - -n <namespace>
-#
-# Or loop over all namespaces:
-#   for ns in infra team-01 team-02; do
-#     source config.env && envsubst '${INFRA_NAMESPACE}' \
-#       < tekton/rbac/04-role-rolebinding-namespace.yaml | oc apply -f - -n $ns
-#   done
+#   source config.env && envsubst '${TEKTON_SA_NAME} ${INFRA_NAMESPACE}' \
+#     < pipeline/rbac/02-clusterrolebinding.yaml | oc apply -f -
 
 ---
+# What the pipeline is allowed to do
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: pipeline-runner-role
   labels:
@@ -74,6 +65,12 @@ rules:
       - pods/exec
     verbs: ["get", "list", "watch"]
 
+  # Needed to trigger rollout restarts
+  - apiGroups: ["apps"]
+    resources:
+      - deployments/rollout
+    verbs: ["update", "patch"]
+
   # OpenShift Route resources (for NiFi UI ingress)
   - apiGroups: ["route.openshift.io"]
     resources:
@@ -87,8 +84,9 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
 ---
+# Bind the ClusterRole to our ServiceAccount in infra namespace
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: pipeline-runner-binding
   labels:
@@ -96,9 +94,9 @@ metadata:
     component: rbac
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
+  kind: ClusterRole
   name: pipeline-runner-role
 subjects:
   - kind: ServiceAccount
-    name: pipeline                # default SA created by OpenShift Pipelines in every namespace
-    namespace: ${INFRA_NAMESPACE} # config.env: INFRA_NAMESPACE — where the pipeline runs
+    name: ${TEKTON_SA_NAME}       # config.env: TEKTON_SA_NAME
+    namespace: ${INFRA_NAMESPACE} # config.env: INFRA_NAMESPACE

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# tekton/setup.sh — Automated Tekton setup: RBAC + tasks/pipelines + PipelineRun
+# pipeline/setup.sh — Automated Tekton setup: RBAC + tasks/pipelines + PipelineRun
 #
 # Usage:
-#   bash tekton/setup.sh                    # full setup: RBAC + tasks + pipelines + run
-#   bash tekton/setup.sh --skip-rbac        # skip RBAC (already applied)
-#   bash tekton/setup.sh --skip-tasks       # skip tasks/pipelines (already applied)
-#   bash tekton/setup.sh --run-only         # only submit the PipelineRun
-#   bash tekton/setup.sh --reset            # use run-reset-all-teams.yaml instead
-#   bash tekton/setup.sh --dry-run          # print all commands without executing
+#   bash pipeline/setup.sh                    # full setup: RBAC + tasks + pipelines + run
+#   bash pipeline/setup.sh --skip-rbac        # skip RBAC (already applied)
+#   bash pipeline/setup.sh --skip-tasks       # skip tasks/pipelines (already applied)
+#   bash pipeline/setup.sh --run-only         # only submit the PipelineRun
+#   bash pipeline/setup.sh --reset            # use run-reset-all-teams.yaml instead
+#   bash pipeline/setup.sh --dry-run          # print all commands without executing
 #
-# Run from repo root or from tekton/ — the script finds config.env automatically.
+# Run from repo root or from pipeline/ — the script finds config.env automatically.
 
 set -euo pipefail
 
