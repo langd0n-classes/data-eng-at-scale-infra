@@ -72,14 +72,17 @@ Test it:
 
 ## Rebuild After Code Changes
 
-When the cluster cannot reach GitHub (e.g. on NERC), use a binary build from your local repo:
+Use `ops.sh` to trigger a rebuild — it handles both online and offline clusters:
 
 ```bash
-# From the repo root — BuildConfig has contextDir: chatops, so upload the full repo
-oc start-build slack-chatops --from-dir=. --follow -n ${INFRA_NAMESPACE}
+# Cluster has internet access (NERC) — pulls from GIT_REPO_URL / GIT_BRANCH
+source config.env && bash pipeline/ops.sh rebuild-chatops
+
+# Cluster is offline (CRC) — uploads local repo root as binary source
+source config.env && bash pipeline/ops.sh rebuild-chatops --local
 ```
 
-When the cluster can reach GitHub, a `git push` to the tracked branch triggers a build automatically via the BuildConfig's ConfigChange trigger.
+When the cluster can reach GitHub, a `git push` to the tracked branch also triggers a build automatically via the BuildConfig's ConfigChange trigger — no manual rebuild needed.
 
 ---
 
