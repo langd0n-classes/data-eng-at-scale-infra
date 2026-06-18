@@ -1,224 +1,165 @@
 # Multi-Tenant Kafka + NiFi Infrastructure
 
-Infrastructure manifests and tooling for classroom-scale, per-team Kafka + NiFi deployments. Designed to support DS-551 style projects where a shared event generator produces a mixed raw stream that teams split and process downstream.
+Infrastructure-as-code for classroom-scale, per-team data engineering environments on OpenShift.
+Each team gets an isolated Kafka broker and NiFi instance. A shared event generator produces
+a synthetic mixed event stream that each team splits, routes, and processes.
 
-## Overview
-
-This repository provides infrastructure-as-code for deploying:
-
-- **Per-team Kafka brokers** - Isolated Kafka instances using KRaft mode (no ZooKeeper)
-- **Per-team NiFi instances** - Dedicated Apache NiFi deployments for data workflow orchestration
-- **Event generator** - Synthetic data producer for testing and demonstrations
-- **Optional storage** - MinIO (S3-compatible) and PostgreSQL templates
-
-### Architecture
-
-Supports two patterns:
-
-1. **Shared Infrastructure**: Single Kafka cluster, topic-level isolation
-2. **Per-Team Isolation**: Dedicated Kafka and NiFi per team/tenant (recommended for classes)
-
-#### Classroom Data Flow (typical)
+## Architecture
 
 ```
-Event Generator (infra namespace)
-  ↓
-Kafka: teamXX.raw (mixed events)
-  ↓
-NiFi (team namespace): route by event_type
-  ↓
-Kafka: typed topics (symptom_report, clinic_visit, hospital_admission, ...)
-  ↓
-Spark / DB (team namespace): analytics + storage
+                     ┌─────────────────────────────┐
+                     │   infra namespace            │
+                     │   Event Generator            │
+                     │   (synthetic mixed stream)   │
+                     └────────────┬────────────────┘
+                                  │  publishes to each team's raw topic
+              ┌───────────────────┼───────────────────┐
+              ▼                   ▼                   ▼
+     ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+     │  team-01    │    │  team-02    │    │  team-N     │
+     │  Kafka      │    │  Kafka      │    │  Kafka      │
+     │  NiFi       │    │  NiFi       │    │  NiFi       │
+     └──────┬──────┘    └──────┬──────┘    └──────┬──────┘
+            │                  │                  │
+            ▼                  ▼                  ▼
+     typed topics       typed topics       typed topics
+     (per event type)   (per event type)   (per event type)
+            │
+            ▼
+     Student Analytics
+     (Spark / DB / notebooks)
+
+
+  Instructor → Slack /infra → ChatOps (infra namespace) → kubectl API
 ```
 
-## Prerequisites
+## Three Ways to Operate
 
-- Kubernetes 1.24+ or OpenShift 4.10+
-- kubectl or oc CLI
-- envsubst (from gettext package)
-- Cluster admin or namespace admin privileges
-- Sufficient cluster resources (CPU, memory, storage)
+| Tool | Who | When | How |
+|------|-----|------|-----|
+| `bash pipeline/setup.sh` | Instructor | Before class — provision all teams | Fire-and-forget Tekton pipeline, runs in-cluster |
+| `bash pipeline/ops.sh` | Instructor | During class — fix one team | Direct `oc` commands, instant results, no Tekton |
+| `/infra <command>` in Slack | Instructor | Anytime — no terminal needed | ChatOps bot in infra namespace |
 
-### OpenShift-Specific Requirements
-
-- **NiFi requires anyuid SCC** - The Apache NiFi image runs as a specific UID
-- Routes are used for external access (can be replaced with Ingress for vanilla Kubernetes)
+---
 
 ## Quick Start
 
-### 1. Clone and Configure
+### 1. Install OpenShift Pipelines Operator
+
+Install via OperatorHub as kubeadmin. Required for `setup.sh` (ops.sh and ChatOps work without it).
+
+### 2. Configure Both Env Files
 
 ```bash
-git clone <this-repo>
-cd public-infra
-
-# Create your configuration
 cp config.env.example config.env
-# Edit config.env with your namespace names and settings
+cp onboarding/cluster.env.example onboarding/cluster.env
+# Edit both files — set cluster domain, storage class, team names, passwords
 ```
 
-### 2. Create Namespaces
+### 3. Create Namespaces and RBAC (kubeadmin)
+
+```bash
+bash onboarding/apply-onboarding.sh --dry-run   # verify first
+bash onboarding/apply-onboarding.sh
+```
+
+### 4. Add Users to Groups (kubeadmin)
+
+```bash
+oc adm groups add-users infra-admins <instructor-username>
+oc adm groups add-users team-01-devs <student-username>
+```
+
+### 5. Deploy Everything (instructor)
 
 ```bash
 source config.env
-
-# Create infrastructure namespace
-kubectl create namespace ${INFRA_NAMESPACE}
-
-# Create team namespaces (adjust count as needed)
-for i in {01..10}; do
-  kubectl create namespace ${TEAM_NAMESPACE_PREFIX}-$i
-done
+bash pipeline/setup.sh
 ```
 
-### 3. Deploy Components
+Deploys Kafka + NiFi for all configured teams in parallel, then the event generator, then ChatOps.
+Watch progress:
 
 ```bash
-source config.env
-
-# Deploy per-team Kafka (per team)
-cd kafka/per-team
-./deploy-team.sh team01 team-01
-cd ../..
-
-# Deploy NiFi (per team)
-cd nifi
-./deploy-team.sh team01 ${INFRA_NAMESPACE} MySecurePassword123
-cd ..
-
-# Deploy event generator (shared, produces mixed events)
-kubectl apply -f event-generator/configmap.yaml
-kubectl apply -f event-generator/deployment.yaml
+tkn pipelinerun logs --last -f -n ${INFRA_NAMESPACE}
 ```
+
+### 6. Verify
+
+```bash
+# All team resources
+oc get pods,svc,pvc -n team-01
+
+# NiFi UI (printed in pipeline output, or):
+oc get route -n team-01
+
+# Events flowing (consume 5 messages)
+oc run kafka-consumer --rm -it \
+  --image=confluentinc/cp-kafka:7.5.0 -n team-01 -- \
+  kafka-console-consumer \
+  --bootstrap-server kafka-team01.team-01.svc.cluster.local:9092 \
+  --topic events.team01.raw --max-messages 5
+```
+
+### 7. Operate from Slack
+
+Set up the `/infra` slash command (see [chatops/README.md](chatops/README.md)), then:
+
+```
+/infra status-all
+/infra pause-events
+/infra reset-password team01 team-01 NewPass2026!!
+```
+
+---
 
 ## Directory Structure
 
 ```
-public-infra/
-├── kafka/
-│   ├── per-team/                  # Isolated Kafka per team
-│   │   ├── kafka-per-team-template.yaml
-│   │   ├── deploy-team.sh
-│   │   └── delete-team.sh
-│   └── shared-deployment/         # Shared Kafka cluster option
-│       ├── kafka-statefulset.yaml
-│       ├── kafka-nodeport.yaml
-│       └── kafka-route.yaml
-├── nifi/
-│   ├── team-statefulset-template.yaml
-│   ├── team-pvc-template.yaml
-│   ├── team-route-template.yaml
-│   ├── deploy-team.sh
-│   └── delete-team.sh
-├── event-generator/               # Synthetic event producer (outbreak-scheduling)
-│   ├── src/
-│   │   ├── event_generator.py     # Main application
-│   │   ├── check_events.py        # Diagnostic script
-│   │   └── requirements.txt
-│   ├── k8s/                       # Kubernetes/OpenShift manifests
-│   ├── Dockerfile
-│   └── README.md
-├── storage/                       # Optional storage services
-│   ├── minio.yaml
-│   └── postgres.yaml
-├── onboarding/                    # Team namespace templates
-│   ├── namespace-template.yaml
-│   └── team-config-template.yaml
-└── docs/                          # Additional documentation
+data-eng-at-scale-infra/
+├── config.env.example          Runtime config template — copy to config.env
+├── onboarding/                 One-time cluster setup (kubeadmin): namespaces, quotas,
+│                               LimitRanges, RBAC groups — run before anything else
+├── pipeline/                   Two tools for classroom operations (run after onboarding):
+│   ├── setup.sh                  Fire-and-forget provisioning for all teams via Tekton
+│   ├── ops.sh                    Surgical day-to-day fixes via raw oc (instant, no Tekton)
+│   ├── tasks/                    Tekton Task definitions (deploy-kafka, deploy-nifi, etc.)
+│   ├── pipelines/                Tekton Pipeline definitions
+│   └── runs/                     PipelineRun and TaskRun templates
+├── chatops/                    Slack /infra slash command handler
+│   ├── src/                      FastAPI app (commands.py, settings.py, main.py)
+│   └── k8s/                      Deployment, BuildConfig, Route, RBAC
+├── kafka/                      Kafka broker templates and per-team deploy scripts
+├── nifi/                       NiFi instance templates and per-team deploy scripts
+├── event-generator/            Synthetic event producer (Python, outbreak simulation)
+├── storage/                    Optional MinIO (S3) and PostgreSQL templates
+└── learning/                   16 step-by-step student guides
 ```
 
-## Configuration
+---
 
-All manifests use environment variable substitution via `envsubst`:
+## Key Technologies
 
-```bash
-# Edit configuration
-vi config.env
+- **OpenShift** — Container orchestration (`oc` CLI, Routes, BuildConfigs)
+- **Apache Kafka 3.6.x** — KRaft mode (no ZooKeeper), one broker per team
+- **Apache NiFi 1.24.x** — Visual data flow, one instance per team
+- **Python 3.x** — Event generator (outbreak simulation)
+- **Tekton** — CI/CD pipelines (OpenShift Pipelines operator)
+- **FastAPI** — ChatOps Slack bot
 
-# Source it
-source config.env
-
-# Deploy with substitution
-envsubst < kafka/per-team/kafka-per-team-template.yaml | kubectl apply -f -
-```
-
-### Key Variables
-
-- `INFRA_NAMESPACE`: Shared infra namespace (event generator, optional shared Kafka)
-- `TEAM_NAMESPACE_PREFIX`: Prefix for team namespaces (e.g., `team-01`)
-- `KAFKA_CLUSTER_NAME`: Kafka cluster name per team or shared
-- `NIFI_IMAGE`: NiFi container image
-- `STORAGE_CLASS`: Storage class for PVCs
-- `NUM_TEAMS`: Number of teams/tenants
-
-## Use Cases
-
-### Educational Environments
-
-- Isolated environments for students or training participants
-- Reproducible data engineering exercises
-- Hands-on Kafka and NiFi learning
-
-### Development & Testing
-
-- Multi-tenant development clusters
-- Integration testing with isolated resources
-- Proof-of-concept deployments
-
-### Demonstrations
-
-- Conference talks and workshops
-- Product demonstrations
-- Architecture prototypes
+---
 
 ## Component Documentation
 
-- [Kafka Setup](kafka/README.md) - Kafka deployment options and configuration
-- [NiFi Setup](nifi/README.md) - NiFi installation and access
-- [Event Generator](event-generator/README.md) - Synthetic data producer (mixed events → raw topic)
-- [Contributing](CONTRIBUTING.md) - How to contribute
-- [Security](SECURITY.md) - Security considerations and secrets management
+- [Pipeline (setup.sh + ops.sh)](pipeline/README.md) — Full provisioning and day-2 reference
+- [ChatOps (Slack /infra)](chatops/README.md) — Slash command setup and command reference
+- [Kafka](kafka/README.md) — Kafka deployment options and configuration
+- [NiFi](nifi/README.md) — NiFi installation and access
+- [Event Generator](event-generator/README.md) — Synthetic data producer
+- [Onboarding](onboarding/README.md) — Namespace, quota, and RBAC setup
 
-## Monitoring
+## Contributing
 
-```bash
-# Check all resources
-kubectl get all -n ${INFRA_NAMESPACE}
-
-# Check specific team
-kubectl get pods,svc -n team-01
-
-# View logs
-kubectl logs -f <pod-name> -n <namespace>
-```
-
-## Cleanup
-
-```bash
-# Delete specific team resources
-cd kafka/per-team
-./delete-team.sh team01 team-01
-cd ../..
-
-# Delete entire namespace
-kubectl delete namespace team-01
-```
-
-## License
-
-This infrastructure code is provided as-is for educational and demonstration purposes.
-
-## Support
-
-For classroom deployments, instructors typically:
-- Create infra + team namespaces
-- Deploy per-team Kafka + NiFi using this repo
-- Configure the event generator to publish mixed events into each team’s raw topic
-- Provide students with topic names and access URLs
-
-For issues or questions:
-
-- Check component-specific README files
-- Review Kubernetes/OpenShift documentation
-- Consult Apache Kafka and NiFi official documentation
+See [CONTRIBUTING.md](CONTRIBUTING.md) for scope and code style guidelines.
+See [SECURITY.md](SECURITY.md) for secrets management — never commit real credentials.

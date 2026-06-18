@@ -68,25 +68,54 @@ def dispatch(subcmd: str, args: list[str], channel_id: str) -> str:
         )
 
     match subcmd:
-        case "status":          return cmd_status(*args)
-        case "add-kafka":       return cmd_add_kafka(*args)
-        case "add-nifi":        return cmd_add_nifi(*args)
-        case "remove-team":     return cmd_remove_team(*args)
-        case "remove-kafka":    return cmd_remove_kafka(*args)
-        case "remove-nifi":     return cmd_remove_nifi(*args)
+        case "status":           return cmd_status(*args)
+        case "status-all":       return cmd_status_all()
+        case "add-kafka":        return cmd_add_kafka(*args)
+        case "add-nifi":         return cmd_add_nifi(*args)
+        case "add-team":         return cmd_add_team(*args)
+        case "reset-team":       return cmd_reset_team(*args)
+        case "remove-team":      return cmd_remove_team(*args)
+        case "remove-kafka":     return cmd_remove_kafka(*args)
+        case "remove-nifi":      return cmd_remove_nifi(*args)
+        case "remove-all-teams": return cmd_remove_all_teams()
         case "wipe-kafka-data":  return cmd_wipe_kafka_data(*args)
         case "restart-kafka":    return cmd_restart_kafka(*args)
         case "restart-nifi":     return cmd_restart_nifi(*args)
         case "reset-password":   return cmd_reset_password(*args)
-        case "pause-events":    return cmd_pause_events()
-        case "resume-events":   return cmd_resume_events()
-        case "remove-events":   return cmd_remove_events()
-        case "run-pipeline":    return cmd_run_pipeline()
-        case "run-reset":       return cmd_run_reset()
-        case "pipeline-status": return cmd_pipeline_status()
-        case "cleanup-runs":    return cmd_cleanup_runs()
-        case "help":            return HELP_TEXT
-        case _:                 return f"Unknown command: `{subcmd}`\n\n{HELP_TEXT}"
+        case "force-update-nifi": return cmd_force_update_nifi(*args)
+        case "pause-events":     return cmd_pause_events()
+        case "resume-events":    return cmd_resume_events()
+        case "remove-events":    return cmd_remove_events()
+        case "teardown-all":     return cmd_teardown_all(*args)
+        case "reset-all":        return cmd_reset_all()
+        case "run-pipeline":     return cmd_run_pipeline()
+        case "run-reset":        return cmd_run_reset()
+        case "pipeline-status":  return cmd_pipeline_status()
+        case "cleanup-runs":     return cmd_cleanup_runs()
+        case "help":             return HELP_TEXT
+        case _:                  return f"Unknown command: `{subcmd}`\n\n{HELP_TEXT}"
+
+
+# ── Namespace discovery ────────────────────────────────────────────────────────
+
+_SYSTEM_NAMESPACES = {"default", "kube-public", "kube-node-lease"}
+_SYSTEM_PREFIXES = ("kube-", "openshift-")
+
+
+def _discover_team_namespaces() -> list[str]:
+    """Return all non-system, non-infra namespaces, sorted."""
+    all_ns = core_v1.list_namespace().items
+    result = []
+    for ns_obj in all_ns:
+        name = ns_obj.metadata.name
+        if name == settings.infra_namespace:
+            continue
+        if name in _SYSTEM_NAMESPACES:
+            continue
+        if any(name.startswith(p) for p in _SYSTEM_PREFIXES):
+            continue
+        result.append(name)
+    return sorted(result)
 
 
 # ── Private helpers ────────────────────────────────────────────────────────────
@@ -252,218 +281,169 @@ def _label_selector_list(ns: str, label: str, kinds: list[str]) -> list[str]:
     return lines
 
 
-# ── Command implementations ────────────────────────────────────────────────────
-
-def cmd_status(name: str, ns: str) -> str:
-    lines = [f"Status for {name} in {ns}:"]
-
-    label = f"app in (kafka-{name},nifi-{name})"
-    lines += _label_selector_list(ns, label, ["pod", "service", "persistentvolumeclaim"])
-
-    # Route (OpenShift custom resource)
+def _remove_all_in_namespace(ns: str) -> None:
+    """Delete all Kafka/NiFi resources from a team namespace (no label selector)."""
+    # StatefulSets (Kafka + NiFi)
     try:
-        routes = custom.list_namespaced_custom_object(
-            group="route.openshift.io",
-            version="v1",
-            plural="routes",
-            namespace=ns,
-            label_selector=f"app=nifi-{name}",
-        )
-        for r in routes.get("items", []):
-            host = r.get("spec", {}).get("host", "")
-            lines.append(f"  route: https://{host}/nifi")
+        for sts in apps_v1.list_namespaced_stateful_set(ns).items:
+            try:
+                apps_v1.delete_namespaced_stateful_set(sts.metadata.name, ns)
+            except Exception:
+                pass
     except Exception:
         pass
 
-    return "\n".join(lines) if len(lines) > 1 else f"No resources found for {name} in {ns}"
+    # Services
+    try:
+        for svc in core_v1.list_namespaced_service(ns).items:
+            if svc.metadata.name == "kubernetes":
+                continue
+            try:
+                core_v1.delete_namespaced_service(svc.metadata.name, ns)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
+    # PVCs
+    try:
+        for pvc in core_v1.list_namespaced_persistent_volume_claim(ns).items:
+            try:
+                core_v1.delete_namespaced_persistent_volume_claim(pvc.metadata.name, ns)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
-def cmd_add_kafka(name: str, ns: str) -> str:
-    """
-    Deploy Kafka for a single team using the same resource spec as
-    kafka/per-team/kafka-per-team-template.yaml. Mirrors ops.sh _do_add_kafka.
-    """
-    _check_namespace(ns)
-
-    labels = {"app": f"kafka-{name}", "component": "kafka", "team": name}
-    selector = {"app": f"kafka-{name}"}
-    advertised = (
-        f"PLAINTEXT://kafka-{name}-0.kafka-{name}-headless"
-        f".{ns}.svc.cluster.local:9092"
-    )
-    quorum_voters = (
-        f"1@kafka-{name}-0.kafka-{name}-headless"
-        f".{ns}.svc.cluster.local:9093"
-    )
-
-    # ClusterIP service
-    _apply_or_update_service(ns, k8s_client.V1Service(
-        metadata=k8s_client.V1ObjectMeta(name=f"kafka-{name}", namespace=ns, labels=labels),
-        spec=k8s_client.V1ServiceSpec(
-            type="ClusterIP",
-            ports=[k8s_client.V1ServicePort(port=9092, name="kafka", target_port=9092)],
-            selector=selector,
-        ),
-    ))
-
-    # Headless service
-    _apply_or_update_service(ns, k8s_client.V1Service(
-        metadata=k8s_client.V1ObjectMeta(
-            name=f"kafka-{name}-headless", namespace=ns, labels=labels
-        ),
-        spec=k8s_client.V1ServiceSpec(
-            cluster_ip="None",
-            ports=[
-                k8s_client.V1ServicePort(port=9092, name="kafka", target_port=9092),
-                k8s_client.V1ServicePort(port=9093, name="controller", target_port=9093),
-            ],
-            selector=selector,
-        ),
-    ))
-
-    # StatefulSet (mirrors kafka-per-team-template.yaml exactly)
-    _apply_or_update_stateful_set(ns, k8s_client.V1StatefulSet(
-        metadata=k8s_client.V1ObjectMeta(
-            name=f"kafka-{name}", namespace=ns, labels=labels
-        ),
-        spec=k8s_client.V1StatefulSetSpec(
-            service_name=f"kafka-{name}-headless",
-            replicas=1,
-            selector=k8s_client.V1LabelSelector(match_labels=selector),
-            template=k8s_client.V1PodTemplateSpec(
-                metadata=k8s_client.V1ObjectMeta(labels=labels),
-                spec=k8s_client.V1PodSpec(
-                    containers=[k8s_client.V1Container(
-                        name="kafka",
-                        image="confluentinc/cp-kafka:7.5.0",
-                        ports=[
-                            k8s_client.V1ContainerPort(
-                                container_port=9092, name="kafka", protocol="TCP"
-                            ),
-                            k8s_client.V1ContainerPort(
-                                container_port=9093, name="controller", protocol="TCP"
-                            ),
-                        ],
-                        env=[
-                            k8s_client.V1EnvVar(
-                                name="CLUSTER_ID", value="MkU3OEVBNTcwNTJENDM2Qk"
-                            ),
-                            k8s_client.V1EnvVar(name="KAFKA_NODE_ID", value="1"),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_PROCESS_ROLES", value="broker,controller"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LISTENERS",
-                                value="PLAINTEXT://:9092,CONTROLLER://:9093",
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_ADVERTISED_LISTENERS", value=advertised
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_CONTROLLER_LISTENER_NAMES", value="CONTROLLER"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LISTENER_SECURITY_PROTOCOL_MAP",
-                                value="CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_CONTROLLER_QUORUM_VOTERS", value=quorum_voters
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", value="1"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR",
-                                value="1",
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_TRANSACTION_STATE_LOG_MIN_ISR", value="1"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_DEFAULT_REPLICATION_FACTOR", value="1"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_MIN_INSYNC_REPLICAS", value="1"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_AUTO_CREATE_TOPICS_ENABLE", value="true"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LOG_DIRS", value="/mnt/kafka-data/logs"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LOG_RETENTION_HOURS", value="24"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LOG_RETENTION_BYTES", value="104857600"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LOG_SEGMENT_BYTES", value="52428800"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LOG_CLEANUP_POLICY", value="delete"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS", value="300000"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LOG_SEGMENT_DELETE_DELAY_MS", value="60000"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_HEAP_OPTS", value="-Xms256m -Xmx512m"
-                            ),
-                        ],
-                        volume_mounts=[
-                            k8s_client.V1VolumeMount(
-                                name="data", mount_path="/mnt/kafka-data"
-                            )
-                        ],
-                        resources=k8s_client.V1ResourceRequirements(
-                            requests={"memory": "512Mi", "cpu": "250m"},
-                            limits={"memory": "1Gi", "cpu": "500m"},
-                        ),
-                        readiness_probe=k8s_client.V1Probe(
-                            tcp_socket=k8s_client.V1TCPSocketAction(port=9092),
-                            initial_delay_seconds=30,
-                            period_seconds=10,
-                            timeout_seconds=5,
-                            failure_threshold=3,
-                        ),
-                        liveness_probe=k8s_client.V1Probe(
-                            tcp_socket=k8s_client.V1TCPSocketAction(port=9092),
-                            initial_delay_seconds=60,
-                            period_seconds=30,
-                            timeout_seconds=10,
-                            failure_threshold=3,
-                        ),
-                    )]
-                ),
-            ),
-            volume_claim_templates=[
-                k8s_client.V1PersistentVolumeClaim(
-                    metadata=k8s_client.V1ObjectMeta(name="data", labels=labels),
-                    spec=k8s_client.V1PersistentVolumeClaimSpec(
-                        access_modes=["ReadWriteOnce"],
-                        resources=k8s_client.V1VolumeResourceRequirements(
-                            requests={"storage": "2Gi"}
-                        ),
-                        storage_class_name=settings.storage_class,
-                    ),
+    # Routes (OpenShift CRD)
+    try:
+        routes = custom.list_namespaced_custom_object(
+            "route.openshift.io", "v1", "routes", ns
+        )
+        for r in routes.get("items", []):
+            try:
+                custom.delete_namespaced_custom_object(
+                    "route.openshift.io", "v1", "routes", ns, r["metadata"]["name"]
                 )
-            ],
-        ),
-    ))
+            except Exception:
+                pass
+    except Exception:
+        pass
 
-    bootstrap = (
-        f"kafka-{name}-0.kafka-{name}-headless.{ns}.svc.cluster.local:9092"
-    )
-    return (
-        f"Kafka deployed for {name} in {ns}\n"
-        f"Bootstrap: {bootstrap}"
-    )
+    # NetworkPolicies
+    try:
+        for np in networking_v1.list_namespaced_network_policy(ns).items:
+            try:
+                networking_v1.delete_namespaced_network_policy(np.metadata.name, ns)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
-def cmd_add_nifi(name: str, ns: str, pwd: str) -> str:
+def _cancel_in_flight_runs() -> str:
+    """Patch all running PipelineRuns and TaskRuns to cancelled state."""
+    cancelled = 0
+
+    # Cancel PipelineRuns
+    try:
+        pr_list = custom.list_namespaced_custom_object(
+            "tekton.dev", "v1", "pipelineruns", settings.infra_namespace
+        )
+        for pr in pr_list.get("items", []):
+            conditions = pr.get("status", {}).get("conditions", [])
+            if any(c.get("reason") in ("Running", "Started") for c in conditions):
+                try:
+                    custom.patch_namespaced_custom_object(
+                        "tekton.dev", "v1", "pipelineruns", settings.infra_namespace,
+                        pr["metadata"]["name"],
+                        {"spec": {"status": "StoppedRunFinally"}},
+                    )
+                    cancelled += 1
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Cancel TaskRuns
+    try:
+        tr_list = custom.list_namespaced_custom_object(
+            "tekton.dev", "v1", "taskruns", settings.infra_namespace
+        )
+        for tr in tr_list.get("items", []):
+            conditions = tr.get("status", {}).get("conditions", [])
+            if any(c.get("reason") == "Running" for c in conditions):
+                try:
+                    custom.patch_namespaced_custom_object(
+                        "tekton.dev", "v1", "taskruns", settings.infra_namespace,
+                        tr["metadata"]["name"],
+                        {"spec": {"status": "TaskRunCancelled"}},
+                    )
+                    cancelled += 1
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return f"Cancelled {cancelled} in-flight run(s)"
+
+
+def _wipe_tekton_history() -> str:
+    """Delete all PipelineRun, TaskRun objects and workspace PVCs from infra namespace.
+    Does NOT touch the ChatOps deployment or its resources."""
+    ns = settings.infra_namespace
+    chatops_name = settings.chatops_name
+    deleted = 0
+
+    # Delete all PipelineRuns
+    try:
+        pr_list = custom.list_namespaced_custom_object("tekton.dev", "v1", "pipelineruns", ns)
+        for pr in pr_list.get("items", []):
+            try:
+                custom.delete_namespaced_custom_object(
+                    "tekton.dev", "v1", "pipelineruns", ns, pr["metadata"]["name"]
+                )
+                deleted += 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Delete all TaskRuns
+    try:
+        tr_list = custom.list_namespaced_custom_object("tekton.dev", "v1", "taskruns", ns)
+        for tr in tr_list.get("items", []):
+            try:
+                custom.delete_namespaced_custom_object(
+                    "tekton.dev", "v1", "taskruns", ns, tr["metadata"]["name"]
+                )
+                deleted += 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Delete workspace PVCs, skip any that belong to ChatOps
+    try:
+        pvcs = core_v1.list_namespaced_persistent_volume_claim(ns)
+        for pvc in pvcs.items:
+            pvc_name = pvc.metadata.name
+            if chatops_name and chatops_name in pvc_name:
+                continue
+            try:
+                core_v1.delete_namespaced_persistent_volume_claim(pvc_name, ns)
+                deleted += 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return f"Wiped Tekton history: {deleted} objects deleted (ChatOps preserved)"
+
+
+# ── NiFi deploy core (shared by add-nifi and force-update-nifi) ───────────────
+
+def _do_deploy_nifi(name: str, ns: str, pwd: str) -> str:
     """
     Deploy NiFi for a single team using the same resource spec as the nifi/
     templates (team-pvc-template, team-statefulset-template, team-route-template,
@@ -726,6 +706,374 @@ echo "Configuration complete"
     )
 
 
+# ── Command implementations ────────────────────────────────────────────────────
+
+def cmd_status(name: str, ns: str) -> str:
+    lines = [f"Status for {name} in {ns}:"]
+
+    label = f"app in (kafka-{name},nifi-{name})"
+    lines += _label_selector_list(ns, label, ["pod", "service", "persistentvolumeclaim"])
+
+    # Route (OpenShift custom resource)
+    try:
+        routes = custom.list_namespaced_custom_object(
+            group="route.openshift.io",
+            version="v1",
+            plural="routes",
+            namespace=ns,
+            label_selector=f"app=nifi-{name}",
+        )
+        for r in routes.get("items", []):
+            host = r.get("spec", {}).get("host", "")
+            lines.append(f"  route: https://{host}/nifi")
+    except Exception:
+        pass
+
+    return "\n".join(lines) if len(lines) > 1 else f"No resources found for {name} in {ns}"
+
+
+def cmd_status_all() -> str:
+    """Cluster-wide overview: all infra namespace resources, then all team namespaces."""
+    ns = settings.infra_namespace
+    lines = [
+        "══════════════════════════════════════════",
+        "  Cluster-wide status",
+        "══════════════════════════════════════════",
+        "",
+        f"── infra ({ns}) ──────────────────────────",
+    ]
+
+    # All pods in infra
+    lines.append("Pods:")
+    try:
+        pods = core_v1.list_namespaced_pod(ns).items
+        if pods:
+            for pod in pods:
+                phase = pod.status.phase or "Unknown"
+                lines.append(f"  {pod.metadata.name}  [{phase}]")
+        else:
+            lines.append("  (none)")
+    except Exception:
+        lines.append("  (error reading pods)")
+
+    # All PVCs in infra
+    lines.append("PVCs:")
+    try:
+        pvcs = core_v1.list_namespaced_persistent_volume_claim(ns).items
+        if pvcs:
+            for pvc in pvcs:
+                cap = ""
+                if pvc.status and pvc.status.capacity:
+                    cap = f"  {pvc.status.capacity.get('storage', '')}"
+                lines.append(f"  {pvc.metadata.name}  [{pvc.status.phase}]{cap}")
+        else:
+            lines.append("  (none)")
+    except Exception:
+        lines.append("  (error reading PVCs)")
+
+    # Last 3 PipelineRuns
+    lines.append("Pipeline runs (last 3):")
+    try:
+        result = custom.list_namespaced_custom_object(
+            "tekton.dev", "v1", "pipelineruns", ns
+        )
+        runs = sorted(
+            result.get("items", []),
+            key=lambda r: r["metadata"].get("creationTimestamp", ""),
+            reverse=True,
+        )[:3]
+        if runs:
+            for run in runs:
+                rname = run["metadata"]["name"]
+                conditions = run.get("status", {}).get("conditions", [])
+                reason = conditions[0].get("reason", "Pending") if conditions else "Pending"
+                ts = run["metadata"].get("creationTimestamp", "")
+                lines.append(f"  {rname}  [{reason}]  {ts}")
+        else:
+            lines.append("  (none)")
+    except Exception:
+        lines.append("  (none)")
+
+    # Team namespaces
+    team_namespaces = _discover_team_namespaces()
+    if not team_namespaces:
+        lines += ["", "No team namespaces found."]
+    else:
+        for team_ns in team_namespaces:
+            lines += ["", f"── {team_ns} ──────────────────────────────────"]
+
+            # Pods
+            lines.append("Pods:")
+            try:
+                pods = core_v1.list_namespaced_pod(team_ns).items
+                if pods:
+                    for pod in pods:
+                        phase = pod.status.phase or "Unknown"
+                        lines.append(f"  {pod.metadata.name}  [{phase}]")
+                else:
+                    lines.append("  (none)")
+            except Exception:
+                lines.append("  (none)")
+
+            # PVCs
+            lines.append("PVCs:")
+            try:
+                pvcs = core_v1.list_namespaced_persistent_volume_claim(team_ns).items
+                if pvcs:
+                    for pvc in pvcs:
+                        cap = ""
+                        if pvc.status and pvc.status.capacity:
+                            cap = f"  {pvc.status.capacity.get('storage', '')}"
+                        lines.append(f"  {pvc.metadata.name}  [{pvc.status.phase}]{cap}")
+                else:
+                    lines.append("  (none)")
+            except Exception:
+                lines.append("  (none)")
+
+            # Routes
+            lines.append("Routes:")
+            try:
+                routes = custom.list_namespaced_custom_object(
+                    "route.openshift.io", "v1", "routes", team_ns
+                )
+                route_items = routes.get("items", [])
+                if route_items:
+                    for r in route_items:
+                        host = r.get("spec", {}).get("host", "")
+                        lines.append(f"  https://{host}")
+                else:
+                    lines.append("  (none)")
+            except Exception:
+                lines.append("  (none)")
+
+    lines += ["", "══════════════════════════════════════════"]
+    return "\n".join(lines)
+
+
+def cmd_add_kafka(name: str, ns: str) -> str:
+    """
+    Deploy Kafka for a single team using the same resource spec as
+    kafka/per-team/kafka-per-team-template.yaml. Mirrors ops.sh _do_add_kafka.
+    """
+    _check_namespace(ns)
+
+    labels = {"app": f"kafka-{name}", "component": "kafka", "team": name}
+    selector = {"app": f"kafka-{name}"}
+    advertised = (
+        f"PLAINTEXT://kafka-{name}-0.kafka-{name}-headless"
+        f".{ns}.svc.cluster.local:9092"
+    )
+    quorum_voters = (
+        f"1@kafka-{name}-0.kafka-{name}-headless"
+        f".{ns}.svc.cluster.local:9093"
+    )
+
+    # ClusterIP service
+    _apply_or_update_service(ns, k8s_client.V1Service(
+        metadata=k8s_client.V1ObjectMeta(name=f"kafka-{name}", namespace=ns, labels=labels),
+        spec=k8s_client.V1ServiceSpec(
+            type="ClusterIP",
+            ports=[k8s_client.V1ServicePort(port=9092, name="kafka", target_port=9092)],
+            selector=selector,
+        ),
+    ))
+
+    # Headless service
+    _apply_or_update_service(ns, k8s_client.V1Service(
+        metadata=k8s_client.V1ObjectMeta(
+            name=f"kafka-{name}-headless", namespace=ns, labels=labels
+        ),
+        spec=k8s_client.V1ServiceSpec(
+            cluster_ip="None",
+            ports=[
+                k8s_client.V1ServicePort(port=9092, name="kafka", target_port=9092),
+                k8s_client.V1ServicePort(port=9093, name="controller", target_port=9093),
+            ],
+            selector=selector,
+        ),
+    ))
+
+    # StatefulSet (mirrors kafka-per-team-template.yaml exactly)
+    _apply_or_update_stateful_set(ns, k8s_client.V1StatefulSet(
+        metadata=k8s_client.V1ObjectMeta(
+            name=f"kafka-{name}", namespace=ns, labels=labels
+        ),
+        spec=k8s_client.V1StatefulSetSpec(
+            service_name=f"kafka-{name}-headless",
+            replicas=1,
+            selector=k8s_client.V1LabelSelector(match_labels=selector),
+            template=k8s_client.V1PodTemplateSpec(
+                metadata=k8s_client.V1ObjectMeta(labels=labels),
+                spec=k8s_client.V1PodSpec(
+                    containers=[k8s_client.V1Container(
+                        name="kafka",
+                        image="confluentinc/cp-kafka:7.5.0",
+                        ports=[
+                            k8s_client.V1ContainerPort(
+                                container_port=9092, name="kafka", protocol="TCP"
+                            ),
+                            k8s_client.V1ContainerPort(
+                                container_port=9093, name="controller", protocol="TCP"
+                            ),
+                        ],
+                        env=[
+                            k8s_client.V1EnvVar(
+                                name="CLUSTER_ID", value="MkU3OEVBNTcwNTJENDM2Qk"
+                            ),
+                            k8s_client.V1EnvVar(name="KAFKA_NODE_ID", value="1"),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_PROCESS_ROLES", value="broker,controller"
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_LISTENERS",
+                                value="PLAINTEXT://:9092,CONTROLLER://:9093",
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_ADVERTISED_LISTENERS", value=advertised
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_CONTROLLER_LISTENER_NAMES", value="CONTROLLER"
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_LISTENER_SECURITY_PROTOCOL_MAP",
+                                value="CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_CONTROLLER_QUORUM_VOTERS", value=quorum_voters
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", value="1"
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR",
+                                value="1",
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_TRANSACTION_STATE_LOG_MIN_ISR", value="1"
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_DEFAULT_REPLICATION_FACTOR", value="1"
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_MIN_INSYNC_REPLICAS", value="1"
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_AUTO_CREATE_TOPICS_ENABLE", value="true"
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_LOG_DIRS", value="/mnt/kafka-data/logs"
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_LOG_RETENTION_HOURS", value="24"
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_LOG_RETENTION_BYTES", value="104857600"
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_LOG_SEGMENT_BYTES", value="52428800"
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_LOG_CLEANUP_POLICY", value="delete"
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS", value="300000"
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_LOG_SEGMENT_DELETE_DELAY_MS", value="60000"
+                            ),
+                            k8s_client.V1EnvVar(
+                                name="KAFKA_HEAP_OPTS", value="-Xms256m -Xmx512m"
+                            ),
+                        ],
+                        volume_mounts=[
+                            k8s_client.V1VolumeMount(
+                                name="data", mount_path="/mnt/kafka-data"
+                            )
+                        ],
+                        resources=k8s_client.V1ResourceRequirements(
+                            requests={"memory": "512Mi", "cpu": "250m"},
+                            limits={"memory": "1Gi", "cpu": "500m"},
+                        ),
+                        readiness_probe=k8s_client.V1Probe(
+                            tcp_socket=k8s_client.V1TCPSocketAction(port=9092),
+                            initial_delay_seconds=30,
+                            period_seconds=10,
+                            timeout_seconds=5,
+                            failure_threshold=3,
+                        ),
+                        liveness_probe=k8s_client.V1Probe(
+                            tcp_socket=k8s_client.V1TCPSocketAction(port=9092),
+                            initial_delay_seconds=60,
+                            period_seconds=30,
+                            timeout_seconds=10,
+                            failure_threshold=3,
+                        ),
+                    )]
+                ),
+            ),
+            volume_claim_templates=[
+                k8s_client.V1PersistentVolumeClaim(
+                    metadata=k8s_client.V1ObjectMeta(name="data", labels=labels),
+                    spec=k8s_client.V1PersistentVolumeClaimSpec(
+                        access_modes=["ReadWriteOnce"],
+                        resources=k8s_client.V1VolumeResourceRequirements(
+                            requests={"storage": "2Gi"}
+                        ),
+                        storage_class_name=settings.storage_class,
+                    ),
+                )
+            ],
+        ),
+    ))
+
+    bootstrap = (
+        f"kafka-{name}-0.kafka-{name}-headless.{ns}.svc.cluster.local:9092"
+    )
+    return (
+        f"Kafka deployed for {name} in {ns}\n"
+        f"Bootstrap: {bootstrap}"
+    )
+
+
+def cmd_add_nifi(name: str, ns: str, pwd: str) -> str:
+    """
+    Deploy NiFi for a team. Skips if NiFi StatefulSet already exists and has
+    ready replicas — use force-update-nifi to override.
+    """
+    sts_name = f"nifi-{name}"
+    try:
+        sts = apps_v1.read_namespaced_stateful_set(sts_name, ns)
+        ready = sts.status.ready_replicas or 0
+        if ready > 0:
+            return (
+                f"NiFi already deployed and healthy for {name} in {ns} "
+                f"({ready} replica ready).\n"
+                f"Use `force-update-nifi {name} {ns} <pwd>` to force a redeploy."
+            )
+    except k8s_client.ApiException as e:
+        if e.status != 404:
+            raise
+    return _do_deploy_nifi(name, ns, pwd)
+
+
+def cmd_force_update_nifi(name: str, ns: str, pwd: str) -> str:
+    """Force redeploy NiFi regardless of current state (bypasses healthy check)."""
+    return _do_deploy_nifi(name, ns, pwd)
+
+
+def cmd_add_team(name: str, ns: str, pwd: str) -> str:
+    """Deploy Kafka + NiFi for a team in sequence."""
+    kafka_result = cmd_add_kafka(name, ns)
+    nifi_result = _do_deploy_nifi(name, ns, pwd)
+    return f"{kafka_result}\n{nifi_result}"
+
+
+def cmd_reset_team(name: str, ns: str, pwd: str) -> str:
+    """Remove Kafka + NiFi then redeploy fresh."""
+    cmd_remove_team(name, ns)
+    return cmd_add_team(name, ns, pwd)
+
+
 def cmd_remove_team(name: str, ns: str) -> str:
     cmd_remove_kafka(name, ns)
     cmd_remove_nifi(name, ns)
@@ -792,6 +1140,21 @@ def cmd_remove_nifi(name: str, ns: str) -> str:
     except Exception:
         pass
     return f"NiFi removed for {name} in {ns}"
+
+
+def cmd_remove_all_teams() -> str:
+    """Remove all resources from every non-system, non-infra namespace."""
+    namespaces = _discover_team_namespaces()
+    if not namespaces:
+        return "No team namespaces found."
+    results = []
+    for ns in namespaces:
+        try:
+            _remove_all_in_namespace(ns)
+            results.append(f"  {ns}: removed")
+        except Exception as e:
+            results.append(f"  {ns}: error — {e}")
+    return "Removed all teams:\n" + "\n".join(results)
 
 
 def cmd_wipe_kafka_data(name: str, ns: str) -> str:
@@ -934,6 +1297,31 @@ def cmd_remove_events() -> str:
     return "Event generator removed"
 
 
+def cmd_teardown_all(*args) -> str:
+    """
+    teardown-all           — remove events + remove all teams
+    teardown-all clean     — cancel in-flight runs first, then remove events + teams
+    teardown-all wipe      — cancel runs + wipe Tekton history (PipelineRuns/TaskRuns/PVCs)
+                             + remove events + teams (ChatOps stays up)
+    """
+    mode = args[0] if args else ""
+    lines = []
+    if mode in ("clean", "wipe"):
+        lines.append(_cancel_in_flight_runs())
+    if mode == "wipe":
+        lines.append(_wipe_tekton_history())
+    lines.append(cmd_remove_events())
+    lines.append(cmd_remove_all_teams())
+    return "\n".join(lines)
+
+
+def cmd_reset_all() -> str:
+    """Cancel in-flight runs, teardown all, then trigger reset-and-deploy pipeline."""
+    teardown_result = cmd_teardown_all("clean")
+    pipeline_result = cmd_run_reset()
+    return f"{teardown_result}\n{pipeline_result}"
+
+
 def cmd_run_pipeline() -> str:
     return _trigger_pipeline("deploy-all-teams", "deploy-all-teams-run")
 
@@ -1042,17 +1430,28 @@ HELP_TEXT = """\
 
 *Status*
   `status <name> <ns>`              Show pods, services, PVCs, and route for a team
+  `status-all`                      Show all namespaces overview (infra + all teams)
 
-*Kafka / NiFi*
-  `add-kafka <name> <ns>`           Deploy Kafka for a team (direct k8s API)
-  `add-nifi <name> <ns> <pwd>`      Deploy NiFi for a team — waits until Ready
-  `remove-team <name> <ns>`         Remove Kafka + NiFi
-  `remove-kafka <name> <ns>`        Remove only Kafka
-  `remove-nifi <name> <ns>`         Remove only NiFi
-  `wipe-kafka-data <name> <ns>`          Delete Kafka PVC (data wiped, pod restarts fresh)
-  `restart-kafka <name> <ns>`            Restart Kafka pod
-  `restart-nifi <name> <ns>`             Restart NiFi pod
-  `reset-password <name> <ns> <pwd>`     Reset NiFi login password (min 12 chars)
+*Kafka / NiFi — single team*
+  `add-kafka <name> <ns>`                   Deploy Kafka for a team
+  `add-nifi <name> <ns> <pwd>`              Deploy NiFi (skips if already healthy)
+  `force-update-nifi <name> <ns> <pwd>`     Force redeploy NiFi regardless of state
+  `add-team <name> <ns> <pwd>`              Deploy Kafka + NiFi together
+  `reset-team <name> <ns> <pwd>`            Remove then redeploy Kafka + NiFi
+  `remove-team <name> <ns>`                 Remove Kafka + NiFi
+  `remove-kafka <name> <ns>`                Remove only Kafka
+  `remove-nifi <name> <ns>`                 Remove only NiFi
+  `wipe-kafka-data <name> <ns>`             Delete Kafka PVC (pod restarts fresh)
+  `restart-kafka <name> <ns>`               Restart Kafka pod
+  `restart-nifi <name> <ns>`                Restart NiFi pod
+  `reset-password <name> <ns> <pwd>`        Reset NiFi login password (min 12 chars)
+
+*Bulk operations*
+  `remove-all-teams`          Remove Kafka + NiFi from all team namespaces
+  `teardown-all`              Remove events + all teams
+  `teardown-all clean`        Cancel in-flight runs + remove events + all teams
+  `teardown-all wipe`         Cancel runs + wipe Tekton history + remove events + all teams (ChatOps stays up)
+  `reset-all`                 teardown-all clean + trigger reset pipeline
 
 *Event generator*
   `pause-events`     Scale to 0 replicas
