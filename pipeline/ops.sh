@@ -40,6 +40,10 @@
 #     reset-all          teardown-all then re-run the reset pipeline
 #     cleanup-runs       Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
 #
+#   ChatOps
+#     rebuild-chatops          Trigger ChatOps rebuild from Git (cluster must reach GitHub)
+#     rebuild-chatops --local  Trigger binary build from local repo root (offline / CRC)
+#
 #   Observability
 #     status <name> <ns>   Show pods, services, PVCs, routes, and recent events
 
@@ -509,6 +513,32 @@ cmd_status_all() {
   echo "======================================================"
 }
 
+cmd_rebuild_chatops() {
+  local local_build=false
+  for arg in "${ARGS[@]:-}"; do
+    [[ "$arg" == "--local" ]] && local_build=true
+  done
+
+  local chatops_name="${CHATOPS_NAME:-slack-chatops}"
+
+  if [[ "$local_build" == "true" ]]; then
+    info "Starting binary build of ${chatops_name} from local repo root..."
+    info "(Use this on clusters without GitHub access, e.g. CRC)"
+    run "oc start-build '${chatops_name}' \
+      --from-dir='${REPO_ROOT}' \
+      --follow \
+      -n '${INFRA_NAMESPACE}'"
+  else
+    info "Starting git-based build of ${chatops_name} from ${GIT_REPO_URL} (${GIT_BRANCH})..."
+    run "oc start-build '${chatops_name}' \
+      --follow \
+      -n '${INFRA_NAMESPACE}'"
+  fi
+
+  ok "Build complete — new pod rolling out"
+  info "Check pod status: oc get pod -l app=${chatops_name} -n ${INFRA_NAMESPACE}"
+}
+
 cmd_help() {
   cat <<'HELP'
 pipeline/ops.sh — Day-to-day classroom operations
@@ -545,6 +575,10 @@ Bulk operations:
   reset-all             teardown-all then re-run the reset pipeline
   cleanup-runs          Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
 
+ChatOps:
+  rebuild-chatops           Trigger git-based build (cluster must reach GitHub)
+  rebuild-chatops --local   Binary build from local repo root (for CRC / offline clusters)
+
 Observability:
   status      <name> <ns>   Show pods, services, PVCs, routes, and events for one team
   status-all                Show pods, PVCs, routes, and pipeline runs across all namespaces
@@ -575,6 +609,7 @@ case "$COMMAND" in
   teardown-all)       cmd_teardown_all ;;
   reset-all)          cmd_reset_all ;;
   cleanup-runs)       cmd_cleanup_runs ;;
+  rebuild-chatops)    cmd_rebuild_chatops ;;
   status)             cmd_status              "${ARGS[@]}" ;;
   status-all)         cmd_status_all ;;
   help|--help|-h)     cmd_help ;;

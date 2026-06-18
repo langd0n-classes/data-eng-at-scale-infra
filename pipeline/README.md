@@ -149,6 +149,16 @@ bash pipeline/ops.sh resume-events     # scale back to 1
 bash pipeline/ops.sh remove-events     # delete entire event generator
 ```
 
+### Rebuild ChatOps
+
+```bash
+# Cluster has internet access (NERC) — pulls from GIT_REPO_URL/GIT_BRANCH
+bash pipeline/ops.sh rebuild-chatops
+
+# Cluster is offline (CRC) — uploads local repo root as binary source
+bash pipeline/ops.sh rebuild-chatops --local
+```
+
 ### Bulk / Teardown Operations
 
 ```bash
