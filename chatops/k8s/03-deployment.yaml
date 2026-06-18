@@ -42,6 +42,8 @@ spec:
               value: ${NIFI_IMAGE}
             - name: EXTERNAL_DOMAIN
               value: ${EXTERNAL_DOMAIN}
+            - name: CHATOPS_NAME
+              value: ${CHATOPS_NAME}
           resources:
             requests:
               memory: 128Mi
