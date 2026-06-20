@@ -413,66 +413,148 @@ cmd_status() {
   local name="${1:?Usage: status <name> <ns>}"
   local ns="${2:?Usage: status <name> <ns>}"
   # status is read-only — always executes, even in --dry-run mode
-  echo "=== Pods (${ns}) ==="
-  oc get pods -n "${ns}" \
-    -l "app in (kafka-${name},nifi-${name})" \
-    --no-headers 2>/dev/null || echo "  (none)"
+  local issues=()
+
+  echo "${name} / ${ns}"
+  echo ""
+
+  # All active pods — any app, any naming convention (skip Succeeded)
+  local pod_out
+  pod_out=$(oc get pods -n "${ns}" --no-headers \
+    -o custom-columns='NAME:.metadata.name,PHASE:.status.phase' 2>/dev/null \
+    | grep -v "Succeeded" || echo "")
+  if [[ -z "${pod_out}" ]]; then
+    echo "  [?]  no active pods"
+    issues+=("No pods running in ${ns}")
+  else
+    while IFS= read -r pod_line; do
+      [[ -z "${pod_line}" ]] && continue
+      local pname pphase
+      pname=$(echo "${pod_line}" | awk '{print $1}')
+      pphase=$(echo "${pod_line}" | awk '{print $2}')
+      if [[ "${pphase}" == "Running" ]]; then
+        printf "  [OK]  %s  Running\n" "${pname}"
+      else
+        printf "  [X]   %s  %s\n" "${pname}" "${pphase}"
+        issues+=("${pname} is ${pphase}")
+      fi
+    done <<< "${pod_out}"
+  fi
 
   echo ""
-  echo "=== Services (${ns}) ==="
-  oc get svc -n "${ns}" \
-    -l "app in (kafka-${name},nifi-${name})" \
-    --no-headers 2>/dev/null || echo "  (none)"
 
-  echo ""
-  echo "=== PVCs (${ns}) ==="
-  oc get pvc -n "${ns}" \
-    -l "app in (kafka-${name},nifi-${name})" \
-    --no-headers 2>/dev/null || echo "  (none)"
+  # All PVCs
+  local pvc_out
+  pvc_out=$(oc get pvc -n "${ns}" --no-headers \
+    -o custom-columns='NAME:.metadata.name,PHASE:.status.phase' 2>/dev/null || echo "")
+  if [[ -z "${pvc_out}" ]]; then
+    echo "  PVCs    [?]  none"
+  else
+    local pvc_summary="  PVCs    "
+    local first=true
+    while IFS= read -r pvc_line; do
+      [[ -z "${pvc_line}" ]] && continue
+      local pname pphase
+      pname=$(echo "${pvc_line}" | awk '{print $1}')
+      pphase=$(echo "${pvc_line}" | awk '{print $2}')
+      [[ "${first}" == "true" ]] || pvc_summary+="  "
+      if [[ "${pphase}" == "Bound" ]]; then
+        pvc_summary+="[OK] ${pname}"
+      else
+        pvc_summary+="[X] ${pname}(${pphase})"
+        issues+=("PVC ${pname} is ${pphase}")
+      fi
+      first=false
+    done <<< "${pvc_out}"
+    echo "${pvc_summary}"
+  fi
 
-  echo ""
-  echo "=== Routes (${ns}) ==="
-  oc get route -n "${ns}" \
-    -l "app=nifi-${name}" \
-    --no-headers 2>/dev/null || echo "  (none)"
+  # All routes
+  local route_out
+  route_out=$(oc get route -n "${ns}" --no-headers \
+    -o custom-columns='NAME:.metadata.name,HOST:.spec.host' 2>/dev/null || echo "")
+  if [[ -n "${route_out}" ]]; then
+    while IFS= read -r route_line; do
+      [[ -z "${route_line}" ]] && continue
+      local rname rhost
+      rname=$(echo "${route_line}" | awk '{print $1}')
+      rhost=$(echo "${route_line}" | awk '{print $2}')
+      [[ -n "${rhost}" ]] && echo "  Route   ${rname}  https://${rhost}"
+    done <<< "${route_out}"
+  fi
 
-  echo ""
-  echo "=== Recent Events (last 10) ==="
-  oc get events -n "${ns}" \
-    --sort-by='.lastTimestamp' \
-    --no-headers 2>/dev/null | tail -10 || echo "  (none)"
+  # Issues
+  if [[ ${#issues[@]} -gt 0 ]]; then
+    echo ""
+    echo "Action needed:"
+    for issue in "${issues[@]}"; do
+      echo "  [X] ${issue}"
+    done
+  fi
 }
 
 cmd_status_all() {
   # status-all is read-only — always executes, even in --dry-run mode
-  echo "======================================================"
-  echo "  Cluster-wide status"
-  echo "======================================================"
-
-  # ── infra namespace ──────────────────────────────────────
-  echo ""
-  echo "── infra (${INFRA_NAMESPACE}) ─────────────────────────────────────"
-
-  echo "Event Generator:"
-  oc get deployment "${EVENT_GENERATOR_NAME}" -n "${INFRA_NAMESPACE}" \
-    --no-headers \
-    -o custom-columns='  NAME:.metadata.name,READY:.status.readyReplicas,REPLICAS:.spec.replicas' \
-    2>/dev/null || echo "  (not deployed)"
-
+  local issues=()
   local chatops_name="${CHATOPS_NAME:-slack-chatops}"
-  echo "ChatOps:"
-  oc get deployment "${chatops_name}" -n "${INFRA_NAMESPACE}" \
-    --no-headers \
-    -o custom-columns='  NAME:.metadata.name,READY:.status.readyReplicas,REPLICAS:.spec.replicas' \
-    2>/dev/null || echo "  (not deployed)"
 
-  echo "Pipeline runs (last 3):"
-  oc get pipelinerun -n "${INFRA_NAMESPACE}" \
+  echo "Cluster Overview"
+  echo ""
+
+  # ── Infra services — all Deployments + StatefulSets (excludes Tekton/build pods) ──
+  echo "Infra"
+
+  local workload_out
+  workload_out=$(oc get deployment,statefulset -n "${INFRA_NAMESPACE}" --no-headers \
+    -o custom-columns='NAME:.metadata.name,DESIRED:.spec.replicas,READY:.status.readyReplicas' \
+    2>/dev/null || echo "")
+  if [[ -z "${workload_out}" ]]; then
+    echo "  (no deployments found)"
+  else
+    while IFS= read -r wl; do
+      [[ -z "${wl}" ]] && continue
+      local wname wdesired wready
+      wname=$(echo "${wl}" | awk '{print $1}')
+      wdesired=$(echo "${wl}" | awk '{print $2}')
+      wready=$(echo "${wl}" | awk '{print $3}')
+      wdesired="${wdesired:-1}"
+      wready="${wready:-0}"
+      if [[ "${wready}" == "${wdesired}" ]]; then
+        printf "  %-28s [OK] Running (%s/%s)\n" "${wname}" "${wready}" "${wdesired}"
+      elif [[ "${wready}" -gt 0 ]]; then
+        printf "  %-28s [!]  Degraded (%s/%s ready)\n" "${wname}" "${wready}" "${wdesired}"
+        issues+=("infra/${wname}: degraded (${wready}/${wdesired} ready)")
+      else
+        printf "  %-28s [X]  Down (0/%s ready)\n" "${wname}" "${wdesired}"
+        issues+=("infra/${wname} is down")
+      fi
+    done <<< "${workload_out}"
+  fi
+
+  # Last pipeline run
+  local pr_line
+  pr_line=$(oc get pipelinerun -n "${INFRA_NAMESPACE}" \
     --sort-by='.metadata.creationTimestamp' --no-headers \
-    -o custom-columns='  NAME:.metadata.name,STATUS:.status.conditions[0].reason,STARTED:.metadata.creationTimestamp' \
-    2>/dev/null | tail -3 || echo "  (none)"
+    -o custom-columns='NAME:.metadata.name,STATUS:.status.conditions[0].reason,DATE:.metadata.creationTimestamp' \
+    2>/dev/null | tail -1 || echo "")
+  if [[ -z "${pr_line}" ]]; then
+    printf "  %-26s [-]  no runs found\n" "pipeline"
+  else
+    local pr_name pr_status pr_date
+    pr_name=$(echo "${pr_line}" | awk '{print $1}')
+    pr_status=$(echo "${pr_line}" | awk '{print $2}')
+    pr_date=$(echo "${pr_line}" | awk '{print $3}' | cut -c1-10)
+    local pr_icon="[OK]"
+    [[ "${pr_status}" == "Failed" || "${pr_status}" == "PipelineRunCancelled" ]] && pr_icon="[X]"
+    [[ "${pr_status}" == "Running" ]] && pr_icon="[>>]"
+    printf "  %-26s %s %s  %s  %s\n" "pipeline" "${pr_icon}" "${pr_status}" "${pr_name: -30}" "${pr_date}"
+    [[ "${pr_icon}" == "[X]" ]] && issues+=("Last pipeline run failed: ${pr_name}")
+  fi
 
-  # ── team namespaces ─────────────────────────────────────
+  # ── Teams ───────────────────────────────────────────────
+  echo ""
+  echo "Teams"
+
   local namespaces
   namespaces=$(oc get projects --no-headers \
     -o custom-columns='NAME:.metadata.name' 2>/dev/null \
@@ -480,37 +562,104 @@ cmd_status_all() {
     | grep -v "^openshift" \
     | grep -v "^kube" \
     | grep -v "^default$" \
+    | grep -v "^kube-public$" \
+    | grep -v "^kube-node-lease$" \
     || true)
 
   if [[ -z "${namespaces}" ]]; then
-    echo ""
-    echo "No team namespaces found."
+    echo "  (no team namespaces found)"
   else
     while IFS= read -r ns; do
       [[ -z "${ns}" ]] && continue
-      echo ""
-      echo "── ${ns} ─────────────────────────────────────────────────"
+      # Derive team name from namespace: team-01 → team01
+      local team_name="${ns//-/}"
 
-      echo "Pods:"
-      oc get pods -n "${ns}" --no-headers \
-        -o custom-columns='  NAME:.metadata.name,STATUS:.status.phase,READY:.status.containerStatuses[0].ready' \
-        2>/dev/null || echo "  (none)"
+      echo "  ${ns}"
 
-      echo "PVCs:"
-      oc get pvc -n "${ns}" --no-headers \
-        -o custom-columns='  NAME:.metadata.name,STATUS:.status.phase,CAPACITY:.status.capacity.storage' \
-        2>/dev/null || echo "  (none)"
+      # All active pods — any app, any naming convention
+      local pod_out pod_summary="    Pods    "
+      pod_out=$(oc get pods -n "${ns}" --no-headers \
+        -o custom-columns='NAME:.metadata.name,PHASE:.status.phase' 2>/dev/null \
+        | grep -v "Succeeded" || echo "")
+      if [[ -z "${pod_out}" ]]; then
+        pod_summary+="[?] none running"
+        issues+=("${ns}: no active pods")
+      else
+        local first_pod=true
+        while IFS= read -r pod_line_raw; do
+          [[ -z "${pod_line_raw}" ]] && continue
+          local pname pphase
+          pname=$(echo "${pod_line_raw}" | awk '{print $1}')
+          pphase=$(echo "${pod_line_raw}" | awk '{print $2}')
+          [[ "${first_pod}" == "true" ]] || pod_summary+=",  "
+          if [[ "${pphase}" == "Running" ]]; then
+            pod_summary+="[OK] ${pname}"
+          else
+            pod_summary+="[X] ${pname}(${pphase})"
+            issues+=("${ns}: ${pname} is ${pphase}")
+          fi
+          first_pod=false
+        done <<< "${pod_out}"
+      fi
+      echo "${pod_summary}"
 
-      echo "Routes:"
-      oc get route -n "${ns}" --no-headers \
-        -o custom-columns='  NAME:.metadata.name,HOST:.spec.host' \
-        2>/dev/null || echo "  (none)"
+      # All PVCs
+      local pvc_out pvc_summary="    PVCs    "
+      pvc_out=$(oc get pvc -n "${ns}" --no-headers \
+        -o custom-columns='NAME:.metadata.name,PHASE:.status.phase' 2>/dev/null || echo "")
+      if [[ -z "${pvc_out}" ]]; then
+        pvc_summary+="(none)"
+      else
+        local first_pvc=true
+        while IFS= read -r pvc_line_raw; do
+          [[ -z "${pvc_line_raw}" ]] && continue
+          local pvc_name pvc_phase
+          pvc_name=$(echo "${pvc_line_raw}" | awk '{print $1}')
+          pvc_phase=$(echo "${pvc_line_raw}" | awk '{print $2}')
+          [[ "${first_pvc}" == "true" ]] || pvc_summary+=",  "
+          if [[ "${pvc_phase}" == "Bound" ]]; then
+            pvc_summary+="[OK] ${pvc_name}"
+          else
+            pvc_summary+="[X] ${pvc_name}(${pvc_phase})"
+            issues+=("${ns}: PVC ${pvc_name} is ${pvc_phase}")
+          fi
+          first_pvc=false
+        done <<< "${pvc_out}"
+      fi
+      echo "${pvc_summary}"
+
+      # All routes
+      local route_out
+      route_out=$(oc get route -n "${ns}" --no-headers \
+        -o custom-columns='HOST:.spec.host' 2>/dev/null || echo "")
+      if [[ -n "${route_out}" ]]; then
+        local route_summary="    Routes  "
+        local first_route=true
+        while IFS= read -r rhost; do
+          [[ -z "${rhost}" ]] && continue
+          [[ "${first_route}" == "true" ]] || route_summary+=",  "
+          route_summary+="https://${rhost}"
+          first_route=false
+        done <<< "${route_out}"
+        echo "${route_summary}"
+      else
+        echo "    Routes  (none)"
+      fi
 
     done <<< "${namespaces}"
   fi
 
+  # ── Issues summary ──────────────────────────────────────
   echo ""
-  echo "======================================================"
+  if [[ ${#issues[@]} -gt 0 ]]; then
+    echo "Issues (${#issues[@]})"
+    for issue in "${issues[@]}"; do
+      echo "  [X] ${issue}"
+    done
+  else
+    echo "All systems healthy [OK]"
+  fi
+  echo ""
 }
 
 cmd_rebuild_chatops() {
