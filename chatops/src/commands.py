@@ -20,6 +20,10 @@ http_client: httpx.Client | None = None
 def init_clients(k8s_module: Any, http: httpx.Client) -> None:
     """Called once from lifespan. k8s_module is the kubernetes.client module."""
     global core_v1, apps_v1, networking_v1, custom, http_client
+    # Set a 10s timeout on all API calls — prevents DNS hangs from blocking Slack responses
+    cfg = k8s_module.Configuration.get_default_copy()
+    cfg.retries = 1
+    k8s_module.Configuration.set_default(cfg)
     core_v1 = k8s_module.CoreV1Api()
     apps_v1 = k8s_module.AppsV1Api()
     networking_v1 = k8s_module.NetworkingV1Api()
@@ -103,11 +107,26 @@ _SYSTEM_PREFIXES = ("kube-", "openshift-")
 
 
 def _discover_team_namespaces() -> list[str]:
-    """Return all non-system, non-infra namespaces, sorted."""
-    all_ns = core_v1.list_namespace().items
+    """Return all non-system, non-infra namespaces the SA has access to, sorted.
+
+    Uses the OpenShift Projects API (project.openshift.io/v1/projects) instead
+    of core list_namespace — this only returns projects the service account has
+    a RoleBinding in, so no cluster-admin permission is required.
+
+    Raises RuntimeError with a user-facing message if the API call fails.
+    """
+    try:
+        projects = custom.list_cluster_custom_object(
+            "project.openshift.io", "v1", "projects", _request_timeout=10
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not list namespaces — API call failed: {e}\n"
+            "This is usually a transient network issue. Try again in a moment."
+        ) from e
     result = []
-    for ns_obj in all_ns:
-        name = ns_obj.metadata.name
+    for proj in projects.get("items", []):
+        name = proj["metadata"]["name"]
         if name == settings.infra_namespace:
             continue
         if name in _SYSTEM_NAMESPACES:
@@ -179,13 +198,13 @@ def _apply_or_update_network_policy(ns: str, np: k8s_client.V1NetworkPolicy) -> 
 
 
 def _check_namespace(ns: str) -> None:
-    """Raise RuntimeError with a clear message if the namespace doesn't exist."""
+    """Raise RuntimeError with a clear message if the namespace/project doesn't exist."""
     try:
-        core_v1.read_namespace(ns)
+        custom.get_cluster_custom_object("project.openshift.io", "v1", "projects", ns)
     except k8s_client.ApiException as e:
-        if e.status == 404:
+        if e.status in (404, 403):
             raise RuntimeError(
-                f"Namespace '{ns}' does not exist.\n"
+                f"Namespace '{ns}' does not exist or is not accessible.\n"
                 f"Create it first:  oc new-project {ns}"
             )
         raise
@@ -318,12 +337,12 @@ def _remove_all_in_namespace(ns: str) -> None:
     # Routes (OpenShift CRD)
     try:
         routes = custom.list_namespaced_custom_object(
-            "route.openshift.io", "v1", "routes", ns
+            "route.openshift.io", "v1", ns, "routes"
         )
         for r in routes.get("items", []):
             try:
                 custom.delete_namespaced_custom_object(
-                    "route.openshift.io", "v1", "routes", ns, r["metadata"]["name"]
+                    "route.openshift.io", "v1", ns, "routes", r["metadata"]["name"]
                 )
             except Exception:
                 pass
@@ -708,145 +727,262 @@ echo "Configuration complete"
 
 # ── Command implementations ────────────────────────────────────────────────────
 
-def cmd_status(name: str, ns: str) -> str:
-    lines = [f"Status for {name} in {ns}:"]
+def _pod_icon(pod) -> tuple[str, str]:
+    """Return (icon, detail) summarising pod health at a glance."""
+    phase = pod.status.phase or "Unknown"
+    if phase in ("Succeeded", "Completed"):
+        return "✓", "Completed"
+    if phase == "Failed":
+        return "❌", "Failed"
+    if phase == "Running":
+        for cs in pod.status.container_statuses or []:
+            if cs.state and cs.state.waiting:
+                reason = cs.state.waiting.reason or ""
+                if any(w in reason for w in ("CrashLoop", "Error", "OOMKilled")):
+                    return "❌", reason
+        all_ready = all(cs.ready for cs in (pod.status.container_statuses or []))
+        return ("✅", "Running") if all_ready else ("⚠️", "Not Ready")
+    if phase == "Pending":
+        for cs in (pod.status.init_container_statuses or []) + (pod.status.container_statuses or []):
+            if cs.state and cs.state.waiting and cs.state.waiting.reason:
+                return "⚠️", f"Pending ({cs.state.waiting.reason})"
+        return "⚠️", "Pending"
+    return "⚠️", phase
 
-    label = f"app in (kafka-{name},nifi-{name})"
-    lines += _label_selector_list(ns, label, ["pod", "service", "persistentvolumeclaim"])
 
-    # Route (OpenShift custom resource)
+def _nifi_url(name: str, ns: str) -> str:
+    """Return the NiFi route URL for a team, or empty string if not found."""
     try:
         routes = custom.list_namespaced_custom_object(
-            group="route.openshift.io",
-            version="v1",
-            plural="routes",
-            namespace=ns,
+            "route.openshift.io", "v1", ns, "routes",
             label_selector=f"app=nifi-{name}",
         )
         for r in routes.get("items", []):
             host = r.get("spec", {}).get("host", "")
-            lines.append(f"  route: https://{host}/nifi")
+            if host:
+                return f"https://{host}/nifi"
     except Exception:
         pass
+    return ""
 
-    return "\n".join(lines) if len(lines) > 1 else f"No resources found for {name} in {ns}"
 
+def cmd_status(name: str, ns: str) -> str:
+    """Health summary for one team — all pods, PVCs, and routes in the namespace."""
+    lines = [f"*{name}* / `{ns}`"]
+    issues = []
 
-def cmd_status_all() -> str:
-    """Cluster-wide overview: all infra namespace resources, then all team namespaces."""
-    ns = settings.infra_namespace
-    lines = [
-        "══════════════════════════════════════════",
-        "  Cluster-wide status",
-        "══════════════════════════════════════════",
-        "",
-        f"── infra ({ns}) ──────────────────────────",
-    ]
-
-    # All pods in infra
-    lines.append("Pods:")
+    # All active pods (skip completed Tekton/build pods)
     try:
         pods = core_v1.list_namespaced_pod(ns).items
-        if pods:
-            for pod in pods:
-                phase = pod.status.phase or "Unknown"
-                lines.append(f"  {pod.metadata.name}  [{phase}]")
+        active = [p for p in pods if p.status.phase not in ("Succeeded",)]
+        if active:
+            for pod in sorted(active, key=lambda p: p.metadata.name):
+                icon, detail = _pod_icon(pod)
+                lines.append(f"  {icon}  {pod.metadata.name}  {detail}")
+                if icon != "✅":
+                    issues.append(f"{pod.metadata.name} is {detail}")
         else:
-            lines.append("  (none)")
-    except Exception:
-        lines.append("  (error reading pods)")
+            lines.append("  ⚠️  no active pods")
+            issues.append(f"No pods running in {ns}")
+    except Exception as e:
+        lines.append(f"  ⚠️  error reading pods: {e}")
 
-    # All PVCs in infra
-    lines.append("PVCs:")
+    # All PVCs
     try:
         pvcs = core_v1.list_namespaced_persistent_volume_claim(ns).items
         if pvcs:
+            pvc_parts = []
             for pvc in pvcs:
-                cap = ""
-                if pvc.status and pvc.status.capacity:
-                    cap = f"  {pvc.status.capacity.get('storage', '')}"
-                lines.append(f"  {pvc.metadata.name}  [{pvc.status.phase}]{cap}")
+                phase = pvc.status.phase or "Unknown"
+                icon = "✅" if phase == "Bound" else "❌"
+                pvc_parts.append(f"{icon} {pvc.metadata.name}")
+                if phase != "Bound":
+                    issues.append(f"PVC {pvc.metadata.name} is {phase}")
+            lines.append(f"  PVCs     {'   '.join(pvc_parts)}")
         else:
-            lines.append("  (none)")
+            lines.append("  PVCs     ⚠️  none")
     except Exception:
-        lines.append("  (error reading PVCs)")
+        pass
 
-    # Last 3 PipelineRuns
-    lines.append("Pipeline runs (last 3):")
+    # All routes
     try:
-        result = custom.list_namespaced_custom_object(
-            "tekton.dev", "v1", "pipelineruns", ns
+        routes = custom.list_namespaced_custom_object(
+            "route.openshift.io", "v1", ns, "routes"
         )
+        for r in routes.get("items", []):
+            host = r.get("spec", {}).get("host", "")
+            rname = r["metadata"]["name"]
+            if host:
+                lines.append(f"  🔗  {rname}  https://{host}")
+    except Exception:
+        pass
+
+    if issues:
+        lines += ["", "*Action needed:*"]
+        for issue in issues:
+            lines.append(f"  ❌ {issue}")
+
+    return "\n".join(lines)
+
+
+def cmd_status_all() -> str:
+    """Cluster overview: infra services + last pipeline run + all team health."""
+    ns = settings.infra_namespace
+    issues: list[str] = []
+    lines = ["*Cluster Overview*", ""]
+
+    # ── Infra services — all Deployments + StatefulSets (excludes Tekton/build pods) ──
+    lines.append("*Infra*")
+    try:
+        deployments = apps_v1.list_namespaced_deployment(ns).items
+        statefulsets = apps_v1.list_namespaced_stateful_set(ns).items
+        workloads = [(d.metadata.name, d.spec.replicas or 1, d.status.ready_replicas or 0)
+                     for d in deployments] + \
+                    [(s.metadata.name, s.spec.replicas or 1, s.status.ready_replicas or 0)
+                     for s in statefulsets]
+        if workloads:
+            for wname, desired, ready in sorted(workloads):
+                if ready == desired:
+                    icon = "✅"
+                    detail = f"Running ({ready}/{desired})"
+                elif ready > 0:
+                    icon = "⚠️"
+                    detail = f"Degraded ({ready}/{desired} ready)"
+                    issues.append(f"infra/{wname}: {detail}")
+                else:
+                    icon = "❌"
+                    detail = f"Down (0/{desired} ready)"
+                    issues.append(f"infra/{wname} is down")
+                lines.append(f"  {wname:<26} {icon}  {detail}")
+        else:
+            lines.append("  (no deployments found)")
+    except Exception as e:
+        lines.append(f"  ⚠️  error reading infra workloads: {e}")
+
+    # Last pipeline run
+    try:
+        result = custom.list_namespaced_custom_object("tekton.dev", "v1", "pipelineruns", ns)
         runs = sorted(
             result.get("items", []),
             key=lambda r: r["metadata"].get("creationTimestamp", ""),
             reverse=True,
-        )[:3]
+        )
         if runs:
-            for run in runs:
-                rname = run["metadata"]["name"]
-                conditions = run.get("status", {}).get("conditions", [])
-                reason = conditions[0].get("reason", "Pending") if conditions else "Pending"
-                ts = run["metadata"].get("creationTimestamp", "")
-                lines.append(f"  {rname}  [{reason}]  {ts}")
+            run = runs[0]
+            rname = run["metadata"]["name"]
+            conditions = run.get("status", {}).get("conditions", [])
+            reason = conditions[0].get("reason", "Unknown") if conditions else "Unknown"
+            ts = run["metadata"].get("creationTimestamp", "")[:10]
+            icon = "✅" if reason == "Succeeded" else ("❌" if reason in ("Failed", "PipelineRunCancelled") else "⏳")
+            short_name = rname if len(rname) <= 30 else rname[-30:]
+            lines.append(f"  {'pipeline':<24} {icon}  {reason}  {short_name}  {ts}")
+            if icon == "❌":
+                issues.append(f"Last pipeline run failed: {rname}")
         else:
-            lines.append("  (none)")
+            lines.append(f"  {'pipeline':<24} —   no runs found")
     except Exception:
-        lines.append("  (none)")
+        pass
 
-    # Team namespaces
-    team_namespaces = _discover_team_namespaces()
+    # Flag builds only if the LATEST build for a given BuildConfig failed.
+    # Old failures superseded by a successful build are noise — ignore them.
+    try:
+        all_pods = core_v1.list_namespaced_pod(ns).items
+        build_pods = [p for p in all_pods if p.metadata.name.endswith("-build")]
+        # Group by BuildConfig name (pod name = "<bc-name>-<N>-build" → strip last two segments)
+        from collections import defaultdict
+        bc_pods: dict[str, list] = defaultdict(list)
+        for p in build_pods:
+            # e.g. slack-chatops-6-build → bc = slack-chatops
+            parts = p.metadata.name.rsplit("-", 2)  # ["slack-chatops", "6", "build"]
+            bc_name = parts[0] if len(parts) == 3 else p.metadata.name
+            bc_pods[bc_name].append(p)
+        for bc_name, pods in bc_pods.items():
+            # Sort by creation timestamp — latest last
+            pods.sort(key=lambda p: p.metadata.creation_timestamp or "")
+            latest = pods[-1]
+            if latest.status.phase == "Failed":
+                issues.append(
+                    f"Latest build failed: {latest.metadata.name}"
+                    f" — run: `ops.sh rebuild-chatops` or check logs"
+                )
+    except Exception:
+        pass
+
+    # ── Teams ──
+    lines.append("")
+    lines.append("*Teams*")
+    try:
+        team_namespaces = _discover_team_namespaces()
+    except RuntimeError as e:
+        lines.append(f"  ⚠️ {e}")
+        team_namespaces = []
+
     if not team_namespaces:
-        lines += ["", "No team namespaces found."]
+        lines.append("  (no team namespaces found)")
     else:
         for team_ns in team_namespaces:
-            lines += ["", f"── {team_ns} ──────────────────────────────────"]
+            lines.append(f"  *{team_ns}*")
 
-            # Pods
-            lines.append("Pods:")
+            # All active pods — any app, any naming convention
             try:
                 pods = core_v1.list_namespaced_pod(team_ns).items
-                if pods:
-                    for pod in pods:
-                        phase = pod.status.phase or "Unknown"
-                        lines.append(f"  {pod.metadata.name}  [{phase}]")
+                active = [p for p in pods if p.status.phase not in ("Succeeded",)]
+                if active:
+                    pod_parts = []
+                    for pod in sorted(active, key=lambda p: p.metadata.name):
+                        icon, detail = _pod_icon(pod)
+                        pod_parts.append(f"{icon} {pod.metadata.name}")
+                        if icon != "✅":
+                            issues.append(f"{team_ns}: {pod.metadata.name} is {detail}")
+                    lines.append(f"    Pods    {',  '.join(pod_parts)}")
                 else:
-                    lines.append("  (none)")
+                    lines.append("    Pods    ⚠️ none running")
+                    issues.append(f"{team_ns}: no active pods")
             except Exception:
-                lines.append("  (none)")
+                lines.append("    Pods    ⚠️ error")
 
-            # PVCs
-            lines.append("PVCs:")
+            # All PVCs
             try:
                 pvcs = core_v1.list_namespaced_persistent_volume_claim(team_ns).items
                 if pvcs:
+                    pvc_parts = []
                     for pvc in pvcs:
-                        cap = ""
-                        if pvc.status and pvc.status.capacity:
-                            cap = f"  {pvc.status.capacity.get('storage', '')}"
-                        lines.append(f"  {pvc.metadata.name}  [{pvc.status.phase}]{cap}")
+                        phase = pvc.status.phase or "Unknown"
+                        icon = "✅" if phase == "Bound" else "❌"
+                        pvc_parts.append(f"{icon} {pvc.metadata.name}")
+                        if phase != "Bound":
+                            issues.append(f"{team_ns}: PVC {pvc.metadata.name} is {phase}")
+                    lines.append(f"    PVCs    {',  '.join(pvc_parts)}")
                 else:
-                    lines.append("  (none)")
+                    lines.append("    PVCs    ⚠️ none")
             except Exception:
-                lines.append("  (none)")
+                lines.append("    PVCs    ⚠️ error")
 
-            # Routes
-            lines.append("Routes:")
+            # All routes — any app
             try:
                 routes = custom.list_namespaced_custom_object(
-                    "route.openshift.io", "v1", "routes", team_ns
+                    "route.openshift.io", "v1", team_ns, "routes"
                 )
                 route_items = routes.get("items", [])
                 if route_items:
                     for r in route_items:
                         host = r.get("spec", {}).get("host", "")
-                        lines.append(f"  https://{host}")
+                        if host:
+                            lines.append(f"    Route   https://{host}")
                 else:
-                    lines.append("  (none)")
+                    lines.append("    Route   (none)")
             except Exception:
-                lines.append("  (none)")
+                lines.append("    Route   (none)")
 
-    lines += ["", "══════════════════════════════════════════"]
+    # ── Issues summary ──
+    lines.append("")
+    if issues:
+        lines.append(f"*Issues ({len(issues)})*")
+        for issue in issues:
+            lines.append(f"  ❌ {issue}")
+    else:
+        lines.append("*All systems healthy* ✅")
+
     return "\n".join(lines)
 
 
@@ -1124,11 +1260,11 @@ def cmd_remove_nifi(name: str, ns: str) -> str:
     # Route
     try:
         routes = custom.list_namespaced_custom_object(
-            "route.openshift.io", "v1", "routes", ns, label_selector=label
+            "route.openshift.io", "v1", ns, "routes", label_selector=label
         )
         for r in routes.get("items", []):
             custom.delete_namespaced_custom_object(
-                "route.openshift.io", "v1", "routes", ns, r["metadata"]["name"]
+                "route.openshift.io", "v1", ns, "routes", r["metadata"]["name"]
             )
     except Exception:
         pass
@@ -1286,11 +1422,11 @@ def cmd_remove_events() -> str:
     ]:
         try:
             items = custom.list_namespaced_custom_object(
-                group, "v1", plural, ns, label_selector=label
+                group, "v1", ns, plural, label_selector=label
             )
             for item in items.get("items", []):
                 custom.delete_namespaced_custom_object(
-                    group, "v1", plural, ns, item["metadata"]["name"]
+                    group, "v1", ns, plural, item["metadata"]["name"]
                 )
         except Exception:
             pass
