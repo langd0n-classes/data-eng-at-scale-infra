@@ -113,11 +113,13 @@ _remove_from_team_registry() {
 
 _upsert_team_password() {
   local name="$1" pwd="$2"
-  # stringData: oc auto-base64-encodes when patching Secrets
   oc get secret team-passwords -n "${INFRA_NAMESPACE}" &>/dev/null \
     || oc create secret generic team-passwords -n "${INFRA_NAMESPACE}"
+  # base64-encode the password so special chars (!, $, ", etc.) are safe in JSON
+  local encoded
+  encoded=$(printf '%s' "${pwd}" | base64)
   run "oc patch secret team-passwords -n '${INFRA_NAMESPACE}' \
-    --type merge -p '{\"stringData\":{\"${name}\":\"${pwd}\"}}'"
+    --type merge -p '{\"data\":{\"${name}\":\"${encoded}\"}}'"
 }
 
 _remove_team_password() {
