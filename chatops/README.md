@@ -153,6 +153,12 @@ Admin channel gets all commands. Any other channel only gets `status`.
 
 > **First run:** `run-pipeline` and `run-reset` read params from the last successful PipelineRun. They require at least one prior run via `bash pipeline/setup.sh`. They are day-2 operations.
 
+### Config Sync
+
+| Command | Args | What it does |
+|---------|------|-------------|
+| `export-config` | — | Print team registry as config.env block (includes passwords from cluster) |
+
 ---
 
 ## Common Workflows
@@ -214,6 +220,30 @@ Resume next class:
 ```
 
 Cancels any running pipelines, deletes all PipelineRun/TaskRun history and workspace PVCs, removes the event generator, removes Kafka + NiFi from all team namespaces. ChatOps stays up so you can run more commands.
+
+### Config Sync — Keeping config.env Up to Date
+
+Three flows depending on how a team was added:
+
+**Local-first** — edit config.env yourself before deploying (no sync needed):
+```
+Edit config.env → bash pipeline/ops.sh add-team team05 team-05 <pwd> → done
+```
+
+**Cluster-first (manual)** — team added via Slack, paste output yourself:
+```
+/infra add-team team05 team-05 SecurePass2026!!
+/infra export-config   ← prints TEAM1-15 block with passwords → paste into config.env
+```
+
+**Cluster-first (auto)** — team added via Slack, let ops.sh sync automatically:
+```
+/infra add-team team05 team-05 SecurePass2026!!
+bash pipeline/ops.sh sync-config   ← auto-updates config.env in-place
+```
+
+`export-config` is available in both Slack and ops.sh.
+`sync-config` is ops.sh only — it writes directly to your local config.env file.
 
 ---
 

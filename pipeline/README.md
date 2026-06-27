@@ -98,6 +98,14 @@ bash pipeline/ops.sh help      # list all commands
 
 Supports `--dry-run` (print commands without running) and `FORCE=true` (skip confirmation prompts for destructive commands).
 
+**Three config.env sync flows:**
+
+| Flow | Steps |
+|------|-------|
+| Local-first | Edit config.env → `ops.sh add-team` → done |
+| Cluster-first (manual) | `/infra add-team` → `ops.sh export-config` → paste into config.env |
+| Cluster-first (auto) | `/infra add-team` → `ops.sh sync-config` → config.env updated in-place |
+
 ### Team Lifecycle
 
 ```bash
@@ -116,6 +124,11 @@ bash pipeline/ops.sh remove-team team04 team-04
 # Remove + redeploy (fresh start for one team)
 bash pipeline/ops.sh reset-team team04 team-04 "SecurePass2026!!"
 ```
+
+> **Team registry:** `add-kafka` and `remove-kafka` automatically update the `team-registry`
+> ConfigMap and restart the event-generator so events start or stop flowing to that team
+> within ~30 seconds. `add-team` and `remove-team` additionally update the `team-passwords`
+> Secret. No manual ConfigMap or Secret edits needed.
 
 ### Day-2 Per-Team Operations
 
@@ -157,6 +170,16 @@ bash pipeline/ops.sh rebuild-chatops
 
 # Cluster is offline (CRC) — uploads local repo root as binary source
 bash pipeline/ops.sh rebuild-chatops --local
+```
+
+### Config Sync
+
+```bash
+# Print team registry as config.env block (shows passwords from cluster)
+bash pipeline/ops.sh export-config
+
+# Auto-update config.env in-place from cluster registry + passwords
+bash pipeline/ops.sh sync-config
 ```
 
 ### Bulk / Teardown Operations
