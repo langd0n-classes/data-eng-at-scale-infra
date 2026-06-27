@@ -871,53 +871,61 @@ if not registry:
 
 teams = sorted(registry.items())
 
-new_lines = []
+# Build per-index lookup (1-based)
+team_lookup = {}
 for i, (name, val) in enumerate(teams, 1):
     entry = dict(kv.split('=', 1) for kv in val.split(',') if '=' in kv)
     ns = entry.get('namespace', 'unknown')
     pwd_b64 = pwd_data.get(name, '')
     pwd = base64.b64decode(pwd_b64).decode() if pwd_b64 else '<set-manually>'
-    new_lines += [
-        f'export TEAM{i}_NAME={name}',
-        f'export TEAM{i}_NAMESPACE={ns}',
-        f'export TEAM{i}_PASSWORD={pwd}',
-        '',
-    ]
+    team_lookup[i] = (name, ns, pwd)
 for i in range(len(teams) + 1, 16):
-    new_lines += [
-        f'export TEAM{i}_NAME=skip',
-        f'export TEAM{i}_NAMESPACE=skip',
-        f'export TEAM{i}_PASSWORD=skip',
-        '',
-    ]
+    team_lookup[i] = ('skip', 'skip', 'skip')
+
+# Build bootstrap value
 parts = []
 for name, val in teams:
     entry = dict(kv.split('=', 1) for kv in val.split(',') if '=' in kv)
     if 'bootstrap' in entry:
         parts.append(f'{name}={entry[\"bootstrap\"]}')
-bootstrap_line = f'export TEAM_BOOTSTRAP_SERVERS=\"{\",\".join(parts)}\"'
+bootstrap_val = ','.join(parts)
+
+name_pat = re.compile(r'^export TEAM(\d+)_NAME=')
+ns_pat   = re.compile(r'^export TEAM(\d+)_NAMESPACE=')
+pwd_pat  = re.compile(r'^export TEAM(\d+)_PASSWORD=')
+bs_pat   = re.compile(r'^export TEAM_BOOTSTRAP_SERVERS=')
 
 with open(config_path) as f:
     lines = f.read().split('\n')
 
-team_pat = re.compile(r'export TEAM\d+_(NAME|NAMESPACE|PASSWORD)=')
-bs_pat   = re.compile(r'export TEAM_BOOTSTRAP_SERVERS=')
-start_idx = end_idx = None
-for idx, line in enumerate(lines):
-    if team_pat.match(line) and start_idx is None:
-        start_idx = idx
-    if team_pat.match(line) or bs_pat.match(line):
-        end_idx = idx
+out = []
+for line in lines:
+    m = name_pat.match(line)
+    if m:
+        i = int(m.group(1))
+        name, ns, pwd = team_lookup.get(i, ('skip', 'skip', 'skip'))
+        out.append(f'export TEAM{i}_NAME={name}')
+        continue
+    m = ns_pat.match(line)
+    if m:
+        i = int(m.group(1))
+        name, ns, pwd = team_lookup.get(i, ('skip', 'skip', 'skip'))
+        out.append(f'export TEAM{i}_NAMESPACE={ns}')
+        continue
+    m = pwd_pat.match(line)
+    if m:
+        i = int(m.group(1))
+        name, ns, pwd = team_lookup.get(i, ('skip', 'skip', 'skip'))
+        out.append(f'export TEAM{i}_PASSWORD=\"{pwd}\"')
+        continue
+    if bs_pat.match(line):
+        out.append(f'export TEAM_BOOTSTRAP_SERVERS=\"{bootstrap_val}\"')
+        continue
+    out.append(line)
 
-if start_idx is None:
-    with open(config_path, 'a') as f:
-        f.write('\n' + '\n'.join(new_lines) + '\n' + bootstrap_line + '\n')
-    print(f'config.env: TEAM* block appended ({len(teams)} team(s))')
-else:
-    new_content = lines[:start_idx] + new_lines + [bootstrap_line] + lines[end_idx+1:]
-    with open(config_path, 'w') as f:
-        f.write('\n'.join(new_content))
-    print(f'config.env updated with {len(teams)} team(s)')
+with open(config_path, 'w') as f:
+    f.write('\n'.join(out))
+print(f'config.env updated in-place with {len(teams)} team(s)')
 " "${config_file}" "${registry_json}" "${passwords_json}"
   ok "config.env synced from cluster"
 }
