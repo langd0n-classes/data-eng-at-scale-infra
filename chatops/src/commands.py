@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import time
 from typing import Any
 
@@ -96,6 +97,7 @@ def dispatch(subcmd: str, args: list[str], channel_id: str) -> str:
         case "run-reset":        return cmd_run_reset()
         case "pipeline-status":  return cmd_pipeline_status()
         case "cleanup-runs":     return cmd_cleanup_runs()
+        case "export-config":    return cmd_export_config()
         case "help":             return HELP_TEXT
         case _:                  return f"Unknown command: `{subcmd}`\n\n{HELP_TEXT}"
 
@@ -298,6 +300,130 @@ def _label_selector_list(ns: str, label: str, kinds: list[str]) -> list[str]:
         except Exception:
             pass
     return lines
+
+
+# ── Team registry helpers ──────────────────────────────────────────────────────
+
+_BOOTSTRAP_TMPL = "kafka-{name}.{ns}.svc.cluster.local:9092"
+
+
+def _get_team_registry() -> dict[str, dict[str, str]]:
+    """Return {team_name: {namespace, bootstrap}} from team-registry ConfigMap."""
+    try:
+        cm = core_v1.read_namespaced_config_map(
+            settings.team_registry_name, settings.infra_namespace
+        )
+        result = {}
+        for name, value in (cm.data or {}).items():
+            entry = dict(kv.split("=", 1) for kv in value.split(",") if "=" in kv)
+            result[name] = entry
+        return result
+    except k8s_client.ApiException:
+        return {}
+
+
+def _upsert_team_registry(name: str, ns: str) -> None:
+    """Add or update a team entry in the team-registry ConfigMap."""
+    bootstrap = _BOOTSTRAP_TMPL.format(name=name, ns=ns)
+    value = f"namespace={ns},bootstrap={bootstrap}"
+    try:
+        core_v1.patch_namespaced_config_map(
+            settings.team_registry_name, settings.infra_namespace,
+            {"data": {name: value}}
+        )
+    except k8s_client.ApiException as e:
+        if e.status == 404:
+            core_v1.create_namespaced_config_map(
+                settings.infra_namespace,
+                k8s_client.V1ConfigMap(
+                    metadata=k8s_client.V1ObjectMeta(name=settings.team_registry_name),
+                    data={name: value}
+                )
+            )
+        else:
+            raise
+
+
+def _remove_from_team_registry(name: str) -> None:
+    """Remove a team entry. JSON Merge Patch null = key removal (RFC 7386)."""
+    try:
+        core_v1.patch_namespaced_config_map(
+            settings.team_registry_name, settings.infra_namespace,
+            {"data": {name: None}}
+        )
+    except k8s_client.ApiException:
+        pass
+
+
+def _upsert_team_password(name: str, pwd: str) -> None:
+    """Store or update a team's NiFi password in the team-passwords Secret."""
+    try:
+        core_v1.patch_namespaced_secret(
+            settings.team_passwords_name, settings.infra_namespace,
+            {"stringData": {name: pwd}}
+        )
+    except k8s_client.ApiException as e:
+        if e.status == 404:
+            core_v1.create_namespaced_secret(
+                settings.infra_namespace,
+                k8s_client.V1Secret(
+                    metadata=k8s_client.V1ObjectMeta(name=settings.team_passwords_name),
+                    string_data={name: pwd}
+                )
+            )
+        else:
+            raise
+
+
+def _remove_team_password(name: str) -> None:
+    """Remove a team's password entry. JSON Merge Patch null = key removal."""
+    try:
+        core_v1.patch_namespaced_secret(
+            settings.team_passwords_name, settings.infra_namespace,
+            {"data": {name: None}}
+        )
+    except k8s_client.ApiException:
+        pass
+
+
+def _patch_event_generator_bootstrap() -> str:
+    """Rebuild TEAM_BOOTSTRAP_SERVERS from team-registry and patch the event-generator ConfigMap.
+
+    Always patches the ConfigMap so removed teams are never retried on next EG restart.
+    Only rollout-restarts when at least one team remains — avoids crash-loop with no Kafka.
+    """
+    registry = _get_team_registry()
+
+    bootstrap_str = ",".join(
+        f"{name}={entry['bootstrap']}"
+        for name, entry in sorted(registry.items())
+        if "bootstrap" in entry
+    )
+
+    cms = core_v1.list_namespaced_config_map(
+        settings.infra_namespace,
+        label_selector=f"app={settings.event_generator_name}"
+    ).items
+    if not cms:
+        return "event-generator ConfigMap not found — skipping patch"
+
+    for cm in cms:
+        core_v1.patch_namespaced_config_map(
+            cm.metadata.name, settings.infra_namespace,
+            {"data": {"TEAM_BOOTSTRAP_SERVERS": bootstrap_str}}
+        )
+
+    if not registry:
+        return "All teams removed — event-generator ConfigMap cleared, restart skipped"
+
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    apps_v1.patch_namespaced_deployment(
+        settings.event_generator_name, settings.infra_namespace,
+        {"spec": {"template": {"metadata": {"annotations":
+            {"kubectl.kubernetes.io/restartedAt": now}
+        }}}}
+    )
+    return f"Event-generator patched with {len(registry)} team(s) and restarted"
 
 
 def _remove_all_in_namespace(ns: str) -> None:
@@ -1162,12 +1288,30 @@ def cmd_add_kafka(name: str, ns: str) -> str:
         ),
     ))
 
+    # Wait for Kafka pod Ready before restarting EG.
+    # EG has 5×3s retries at startup — if Kafka isn't up yet, the new team is
+    # permanently skipped (no reconnect). 120s covers normal pod scheduling.
+    pod_name = f"kafka-{name}-0"
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        try:
+            pod = core_v1.read_namespaced_pod(pod_name, ns)
+            conditions = pod.status.conditions or []
+            if any(c.type == "Ready" and c.status == "True" for c in conditions):
+                break
+        except k8s_client.ApiException:
+            pass
+        time.sleep(5)
+
+    _upsert_team_registry(name, ns)
+    eg_result = _patch_event_generator_bootstrap()
     bootstrap = (
         f"kafka-{name}-0.kafka-{name}-headless.{ns}.svc.cluster.local:9092"
     )
     return (
         f"Kafka deployed for {name} in {ns}\n"
-        f"Bootstrap: {bootstrap}"
+        f"Bootstrap: {bootstrap}\n"
+        f"{eg_result}"
     )
 
 
@@ -1198,22 +1342,25 @@ def cmd_force_update_nifi(name: str, ns: str, pwd: str) -> str:
 
 
 def cmd_add_team(name: str, ns: str, pwd: str) -> str:
-    """Deploy Kafka + NiFi for a team in sequence."""
-    kafka_result = cmd_add_kafka(name, ns)
+    """Deploy Kafka + NiFi for a team. Updates team-registry and event-generator via cmd_add_kafka."""
+    kafka_result = cmd_add_kafka(name, ns)   # registry upsert + EG patch included
+    _upsert_team_password(name, pwd)
     nifi_result = _do_deploy_nifi(name, ns, pwd)
     return f"{kafka_result}\n{nifi_result}"
 
 
 def cmd_reset_team(name: str, ns: str, pwd: str) -> str:
-    """Remove Kafka + NiFi then redeploy fresh."""
+    """Remove Kafka + NiFi then redeploy fresh. Registry and EG updated via public commands."""
     cmd_remove_team(name, ns)
     return cmd_add_team(name, ns, pwd)
 
 
 def cmd_remove_team(name: str, ns: str) -> str:
-    cmd_remove_kafka(name, ns)
+    """Remove Kafka + NiFi. Updates team-registry and event-generator via cmd_remove_kafka."""
+    kafka_result = cmd_remove_kafka(name, ns)   # registry remove + EG patch included
+    _remove_team_password(name)
     cmd_remove_nifi(name, ns)
-    return f"Kafka + NiFi removed for {name} in {ns}"
+    return f"{kafka_result}\nNiFi removed for {name} in {ns}"
 
 
 def cmd_remove_kafka(name: str, ns: str) -> str:
@@ -1235,7 +1382,9 @@ def cmd_remove_kafka(name: str, ns: str) -> str:
             core_v1.delete_namespaced_persistent_volume_claim(pvc.metadata.name, ns)
     except Exception:
         pass
-    return f"Kafka removed for {name} in {ns}"
+    _remove_from_team_registry(name)
+    eg_result = _patch_event_generator_bootstrap()
+    return f"Kafka removed for {name} in {ns}\n{eg_result}"
 
 
 def cmd_remove_nifi(name: str, ns: str) -> str:
@@ -1561,6 +1710,55 @@ def cmd_cleanup_runs() -> str:
     return f"Kept 3 newest PipelineRuns, deleted {len(to_delete)} old ones."
 
 
+def cmd_export_config() -> str:
+    """Print team-registry + passwords as a config.env block ready to paste."""
+    registry = _get_team_registry()
+    if not registry:
+        return "team-registry is empty. Nothing to export."
+
+    passwords = {}
+    try:
+        secret = core_v1.read_namespaced_secret(
+            settings.team_passwords_name, settings.infra_namespace
+        )
+        for k, v in (secret.data or {}).items():
+            passwords[k] = base64.b64decode(v).decode()
+    except k8s_client.ApiException:
+        pass  # Secret missing — passwords show as <set-manually>
+
+    lines = [
+        "```",
+        "# Team config from cluster — paste into config.env",
+        "",
+    ]
+    for i, (name, entry) in enumerate(sorted(registry.items()), start=1):
+        ns = entry.get("namespace", "unknown")
+        pwd = passwords.get(name, "<set-manually>")
+        lines += [
+            f"export TEAM{i}_NAME={name}",
+            f"export TEAM{i}_NAMESPACE={ns}",
+            f"export TEAM{i}_PASSWORD={pwd}",
+            "",
+        ]
+    for i in range(len(registry) + 1, 16):
+        lines += [
+            f"export TEAM{i}_NAME=skip",
+            f"export TEAM{i}_NAMESPACE=skip",
+            f"export TEAM{i}_PASSWORD=skip",
+            "",
+        ]
+    bootstrap_str = ",".join(
+        f"{name}={entry['bootstrap']}"
+        for name, entry in sorted(registry.items())
+        if "bootstrap" in entry
+    )
+    lines += [
+        f'export TEAM_BOOTSTRAP_SERVERS="{bootstrap_str}"',
+        "```",
+    ]
+    return "\n".join(lines)
+
+
 HELP_TEXT = """\
 *Available commands* (`/infra <command> [args]`):
 
@@ -1599,4 +1797,7 @@ HELP_TEXT = """\
   `run-reset`         Trigger reset-and-deploy pipeline
   `pipeline-status`   Show last 5 PipelineRuns
   `cleanup-runs`      Delete old PipelineRuns (keep newest 3)
+
+*Config sync*
+  `export-config`     Print team registry as config.env block (includes passwords from cluster)
 """
