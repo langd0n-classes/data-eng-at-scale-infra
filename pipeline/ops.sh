@@ -316,6 +316,7 @@ cmd_add_nifi() {
   local ns="${2:?Usage: add-nifi <name> <ns> <pwd>}"
   local pwd="${3:?Usage: add-nifi <name> <ns> <pwd>}"
   _do_add_nifi "${name}" "${ns}" "${pwd}"
+  _upsert_team_password "${name}" "${pwd}"
   ok "NiFi deployed for ${name} in ${ns}"
 }
 
@@ -403,6 +404,7 @@ cmd_force_update_nifi() {
   run "oc annotate statefulset 'nifi-${name}' -n '${ns}' \
     tekton.dev/git-sha- --ignore-not-found 2>/dev/null || true"
   run "cd '${REPO_ROOT}/nifi' && bash deploy-team.sh '${name}' '${ns}' '${pwd}'"
+  _upsert_team_password "${name}" "${pwd}"
   ok "NiFi force-updated for ${name} in ${ns}"
 }
 
@@ -431,7 +433,7 @@ cmd_reset_password() {
 
   info "Restarting NiFi pod to pick up new password..."
   run "oc delete pod 'nifi-${name}-0' -n '${ns}'"
-
+  _upsert_team_password "${name}" "${pwd}"
   ok "Password reset for ${name} in ${ns}. NiFi pod restarting — ready in ~2 min."
 }
 
@@ -474,7 +476,10 @@ cmd_remove_all_teams() {
     echo "  removing team: ${name} in ${ns}"
     _do_remove_kafka "${name}" "${ns}"
     _do_remove_nifi  "${name}" "${ns}"
+    _remove_from_team_registry "${name}"
+    _remove_team_password "${name}"
   done
+  _patch_event_generator
   ok "All teams removed"
 }
 
