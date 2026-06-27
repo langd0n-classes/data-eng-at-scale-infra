@@ -41,6 +41,23 @@ a synthetic mixed event stream that each team splits, routes, and processes.
 | `bash pipeline/ops.sh` | Instructor | During class — fix one team | Direct `oc` commands, instant results, no Tekton |
 | `/infra <command>` in Slack | Instructor | Anytime — no terminal needed | ChatOps bot in infra namespace |
 
+### Day-2 Team Registry
+
+A `team-registry` ConfigMap and `team-passwords` Secret in the `infra` namespace act as
+the cluster-side source of truth for team mappings and NiFi passwords. Written by
+`setup.sh` on every run; kept in sync by ops.sh and ChatOps whenever Kafka is added or removed.
+
+Adding or removing a team from Slack or the terminal automatically updates the event-generator
+— no manual ConfigMap edits needed.
+
+**Three config.env sync flows:**
+
+| Flow | When to use | Steps |
+|------|-------------|-------|
+| Local-first | You know the team before class | Edit config.env → `ops.sh add-team` → done |
+| Cluster-first (manual) | Team added via Slack, paste yourself | `/infra add-team` → `/infra export-config` → paste into config.env |
+| Cluster-first (auto) | Team added via Slack, sync automatically | `/infra add-team` → `ops.sh sync-config` → config.env updated |
+
 ---
 
 ## Quick Start
