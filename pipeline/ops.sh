@@ -44,6 +44,10 @@
 #     rebuild-chatops          Trigger ChatOps rebuild from Git (cluster must reach GitHub)
 #     rebuild-chatops --local  Trigger binary build from local repo root (offline / CRC)
 #
+#   Config sync
+#     export-config   Print team registry as config.env block (shows passwords from cluster)
+#     sync-config     Auto-update config.env in-place from cluster registry + passwords
+#
 #   Observability
 #     status <name> <ns>   Show pods, services, PVCs, routes, and recent events
 
@@ -80,6 +84,7 @@ fi
 if [[ "$COMMAND" != "help" ]]; then
   load_config "${REPO_ROOT}"
   EVENT_GENERATOR_NAME="${EVENT_GENERATOR_NAME:-event-generator}"
+  CONFIG_ENV_PATH="${REPO_ROOT}/config.env"
 
   if ! oc whoami &>/dev/null; then
     err "Not logged into OpenShift — run 'oc login' first"
@@ -88,6 +93,77 @@ if [[ "$COMMAND" != "help" ]]; then
 fi
 
 # ── Private helpers ────────────────────────────────────────────────────────────
+
+_upsert_team_registry() {
+  local name="$1" ns="$2"
+  local bootstrap="kafka-${name}.${ns}.svc.cluster.local:9092"
+  local value="namespace=${ns},bootstrap=${bootstrap}"
+  oc get configmap team-registry -n "${INFRA_NAMESPACE}" &>/dev/null \
+    || oc create configmap team-registry -n "${INFRA_NAMESPACE}"
+  run "oc patch configmap team-registry -n '${INFRA_NAMESPACE}' \
+    --type merge -p '{\"data\":{\"${name}\":\"${value}\"}}'"
+}
+
+_remove_from_team_registry() {
+  local name="$1"
+  # JSON Merge Patch: setting a key to null removes it (RFC 7386)
+  run "oc patch configmap team-registry -n '${INFRA_NAMESPACE}' \
+    --type merge -p '{\"data\":{\"${name}\":null}}' 2>/dev/null || true"
+}
+
+_upsert_team_password() {
+  local name="$1" pwd="$2"
+  # stringData: oc auto-base64-encodes when patching Secrets
+  oc get secret team-passwords -n "${INFRA_NAMESPACE}" &>/dev/null \
+    || oc create secret generic team-passwords -n "${INFRA_NAMESPACE}"
+  run "oc patch secret team-passwords -n '${INFRA_NAMESPACE}' \
+    --type merge -p '{\"stringData\":{\"${name}\":\"${pwd}\"}}'"
+}
+
+_remove_team_password() {
+  local name="$1"
+  run "oc patch secret team-passwords -n '${INFRA_NAMESPACE}' \
+    --type merge -p '{\"data\":{\"${name}\":null}}' 2>/dev/null || true"
+}
+
+_patch_event_generator() {
+  # Rebuild TEAM_BOOTSTRAP_SERVERS from team-registry and patch + restart EG.
+  # Always patches ConfigMap (clears stale entries even when registry is empty).
+  # Skips rollout restart if registry is empty — avoids crash-loop with no Kafka.
+  local bootstrap_str=""
+  if oc get configmap team-registry -n "${INFRA_NAMESPACE}" &>/dev/null; then
+    bootstrap_str=$(oc get configmap team-registry \
+      -n "${INFRA_NAMESPACE}" -o json \
+      | python3 -c "
+import sys, json
+data = json.load(sys.stdin).get('data', {})
+parts = []
+for name, val in sorted(data.items()):
+    entry = dict(kv.split('=', 1) for kv in val.split(',') if '=' in kv)
+    if 'bootstrap' in entry:
+        parts.append(f'{name}={entry[\"bootstrap\"]}')
+print(','.join(parts))
+" 2>/dev/null || echo "")
+  fi
+
+  local eg_cm
+  eg_cm=$(oc get configmap -n "${INFRA_NAMESPACE}" \
+    -l "app=${EVENT_GENERATOR_NAME}" \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+  if [[ -z "${eg_cm}" ]]; then
+    warn "Event-generator ConfigMap not found — skipping EG patch"
+    return
+  fi
+  run "oc patch configmap '${eg_cm}' -n '${INFRA_NAMESPACE}' \
+    --type merge -p '{\"data\":{\"TEAM_BOOTSTRAP_SERVERS\":\"${bootstrap_str}\"}}'"
+
+  if [[ -z "${bootstrap_str}" ]]; then
+    info "Registry empty — EG ConfigMap cleared, restart skipped"
+    return
+  fi
+  run "oc rollout restart deployment/'${EVENT_GENERATOR_NAME}' -n '${INFRA_NAMESPACE}'"
+  ok "Event-generator patched and restarted"
+}
 
 _do_add_kafka() {
   local name="$1" ns="$2"
@@ -211,7 +287,14 @@ cmd_add_team() {
   local ns="${2:?Usage: add-team <name> <ns> <pwd>}"
   local pwd="${3:?Usage: add-team <name> <ns> <pwd>}"
   _do_add_kafka "${name}" "${ns}"
-  _do_add_nifi  "${name}" "${ns}" "${pwd}"
+  info "Waiting for kafka-${name}-0 to be Ready (max 2 min)..."
+  oc wait pod "kafka-${name}-0" \
+    --for=condition=Ready --timeout=120s -n "${ns}" 2>/dev/null \
+    || warn "Kafka pod not ready yet — EG may not connect to ${name} on first try"
+  _upsert_team_registry "${name}" "${ns}"
+  _upsert_team_password "${name}" "${pwd}"
+  _patch_event_generator
+  _do_add_nifi "${name}" "${ns}" "${pwd}"
   ok "Team ${name} deployed in ${ns}"
 }
 
@@ -219,6 +302,12 @@ cmd_add_kafka() {
   local name="${1:?Usage: add-kafka <name> <ns>}"
   local ns="${2:?Usage: add-kafka <name> <ns>}"
   _do_add_kafka "${name}" "${ns}"
+  info "Waiting for kafka-${name}-0 to be Ready (max 2 min)..."
+  oc wait pod "kafka-${name}-0" \
+    --for=condition=Ready --timeout=120s -n "${ns}" 2>/dev/null \
+    || warn "Kafka pod not ready yet — EG may not connect to ${name} on first try"
+  _upsert_team_registry "${name}" "${ns}"
+  _patch_event_generator
   ok "Kafka deployed for ${name} in ${ns}"
 }
 
@@ -235,7 +324,10 @@ cmd_remove_team() {
   local ns="${2:?Usage: remove-team <name> <ns>}"
   confirm "Remove Kafka + NiFi for ${name} in ${ns}?"
   _do_remove_kafka "${name}" "${ns}"
-  _do_remove_nifi  "${name}" "${ns}"
+  _remove_from_team_registry "${name}"
+  _remove_team_password "${name}"
+  _patch_event_generator
+  _do_remove_nifi "${name}" "${ns}"
   ok "Team ${name} removed from ${ns}"
 }
 
@@ -244,10 +336,22 @@ cmd_reset_team() {
   local ns="${2:?Usage: reset-team <name> <ns> <pwd>}"
   local pwd="${3:?Usage: reset-team <name> <ns> <pwd>}"
   confirm "Remove then redeploy ${name} in ${ns}?"
+  # Remove phase
   _do_remove_kafka "${name}" "${ns}"
-  _do_remove_nifi  "${name}" "${ns}"
-  _do_add_kafka    "${name}" "${ns}"
-  _do_add_nifi     "${name}" "${ns}" "${pwd}"
+  _remove_from_team_registry "${name}"
+  _remove_team_password "${name}"
+  _patch_event_generator
+  _do_remove_nifi "${name}" "${ns}"
+  # Redeploy phase
+  _do_add_kafka "${name}" "${ns}"
+  info "Waiting for kafka-${name}-0 to be Ready (max 2 min)..."
+  oc wait pod "kafka-${name}-0" \
+    --for=condition=Ready --timeout=120s -n "${ns}" 2>/dev/null \
+    || warn "Kafka pod not ready yet — EG may not connect to ${name} on first try"
+  _upsert_team_registry "${name}" "${ns}"
+  _upsert_team_password "${name}" "${pwd}"
+  _patch_event_generator
+  _do_add_nifi "${name}" "${ns}" "${pwd}"
   ok "Team ${name} reset in ${ns}"
 }
 
@@ -256,6 +360,8 @@ cmd_remove_kafka() {
   local ns="${2:?Usage: remove-kafka <name> <ns>}"
   confirm "Delete Kafka StatefulSet + Services + PVC for ${name} in ${ns}?"
   _do_remove_kafka "${name}" "${ns}"
+  _remove_from_team_registry "${name}"
+  _patch_event_generator
   ok "Kafka removed for ${name} in ${ns}"
 }
 
@@ -688,6 +794,129 @@ cmd_rebuild_chatops() {
   info "Check pod status: oc get pod -l app=${chatops_name} -n ${INFRA_NAMESPACE}"
 }
 
+cmd_export_config() {
+  if ! oc get configmap team-registry -n "${INFRA_NAMESPACE}" &>/dev/null; then
+    warn "team-registry ConfigMap not found. Run setup.sh first."
+    return 1
+  fi
+  local registry_json passwords_json
+  registry_json=$(oc get configmap team-registry -n "${INFRA_NAMESPACE}" -o json)
+  passwords_json=$(oc get secret team-passwords -n "${INFRA_NAMESPACE}" -o json 2>/dev/null \
+    || echo '{"data":{}}')
+
+  python3 -c "
+import sys, json, base64
+registry = json.loads(sys.argv[1]).get('data', {})
+pwd_data = json.loads(sys.argv[2]).get('data', {})
+if not registry:
+    print('# team-registry is empty. Nothing to export.')
+    sys.exit(0)
+teams = sorted(registry.items())
+print('# Team config from cluster — paste into config.env')
+print()
+for i, (name, val) in enumerate(teams, 1):
+    entry = dict(kv.split('=', 1) for kv in val.split(',') if '=' in kv)
+    ns = entry.get('namespace', 'unknown')
+    pwd_b64 = pwd_data.get(name, '')
+    pwd = base64.b64decode(pwd_b64).decode() if pwd_b64 else '<set-manually>'
+    print(f'export TEAM{i}_NAME={name}')
+    print(f'export TEAM{i}_NAMESPACE={ns}')
+    print(f'export TEAM{i}_PASSWORD={pwd}')
+    print()
+for i in range(len(teams) + 1, 16):
+    print(f'export TEAM{i}_NAME=skip')
+    print(f'export TEAM{i}_NAMESPACE=skip')
+    print(f'export TEAM{i}_PASSWORD=skip')
+    print()
+parts = []
+for name, val in teams:
+    entry = dict(kv.split('=', 1) for kv in val.split(',') if '=' in kv)
+    if 'bootstrap' in entry:
+        parts.append(f'{name}={entry[\"bootstrap\"]}')
+print(f'export TEAM_BOOTSTRAP_SERVERS=\"{\",\".join(parts)}\"')
+" "${registry_json}" "${passwords_json}"
+}
+
+cmd_sync_config() {
+  local config_file="${CONFIG_ENV_PATH:-config.env}"
+  if [[ ! -f "${config_file}" ]]; then
+    warn "config.env not found at ${config_file}"
+    return 1
+  fi
+  if ! oc get configmap team-registry -n "${INFRA_NAMESPACE}" &>/dev/null; then
+    warn "team-registry ConfigMap not found. Run setup.sh first."
+    return 1
+  fi
+
+  local registry_json passwords_json
+  registry_json=$(oc get configmap team-registry -n "${INFRA_NAMESPACE}" -o json)
+  passwords_json=$(oc get secret team-passwords -n "${INFRA_NAMESPACE}" -o json 2>/dev/null \
+    || echo '{"data":{}}')
+
+  python3 -c "
+import sys, json, base64, re
+
+config_path = sys.argv[1]
+registry = json.loads(sys.argv[2]).get('data', {})
+pwd_data = json.loads(sys.argv[3]).get('data', {})
+
+if not registry:
+    print('team-registry is empty. Nothing to sync.')
+    sys.exit(0)
+
+teams = sorted(registry.items())
+
+new_lines = []
+for i, (name, val) in enumerate(teams, 1):
+    entry = dict(kv.split('=', 1) for kv in val.split(',') if '=' in kv)
+    ns = entry.get('namespace', 'unknown')
+    pwd_b64 = pwd_data.get(name, '')
+    pwd = base64.b64decode(pwd_b64).decode() if pwd_b64 else '<set-manually>'
+    new_lines += [
+        f'export TEAM{i}_NAME={name}',
+        f'export TEAM{i}_NAMESPACE={ns}',
+        f'export TEAM{i}_PASSWORD={pwd}',
+        '',
+    ]
+for i in range(len(teams) + 1, 16):
+    new_lines += [
+        f'export TEAM{i}_NAME=skip',
+        f'export TEAM{i}_NAMESPACE=skip',
+        f'export TEAM{i}_PASSWORD=skip',
+        '',
+    ]
+parts = []
+for name, val in teams:
+    entry = dict(kv.split('=', 1) for kv in val.split(',') if '=' in kv)
+    if 'bootstrap' in entry:
+        parts.append(f'{name}={entry[\"bootstrap\"]}')
+bootstrap_line = f'export TEAM_BOOTSTRAP_SERVERS=\"{\",\".join(parts)}\"'
+
+with open(config_path) as f:
+    lines = f.read().split('\n')
+
+team_pat = re.compile(r'export TEAM\d+_(NAME|NAMESPACE|PASSWORD)=')
+bs_pat   = re.compile(r'export TEAM_BOOTSTRAP_SERVERS=')
+start_idx = end_idx = None
+for idx, line in enumerate(lines):
+    if team_pat.match(line) and start_idx is None:
+        start_idx = idx
+    if team_pat.match(line) or bs_pat.match(line):
+        end_idx = idx
+
+if start_idx is None:
+    with open(config_path, 'a') as f:
+        f.write('\n' + '\n'.join(new_lines) + '\n' + bootstrap_line + '\n')
+    print(f'config.env: TEAM* block appended ({len(teams)} team(s))')
+else:
+    new_content = lines[:start_idx] + new_lines + [bootstrap_line] + lines[end_idx+1:]
+    with open(config_path, 'w') as f:
+        f.write('\n'.join(new_content))
+    print(f'config.env updated with {len(teams)} team(s)')
+" "${config_file}" "${registry_json}" "${passwords_json}"
+  ok "config.env synced from cluster"
+}
+
 cmd_help() {
   cat <<'HELP'
 pipeline/ops.sh — Day-to-day classroom operations
@@ -728,6 +957,10 @@ ChatOps:
   rebuild-chatops           Trigger git-based build (cluster must reach GitHub)
   rebuild-chatops --local   Binary build from local repo root (for CRC / offline clusters)
 
+Config sync:
+  export-config   Print team registry as config.env block (shows passwords from cluster)
+  sync-config     Auto-update config.env in-place from cluster registry + passwords
+
 Observability:
   status      <name> <ns>   Show pods, services, PVCs, routes, and events for one team
   status-all                Show pods, PVCs, routes, and pipeline runs across all namespaces
@@ -759,6 +992,8 @@ case "$COMMAND" in
   reset-all)          cmd_reset_all ;;
   cleanup-runs)       cmd_cleanup_runs ;;
   rebuild-chatops)    cmd_rebuild_chatops ;;
+  export-config)      cmd_export_config ;;
+  sync-config)        cmd_sync_config ;;
   status)             cmd_status              "${ARGS[@]}" ;;
   status-all)         cmd_status_all ;;
   help|--help|-h)     cmd_help ;;
