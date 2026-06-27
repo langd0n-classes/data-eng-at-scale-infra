@@ -1333,12 +1333,16 @@ def cmd_add_nifi(name: str, ns: str, pwd: str) -> str:
     except k8s_client.ApiException as e:
         if e.status != 404:
             raise
-    return _do_deploy_nifi(name, ns, pwd)
+    result = _do_deploy_nifi(name, ns, pwd)
+    _upsert_team_password(name, pwd)
+    return result
 
 
 def cmd_force_update_nifi(name: str, ns: str, pwd: str) -> str:
     """Force redeploy NiFi regardless of current state (bypasses healthy check)."""
-    return _do_deploy_nifi(name, ns, pwd)
+    result = _do_deploy_nifi(name, ns, pwd)
+    _upsert_team_password(name, pwd)
+    return result
 
 
 def cmd_add_team(name: str, ns: str, pwd: str) -> str:
@@ -1432,6 +1436,9 @@ def cmd_remove_all_teams() -> str:
     namespaces = _discover_team_namespaces()
     if not namespaces:
         return "No team namespaces found."
+    # Collect team names from registry before removing so we can clean up
+    registry = _get_team_registry()
+    ns_to_name = {entry.get("namespace"): name for name, entry in registry.items()}
     results = []
     for ns in namespaces:
         try:
@@ -1439,6 +1446,11 @@ def cmd_remove_all_teams() -> str:
             results.append(f"  {ns}: removed")
         except Exception as e:
             results.append(f"  {ns}: error — {e}")
+        name = ns_to_name.get(ns)
+        if name:
+            _remove_from_team_registry(name)
+            _remove_team_password(name)
+    _patch_event_generator_bootstrap()
     return "Removed all teams:\n" + "\n".join(results)
 
 
@@ -1526,6 +1538,7 @@ def cmd_reset_password(name: str, ns: str, pwd: str) -> str:
             break
     apps_v1.patch_namespaced_stateful_set(sts_name, ns, sts)
     core_v1.delete_namespaced_pod(pod_name, ns, body=k8s_client.V1DeleteOptions())
+    _upsert_team_password(name, pwd)
     return f"Password reset for {name} in {ns}. Pod restarting — NiFi ready in ~2 min."
 
 
