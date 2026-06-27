@@ -200,6 +200,49 @@ else
   info "Step 5 — Tasks/pipelines (skipped)"
 fi
 
+# ── Step 5c: Write team-registry ConfigMap + team-passwords Secret ─────────────
+_write_team_registry() {
+  info "Step 5c — Writing team-registry ConfigMap..."
+  local args=()
+  for i in $(seq 1 15); do
+    local tname tns
+    tname=$(eval echo "\${TEAM${i}_NAME:-skip}")
+    tns=$(eval echo "\${TEAM${i}_NAMESPACE:-skip}")
+    [[ "${tname}" == "skip" || "${tns}" == "skip" ]] && continue
+    local bootstrap="kafka-${tname}.${tns}.svc.cluster.local:9092"
+    args+=("--from-literal=${tname}=namespace=${tns},bootstrap=${bootstrap}")
+  done
+  if [[ ${#args[@]} -eq 0 ]]; then
+    warn "No teams defined in config.env — team-registry not written"
+    return
+  fi
+  oc create configmap team-registry -n "${INFRA_NAMESPACE}" \
+    "${args[@]}" --dry-run=client -o yaml | oc apply -f -
+  ok "team-registry updated (${#args[@]} team(s))"
+}
+
+_write_team_passwords() {
+  info "          Writing team-passwords Secret..."
+  local args=()
+  for i in $(seq 1 15); do
+    local tname tpwd
+    tname=$(eval echo "\${TEAM${i}_NAME:-skip}")
+    tpwd=$(eval echo "\${TEAM${i}_PASSWORD:-skip}")
+    [[ "${tname}" == "skip" || "${tpwd}" == "skip" ]] && continue
+    args+=("--from-literal=${tname}=${tpwd}")
+  done
+  if [[ ${#args[@]} -eq 0 ]]; then
+    warn "No team passwords in config.env — team-passwords not written"
+    return
+  fi
+  oc create secret generic team-passwords -n "${INFRA_NAMESPACE}" \
+    "${args[@]}" --dry-run=client -o yaml | oc apply -f -
+  ok "team-passwords updated (${#args[@]} team(s))"
+}
+
+_write_team_registry
+_write_team_passwords
+
 # ── Step 6: Auto-Increment Run Number and Submit ───────────────────────────────
 echo ""
 info "Step 6 — Submitting PipelineRun..."
