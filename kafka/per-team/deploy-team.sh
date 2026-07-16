@@ -78,44 +78,49 @@ if [ "$GENERATE_YAML" = true ]; then
     echo ""
 
     # Generate Kafka StatefulSet YAML
-    echo "Generating Kafka StatefulSet YAML..."
-    envsubst < "${SCRIPT_DIR}/team-kafka-template.yaml" > "$OUTPUT_DIR/kafka-statefulset.yaml"
+    echo "Generating Kafka CR YAML..."
+    envsubst < "${SCRIPT_DIR}/../operator/kafka-cr-template.yaml" > "$OUTPUT_DIR/kafka-cr.yaml"
 
     echo ""
-    echo "✓ YAML files generated for ${TEAM_NAME}"
+    echo "YAML files generated for ${TEAM_NAME}"
     echo "  Output directory: $OUTPUT_DIR"
     echo "  Files:"
-    echo "    - $OUTPUT_DIR/kafka-statefulset.yaml"
+    echo "    - $OUTPUT_DIR/kafka-cr.yaml"
     echo ""
     echo "You can now edit these files manually and apply them with:"
-    echo "  kubectl apply -n ${TEAM_NAMESPACE} -f $OUTPUT_DIR/kafka-statefulset.yaml"
+    echo "  kubectl apply -n ${TEAM_NAMESPACE} -f $OUTPUT_DIR/kafka-cr.yaml"
     echo ""
 
 else
     # Normal deployment mode
-    # Apply the Kafka StatefulSet
-    echo "Deploying Kafka StatefulSet..."
-    envsubst < "${SCRIPT_DIR}/team-kafka-template.yaml" | kubectl apply -f -
+    # Apply the Kafka operator CRs
+    echo "Deploying Kafka operator CRs..."
+    envsubst < "${SCRIPT_DIR}/../operator/kafka-cr-template.yaml" | kubectl apply -f -
+
+    echo ""
+    echo "Waiting for Kafka to be ready..."
+    kubectl wait kafka "kafka-${TEAM_NAME}" \
+      -n "${TEAM_NAMESPACE}" \
+      --for=condition=Ready \
+      --timeout=300s
 
     echo ""
     echo "=========================================="
     echo "Deployment Complete!"
     echo "=========================================="
     echo ""
-    echo "Kafka for ${TEAM_NAME} is being deployed to ${TEAM_NAMESPACE}"
+    echo "Kafka for ${TEAM_NAME} is deployed to ${TEAM_NAMESPACE}"
     echo ""
     echo "Check status:"
-    echo "  kubectl get pods,svc -n ${TEAM_NAMESPACE} -l component=kafka"
+    echo "  kubectl get kafka,pods -n ${TEAM_NAMESPACE} -l strimzi.io/cluster=kafka-${TEAM_NAME}"
     echo ""
     echo "View logs:"
-    echo "  kubectl logs -f kafka-${TEAM_NAME}-0 -n ${TEAM_NAMESPACE}"
+    echo "  kubectl logs -f kafka-${TEAM_NAME}-dual-role-0 -n ${TEAM_NAMESPACE}"
     echo ""
     echo "Test connection (from within namespace):"
-    echo "  kafka-${TEAM_NAME}:9092"
+    echo "  kafka-${TEAM_NAME}-kafka-bootstrap:9092"
     echo ""
     echo "Test connection (from other namespaces):"
-    echo "  kafka-${TEAM_NAME}.${TEAM_NAMESPACE}.svc.cluster.local:9092"
-    echo ""
-    echo "It may take 1-2 minutes for Kafka to be fully ready."
+    echo "  kafka-${TEAM_NAME}-kafka-bootstrap.${TEAM_NAMESPACE}.svc.cluster.local:9092"
     echo ""
 fi
