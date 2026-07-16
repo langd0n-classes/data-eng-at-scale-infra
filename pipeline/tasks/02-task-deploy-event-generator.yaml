@@ -227,7 +227,10 @@ spec:
 
         echo ""
         echo "Waiting for deployment rollout to complete..."
-        oc rollout status "deployment/${EG_NAME}" -n "${INFRA_NS}" --timeout=600s
+        if ! oc rollout status "deployment/${EG_NAME}" -n "${INFRA_NS}" --timeout=600s; then
+          echo "Warning: rollout did not complete within 600s (resource-constrained cluster)."
+          echo "Deployment was applied — verify-health will confirm readiness."
+        fi
 
         echo ""
-        echo "Event generator deployment is ready."
+        echo "Event generator deployment applied."
