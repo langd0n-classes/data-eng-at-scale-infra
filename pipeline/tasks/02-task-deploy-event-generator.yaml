@@ -227,7 +227,7 @@ spec:
 
         echo ""
         echo "Waiting for deployment rollout to complete..."
-        oc rollout status "deployment/${EG_NAME}" -n "${INFRA_NS}" --timeout=300s
+        oc rollout status "deployment/${EG_NAME}" -n "${INFRA_NS}" --timeout=600s
 
         echo ""
         echo "Event generator deployment is ready."
