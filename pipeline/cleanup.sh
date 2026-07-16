@@ -84,9 +84,8 @@ for i in $(seq 1 15); do
   name="${!name_var:-skip}"
   [[ "$ns" == "skip" ]] && continue
   echo "         kafka-${name} in ${ns}"
-  oc delete statefulset,svc,pvc \
-    -l "app=kafka-${name}" \
-    -n "${ns}" --ignore-not-found
+  oc delete kafka "kafka-${name}" -n "${ns}" --ignore-not-found
+  oc delete kafkanodepool dual-role -n "${ns}" --ignore-not-found
 done
 ok "Kafka done"
 

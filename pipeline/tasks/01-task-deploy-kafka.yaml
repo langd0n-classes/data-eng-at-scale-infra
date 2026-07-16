@@ -1,11 +1,11 @@
 # Task: deploy-kafka
 #
-# Deploys a Kafka StatefulSet for a single team using the existing
-# kafka-per-team-template.yaml from the repository.
+# Deploys a Kafka instance for a single team using the Kafka operator CR template
+# from kafka/operator/kafka-cr-template.yaml in the repository.
 #
 # What it does:
 #   Step 1 (apply-kafka): substitutes template variables and runs oc apply
-#   Step 2 (wait-for-kafka): waits until the Kafka pod is Ready (up to 5 min)
+#   Step 2 (wait-for-kafka): waits until the Kafka CR reports Ready (up to 5 min)
 #
 # This Task is idempotent — running it again when Kafka is already deployed
 # will update the resources if anything changed, or do nothing if unchanged.
@@ -30,8 +30,9 @@ metadata:
     component: kafka
 spec:
   description: |
-    Deploys a Kafka StatefulSet for a single team namespace using the
-    kafka-per-team-template.yaml template. Waits until the broker is Ready.
+    Deploys a Kafka instance for a single team namespace using the operator CR
+    template at kafka/operator/kafka-cr-template.yaml. Waits until the Kafka
+    CR reports Ready status.
 
   params:
     - name: team-name
@@ -49,10 +50,10 @@ spec:
 
   workspaces:
     - name: source
-      description: Git repository containing the kafka/per-team/kafka-per-team-template.yaml
+      description: Git repository containing kafka/operator/kafka-cr-template.yaml
 
   steps:
-    # Step 1: Substitute template variables and apply the Kafka resources
+    # Step 1: Substitute template variables and apply the Kafka operator CRs
     - name: apply-kafka
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
       computeResources:
@@ -70,9 +71,9 @@ spec:
         TEAM_NAMESPACE="$(params.team-namespace)"
         STORAGE_CLASS="$(params.storage-class)"
         WORKSPACE="$(workspaces.source.path)"
-        TEMPLATE="${WORKSPACE}/kafka/per-team/kafka-per-team-template.yaml"
+        TEMPLATE="${WORKSPACE}/kafka/operator/kafka-cr-template.yaml"
 
-        # Resolve workspace git SHA for idempotency check (same logic as deploy-event-generator)
+        # Resolve workspace git SHA for idempotency check
         if command -v git &>/dev/null; then
           CURRENT_SHA=$(git -C "${WORKSPACE}" rev-parse HEAD 2>/dev/null || echo "")
         else
@@ -81,17 +82,16 @@ spec:
         fi
         echo "Workspace commit: ${CURRENT_SHA:-unknown}"
 
-        # Skip deploy if this exact commit is already deployed and the pod is Ready.
-        # To force a redeploy after a param-only change (e.g. storage-class), delete
-        # the annotation first:
-        #   oc annotate statefulset kafka-${TEAM_NAME} -n ${TEAM_NAMESPACE} tekton.dev/git-sha-
+        # Skip deploy if this exact commit is already deployed and Kafka CR is Ready.
+        # To force a redeploy after a param-only change, delete the annotation first:
+        #   oc annotate kafka kafka-${TEAM_NAME} -n ${TEAM_NAMESPACE} tekton.dev/git-sha-
         if [ -n "$CURRENT_SHA" ]; then
-          DEPLOYED_SHA=$(oc get statefulset "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" \
+          DEPLOYED_SHA=$(oc get kafka "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" \
             -o go-template='{{index .metadata.annotations "tekton.dev/git-sha"}}' 2>/dev/null || echo "")
-          POD_READY=$(oc get pod "kafka-${TEAM_NAME}-0" -n "${TEAM_NAMESPACE}" \
+          KAFKA_READY=$(oc get kafka "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" \
             -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
-          if [ "${DEPLOYED_SHA}" = "${CURRENT_SHA}" ] && [ "${POD_READY}" = "True" ]; then
-            echo "Kafka already deployed for commit ${CURRENT_SHA} and pod is Ready — skipping."
+          if [ "${DEPLOYED_SHA}" = "${CURRENT_SHA}" ] && [ "${KAFKA_READY}" = "True" ]; then
+            echo "Kafka already deployed for commit ${CURRENT_SHA} and CR is Ready — skipping."
             exit 0
           fi
         fi
@@ -106,8 +106,8 @@ spec:
         # Verify the template exists in the cloned repo
         if [ ! -f "$TEMPLATE" ]; then
           echo "ERROR: Template not found at $TEMPLATE"
-          echo "Files in workspace:"
-          ls "${WORKSPACE}/kafka/per-team/" || true
+          echo "Files in workspace kafka/operator/:"
+          ls "${WORKSPACE}/kafka/operator/" || true
           exit 1
         fi
 
@@ -118,29 +118,24 @@ spec:
           exit 1
         fi
 
-        # Substitute template variables using sed (works without envsubst)
-        # The template uses: ${TEAM_NAME}, ${TEAM_NAMESPACE}, ${STORAGE_CLASS}
-        sed \
-          -e "s/\${TEAM_NAME}/${TEAM_NAME}/g" \
-          -e "s/\${TEAM_NAMESPACE}/${TEAM_NAMESPACE}/g" \
-          -e "s/\${STORAGE_CLASS}/${STORAGE_CLASS}/g" \
-          "$TEMPLATE" | oc apply -f -
+        # Substitute template variables and apply
+        export TEAM_NAME TEAM_NAMESPACE STORAGE_CLASS
+        envsubst < "$TEMPLATE" | oc apply -f -
 
         # Record deployed SHA so future runs can skip if nothing changed
         if [ -n "$CURRENT_SHA" ]; then
-          oc annotate statefulset "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" \
+          oc annotate kafka "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" \
             "tekton.dev/git-sha=${CURRENT_SHA}" --overwrite 2>/dev/null || true
         fi
 
         echo ""
-        echo "Kafka resources applied successfully."
-        echo "Resources created:"
-        echo "  - Service:      kafka-${TEAM_NAME}"
-        echo "  - Service:      kafka-${TEAM_NAME}-headless"
-        echo "  - StatefulSet:  kafka-${TEAM_NAME}"
-        echo "  - PVC:          data-kafka-${TEAM_NAME}-0 (created on first run)"
+        echo "Kafka operator CRs applied successfully."
+        echo "Resources created/updated:"
+        echo "  - KafkaNodePool: dual-role"
+        echo "  - Kafka CR:      kafka-${TEAM_NAME}"
+        echo "  - (operator creates: pod, services, PVC)"
 
-    # Step 2: Wait until Kafka pod is Ready before proceeding
+    # Step 2: Wait until Kafka CR is Ready before proceeding
     - name: wait-for-kafka
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
       computeResources:
@@ -157,25 +152,17 @@ spec:
         TEAM_NAME="$(params.team-name)"
         TEAM_NAMESPACE="$(params.team-namespace)"
 
-        echo "Waiting for kafka-${TEAM_NAME}-0 to be Ready..."
+        echo "Waiting for Kafka CR kafka-${TEAM_NAME} to be Ready..."
         echo "(This can take 1-3 minutes on first deployment)"
 
-        # Wait for the pod to exist first (it may take a moment to be scheduled)
-        for i in $(seq 1 12); do
-          if oc get pod "kafka-${TEAM_NAME}-0" -n "$TEAM_NAMESPACE" &>/dev/null; then
-            echo "Pod kafka-${TEAM_NAME}-0 found."
-            break
-          fi
-          echo "Waiting for pod to be scheduled... (${i}/12)"
-          sleep 10
-        done
-
-        # Now wait for it to be Ready
-        oc wait "pod/kafka-${TEAM_NAME}-0" \
+        oc wait kafka "kafka-${TEAM_NAME}" \
           -n "$TEAM_NAMESPACE" \
           --for=condition=Ready \
           --timeout=300s
 
         echo ""
         echo "Kafka is Ready!"
-        oc get pod "kafka-${TEAM_NAME}-0" -n "$TEAM_NAMESPACE"
+        oc get kafka "kafka-${TEAM_NAME}" -n "$TEAM_NAMESPACE"
+        echo ""
+        echo "Bootstrap server:"
+        echo "  kafka-${TEAM_NAME}-kafka-bootstrap.${TEAM_NAMESPACE}.svc.cluster.local:9092"

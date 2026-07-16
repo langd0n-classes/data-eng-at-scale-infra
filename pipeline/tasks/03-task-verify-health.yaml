@@ -80,27 +80,36 @@ spec:
         echo "=================================================="
 
         echo ""
-        echo "--- Pod / Service / PVC status ---"
-        oc get pods,svc,pvc -n "$TEAM_NAMESPACE" -l component=kafka 2>/dev/null || \
+        echo "--- Kafka CR / Pod / Service / PVC status ---"
+        oc get kafka,kafkanodepool,pods,svc,pvc \
+          -n "$TEAM_NAMESPACE" \
+          -l "strimzi.io/cluster=kafka-${TEAM_NAME}" 2>/dev/null || \
           echo "WARNING: No kafka resources found in $TEAM_NAMESPACE"
 
         echo ""
-        echo "--- Kafka pod phase ---"
-        STATUS=$(oc get pod "kafka-${TEAM_NAME}-0" \
+        echo "--- Kafka CR ready status ---"
+        KAFKA_READY=$(oc get kafka "kafka-${TEAM_NAME}" \
           -n "$TEAM_NAMESPACE" \
-          -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+          -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "NotFound")
 
-        if [ "$STATUS" = "Running" ]; then
-          echo "Kafka pod is Running — OK"
+        if [ "$KAFKA_READY" = "True" ]; then
+          echo "Kafka CR is Ready — OK"
         else
-          echo "WARNING: Kafka pod status is '$STATUS'"
-          echo "Check with: oc describe pod kafka-${TEAM_NAME}-0 -n $TEAM_NAMESPACE"
+          echo "WARNING: Kafka CR ready status is '$KAFKA_READY'"
+          echo "Check with: oc describe kafka kafka-${TEAM_NAME} -n $TEAM_NAMESPACE"
         fi
 
         echo ""
         echo "--- Last 5 lines of Kafka logs ---"
-        oc logs "kafka-${TEAM_NAME}-0" -n "$TEAM_NAMESPACE" --tail=5 2>/dev/null || \
-          echo "(logs not available yet — pod may still be starting)"
+        KAFKA_POD=$(oc get pods -n "$TEAM_NAMESPACE" \
+          -l "strimzi.io/cluster=kafka-${TEAM_NAME},strimzi.io/kind=Kafka" \
+          -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+        if [ -n "$KAFKA_POD" ]; then
+          oc logs "$KAFKA_POD" -n "$TEAM_NAMESPACE" --tail=5 2>/dev/null || \
+            echo "(logs not available yet — pod may still be starting)"
+        else
+          echo "(kafka pod not found yet — operator may still be provisioning)"
+        fi
 
     # Step 2: Check NiFi status (informational — does not exit 1)
     - name: check-nifi
@@ -263,6 +272,6 @@ spec:
         echo "    oc logs -f deployment/${EG_NAME} -n ${INFRA_NS}"
         echo ""
         echo "  Check Kafka topics (auto-created after first message):"
-        echo "    oc exec kafka-$(params.team-name)-0 -n $(params.team-namespace) -- \\"
+        echo "    oc exec kafka-$(params.team-name)-dual-role-0 -n $(params.team-namespace) -- \\"
         echo "      kafka-topics --bootstrap-server localhost:9092 --list"
         echo "=================================================="

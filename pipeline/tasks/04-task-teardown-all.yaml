@@ -185,9 +185,8 @@ spec:
           fi
           echo ""
           echo "Deleting kafka-${name} in namespace: $ns"
-          oc delete statefulset,svc,pvc \
-            -l "app=kafka-${name}" \
-            -n "$ns" --ignore-not-found
+          oc delete kafka "kafka-${name}" -n "$ns" --ignore-not-found
+          oc delete kafkanodepool dual-role -n "$ns" --ignore-not-found
         done
 
         echo ""
