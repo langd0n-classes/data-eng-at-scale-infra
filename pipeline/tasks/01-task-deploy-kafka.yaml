@@ -119,8 +119,10 @@ spec:
         fi
 
         # Substitute template variables and apply
-        export TEAM_NAME TEAM_NAMESPACE STORAGE_CLASS
-        envsubst < "$TEMPLATE" | oc apply -f -
+        sed -e "s|\${TEAM_NAME}|${TEAM_NAME}|g" \
+            -e "s|\${TEAM_NAMESPACE}|${TEAM_NAMESPACE}|g" \
+            -e "s|\${STORAGE_CLASS}|${STORAGE_CLASS}|g" \
+            "$TEMPLATE" | oc apply -f -
 
         # Record deployed SHA so future runs can skip if nothing changed
         if [ -n "$CURRENT_SHA" ]; then
