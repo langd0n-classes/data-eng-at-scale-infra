@@ -21,7 +21,7 @@
 #     reset-team    <name> <ns> <pwd>   Remove then redeploy a team
 #
 #   Component operations
-#     remove-kafka      <name> <ns>      Delete Kafka StatefulSet + Services + PVC
+#     remove-kafka      <name> <ns>      Delete Kafka CR + KafkaNodePool (operator cascades cleanup)
 #     remove-nifi       <name> <ns>      Delete NiFi StatefulSet + Services + PVC + Route + NetworkPolicy
 #     wipe-kafka-data   <name> <ns>      Delete Kafka PVC (scale to 0 first, then back to 1)
 #     force-update-nifi <name> <ns> <pwd> Clear SHA annotation and redeploy NiFi
@@ -96,7 +96,7 @@ fi
 
 _upsert_team_registry() {
   local name="$1" ns="$2"
-  local bootstrap="kafka-${name}.${ns}.svc.cluster.local:9092"
+  local bootstrap="kafka-${name}-kafka-bootstrap.${ns}.svc.cluster.local:9092"
   local value="namespace=${ns},bootstrap=${bootstrap}"
   oc get configmap team-registry -n "${INFRA_NAMESPACE}" &>/dev/null \
     || oc create configmap team-registry -n "${INFRA_NAMESPACE}"
@@ -177,7 +177,7 @@ _do_add_kafka() {
   info "Deploying Kafka for ${name} in ${ns}..."
   run "TEAM_NAME='${name}' TEAM_NAMESPACE='${ns}' STORAGE_CLASS='${STORAGE_CLASS}' \
     envsubst '\${TEAM_NAME} \${TEAM_NAMESPACE} \${STORAGE_CLASS}' \
-    < '${REPO_ROOT}/kafka/per-team/kafka-per-team-template.yaml' | oc apply -f -"
+    < '${REPO_ROOT}/kafka/operator/kafka-cr-template.yaml' | oc apply -f -"
 }
 
 _do_add_nifi() {
@@ -194,9 +194,8 @@ _do_add_nifi() {
 _do_remove_kafka() {
   local name="$1" ns="$2"
   info "Removing Kafka for ${name} in ${ns}..."
-  run "oc delete statefulset,svc,pvc \
-    -l 'app=kafka-${name}' \
-    -n '${ns}' --ignore-not-found"
+  run "oc delete kafka 'kafka-${name}' -n '${ns}' --ignore-not-found"
+  run "oc delete kafkanodepool dual-role -n '${ns}' --ignore-not-found"
 }
 
 _do_remove_nifi() {
@@ -289,10 +288,10 @@ cmd_add_team() {
   local ns="${2:?Usage: add-team <name> <ns> <pwd>}"
   local pwd="${3:?Usage: add-team <name> <ns> <pwd>}"
   _do_add_kafka "${name}" "${ns}"
-  info "Waiting for kafka-${name}-0 to be Ready (max 2 min)..."
-  oc wait pod "kafka-${name}-0" \
+  info "Waiting for Kafka CR kafka-${name} to be Ready (max 2 min)..."
+  oc wait kafka "kafka-${name}" \
     --for=condition=Ready --timeout=120s -n "${ns}" 2>/dev/null \
-    || warn "Kafka pod not ready yet — EG may not connect to ${name} on first try"
+    || warn "Kafka not ready yet — EG may not connect to ${name} on first try"
   _upsert_team_registry "${name}" "${ns}"
   _upsert_team_password "${name}" "${pwd}"
   _patch_event_generator
@@ -304,10 +303,10 @@ cmd_add_kafka() {
   local name="${1:?Usage: add-kafka <name> <ns>}"
   local ns="${2:?Usage: add-kafka <name> <ns>}"
   _do_add_kafka "${name}" "${ns}"
-  info "Waiting for kafka-${name}-0 to be Ready (max 2 min)..."
-  oc wait pod "kafka-${name}-0" \
+  info "Waiting for Kafka CR kafka-${name} to be Ready (max 2 min)..."
+  oc wait kafka "kafka-${name}" \
     --for=condition=Ready --timeout=120s -n "${ns}" 2>/dev/null \
-    || warn "Kafka pod not ready yet — EG may not connect to ${name} on first try"
+    || warn "Kafka not ready yet — EG may not connect to ${name} on first try"
   _upsert_team_registry "${name}" "${ns}"
   _patch_event_generator
   ok "Kafka deployed for ${name} in ${ns}"
@@ -347,10 +346,10 @@ cmd_reset_team() {
   _do_remove_nifi "${name}" "${ns}"
   # Redeploy phase
   _do_add_kafka "${name}" "${ns}"
-  info "Waiting for kafka-${name}-0 to be Ready (max 2 min)..."
-  oc wait pod "kafka-${name}-0" \
+  info "Waiting for Kafka CR kafka-${name} to be Ready (max 2 min)..."
+  oc wait kafka "kafka-${name}" \
     --for=condition=Ready --timeout=120s -n "${ns}" 2>/dev/null \
-    || warn "Kafka pod not ready yet — EG may not connect to ${name} on first try"
+    || warn "Kafka not ready yet — EG may not connect to ${name} on first try"
   _upsert_team_registry "${name}" "${ns}"
   _upsert_team_password "${name}" "${pwd}"
   _patch_event_generator
@@ -361,7 +360,7 @@ cmd_reset_team() {
 cmd_remove_kafka() {
   local name="${1:?Usage: remove-kafka <name> <ns>}"
   local ns="${2:?Usage: remove-kafka <name> <ns>}"
-  confirm "Delete Kafka StatefulSet + Services + PVC for ${name} in ${ns}?"
+  confirm "Delete Kafka CR + KafkaNodePool for ${name} in ${ns}? (operator cascades cleanup)"
   _do_remove_kafka "${name}" "${ns}"
   _remove_from_team_registry "${name}"
   _patch_event_generator
@@ -380,22 +379,24 @@ cmd_wipe_kafka_data() {
   local name="${1:?Usage: wipe-kafka-data <name> <ns>}"
   local ns="${2:?Usage: wipe-kafka-data <name> <ns>}"
 
-  if ! oc get statefulset "kafka-${name}" -n "${ns}" &>/dev/null; then
-    err "StatefulSet kafka-${name} not found in ${ns} — Kafka is not deployed for this team."
+  if ! oc get kafka "kafka-${name}" -n "${ns}" &>/dev/null; then
+    err "Kafka CR kafka-${name} not found in ${ns} — Kafka is not deployed for this team."
     exit 1
   fi
 
   confirm "Wipe all Kafka data for ${name} in ${ns}? This PERMANENTLY deletes the PVC."
-  info "Scaling Kafka to 0..."
-  run "oc scale statefulset 'kafka-${name}' --replicas=0 -n '${ns}'"
-  # Wait for pod to terminate before deleting PVC (PVC can't be deleted while mounted)
-  echo "Waiting for pod to terminate..."
-  run "oc wait pod 'kafka-${name}-0' --for=delete --timeout=60s -n '${ns}' 2>/dev/null || true"
-  info "Deleting Kafka PVC..."
-  run "oc delete pvc -l 'app=kafka-${name}' -n '${ns}' --ignore-not-found"
-  info "Scaling Kafka back to 1..."
-  run "oc scale statefulset 'kafka-${name}' --replicas=1 -n '${ns}'"
-  ok "Kafka data wiped for ${name} in ${ns}. Pod is restarting with fresh storage."
+  # Delete the KafkaNodePool — operator removes the pod and PVC, then recreates fresh
+  info "Deleting KafkaNodePool to wipe storage..."
+  run "oc delete kafkanodepool dual-role -n '${ns}' --ignore-not-found"
+  echo "Waiting for operator to clean up pod and PVC..."
+  run "oc wait pod -l 'strimzi.io/cluster=kafka-${name}' \
+    --for=delete --timeout=120s -n '${ns}' 2>/dev/null || true"
+  info "Recreating KafkaNodePool with fresh storage..."
+  run "TEAM_NAME='${name}' TEAM_NAMESPACE='${ns}' STORAGE_CLASS='${STORAGE_CLASS}' \
+    envsubst '\${TEAM_NAME} \${TEAM_NAMESPACE} \${STORAGE_CLASS}' \
+    < '${REPO_ROOT}/kafka/operator/kafka-cr-template.yaml' \
+    | oc apply -f - --selector='kafka.strimzi.io/kind=KafkaNodePool'"
+  ok "Kafka data wiped for ${name} in ${ns}. Operator is recreating broker with fresh storage."
 }
 
 cmd_force_update_nifi() {
@@ -442,8 +443,8 @@ cmd_reset_password() {
 cmd_restart_kafka() {
   local name="${1:?Usage: restart-kafka <name> <ns>}"
   local ns="${2:?Usage: restart-kafka <name> <ns>}"
-  run "oc delete pod 'kafka-${name}-0' -n '${ns}'"
-  ok "Kafka pod kafka-${name}-0 deleted — StatefulSet will restart it"
+  run "oc delete pod -l 'strimzi.io/cluster=kafka-${name}' -n '${ns}'"
+  ok "Kafka pod for ${name} deleted — Strimzi operator will restart it"
 }
 
 cmd_restart_nifi() {
@@ -948,12 +949,12 @@ Team lifecycle:
   reset-team    <name> <ns> <pwd>   Remove then redeploy a team
 
 Component operations:
-  remove-kafka      <name> <ns>          Delete Kafka StatefulSet + Services + PVC
+  remove-kafka      <name> <ns>          Delete Kafka CR + KafkaNodePool (operator cascades cleanup)
   remove-nifi       <name> <ns>          Delete NiFi StatefulSet + Services + PVC + Route + NetworkPolicy
-  wipe-kafka-data   <name> <ns>          Delete Kafka PVC (scales to 0 first, then back to 1)
+  wipe-kafka-data   <name> <ns>          Delete KafkaNodePool PVC and recreate with fresh storage
   force-update-nifi <name> <ns> <pwd>   Clear SHA annotation and redeploy NiFi
   reset-password    <name> <ns> <pwd>   Reset NiFi login password
-  restart-kafka     <name> <ns>          Delete Kafka pod (StatefulSet restarts it)
+  restart-kafka     <name> <ns>          Delete Kafka pod (Strimzi operator restarts it)
   restart-nifi      <name> <ns>          Delete NiFi pod (StatefulSet restarts it)
 
 Event generator:
