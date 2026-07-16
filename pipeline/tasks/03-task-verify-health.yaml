@@ -225,7 +225,10 @@ spec:
         for i in $(seq 1 12); do
           LOGS=$(oc logs "deployment/${EG_NAME}" -n "$INFRA_NS" --tail=100 2>/dev/null || echo "")
 
+          # Check connected: either startup message OR actively producing to this team
           if echo "$LOGS" | grep -q "Connected to Kafka for ${TEAM_NAME}"; then
+            KAFKA_CONNECTED=true
+          elif echo "$LOGS" | grep -q "Produced.*${TEAM_NAME}"; then
             KAFKA_CONNECTED=true
           fi
           if echo "$LOGS" | grep -q "Produced"; then
