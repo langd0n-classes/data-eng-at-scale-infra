@@ -7,6 +7,7 @@
 # Usage:
 #   bash pipeline/cleanup.sh                                      # interactive prompts, skips namespaces
 #   DELETE_NAMESPACES=true bash pipeline/cleanup.sh               # also delete namespaces (self-provisioned clusters)
+#   DELETE_CHATOPS=true bash pipeline/cleanup.sh                  # also delete ChatOps deployment
 #   FORCE=true bash pipeline/cleanup.sh                           # skip all confirmation prompts (CI/automation)
 #   FORCE=true DELETE_NAMESPACES=true bash pipeline/cleanup.sh    # skip prompts + delete namespaces
 #
@@ -58,6 +59,21 @@ ok "PipelineRuns done"
 info "Step 2/10 — Deleting TaskRuns..."
 tkn taskrun delete --all --force -n "${INFRA_NAMESPACE}" 2>/dev/null || true
 ok "TaskRuns done"
+
+# ------------------------------------------------------------
+# 2b. ChatOps — optional (DELETE_CHATOPS=true)
+# ------------------------------------------------------------
+if [[ "${DELETE_CHATOPS:-false}" == "true" ]]; then
+  info "Step 2b/10 — Deleting ChatOps (${CHATOPS_NAME})..."
+  oc delete deployment/"${CHATOPS_NAME}" \
+    -n "${INFRA_NAMESPACE}" --ignore-not-found
+  oc delete svc,buildconfig,imagestream,route \
+    -l "app=${CHATOPS_NAME}" \
+    -n "${INFRA_NAMESPACE}" --ignore-not-found
+  ok "ChatOps done"
+else
+  info "Step 2b/10 — ChatOps skipped (set DELETE_CHATOPS=true to include)"
+fi
 
 # ------------------------------------------------------------
 # 3. Event generator (label: app=${EVENT_GENERATOR_NAME})
