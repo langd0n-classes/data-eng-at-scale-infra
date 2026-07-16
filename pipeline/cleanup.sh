@@ -132,7 +132,7 @@ ok "NiFi done"
 # ------------------------------------------------------------
 info "Step 5/10 — Deleting Tekton tasks..."
 oc delete task \
-  deploy-kafka deploy-event-generator verify-health teardown-all deploy-nifi \
+  deploy-kafka deploy-event-generator verify-health teardown-all deploy-nifi deploy-chatops \
   -n "${INFRA_NAMESPACE}" --ignore-not-found
 
 info "          Deleting Tekton pipelines..."
