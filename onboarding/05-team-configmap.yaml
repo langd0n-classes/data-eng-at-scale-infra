@@ -23,7 +23,7 @@ metadata:
   namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
 data:
   team-id: "team${TEAM_ID}"
-  kafka-bootstrap: "kafka-team${TEAM_ID}-kafka-bootstrap.${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}.svc.cluster.local:9092"
+  kafka-bootstrap: "${KAFKA_CLUSTER_NAME}-kafka-bootstrap.${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}.svc.cluster.local:9092"
   nifi-url: "https://${NIFI_CLUSTER_NAME}-${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}.${EXTERNAL_DOMAIN}"
   infra-namespace: "${INFRA_NAMESPACE}"
   deployment-mode: "per-team"
