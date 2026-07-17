@@ -1312,6 +1312,14 @@ def cmd_remove_kafka(name: str, ns: str) -> str:
     except k8s_client.ApiException as e:
         if e.status != 404:
             raise
+    # Delete Strimzi-created PVCs — must delete or re-add crashes with cluster.id mismatch
+    try:
+        for pvc in core_v1.list_namespaced_persistent_volume_claim(
+            ns, label_selector=f"strimzi.io/cluster=kafka-{name}"
+        ).items:
+            core_v1.delete_namespaced_persistent_volume_claim(pvc.metadata.name, ns)
+    except Exception:
+        pass
     _remove_from_team_registry(name)
     eg_result = _patch_event_generator_bootstrap()
     return f"Kafka removed for {name} in {ns}\n{eg_result}"

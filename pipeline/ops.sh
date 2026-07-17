@@ -196,6 +196,9 @@ _do_remove_kafka() {
   info "Removing Kafka for ${name} in ${ns}..."
   run "oc delete kafka 'kafka-${name}' -n '${ns}' --ignore-not-found"
   run "oc delete kafkanodepool dual-role -n '${ns}' --ignore-not-found"
+  # Delete Strimzi-created PVCs — named data-{cluster}-{nodepool}-{ordinal}
+  # Must delete these or a re-add will crash with cluster.id mismatch
+  run "oc delete pvc -l 'strimzi.io/cluster=kafka-${name}' -n '${ns}' --ignore-not-found"
 }
 
 _do_remove_nifi() {
@@ -290,7 +293,7 @@ cmd_add_team() {
   _do_add_kafka "${name}" "${ns}"
   info "Waiting for Kafka CR kafka-${name} to be Ready (max 2 min)..."
   oc wait kafka "kafka-${name}" \
-    --for=condition=Ready --timeout=120s -n "${ns}" 2>/dev/null \
+    --for=condition=Ready --timeout=300s -n "${ns}" 2>/dev/null \
     || warn "Kafka not ready yet — EG may not connect to ${name} on first try"
   _upsert_team_registry "${name}" "${ns}"
   _upsert_team_password "${name}" "${pwd}"
@@ -305,7 +308,7 @@ cmd_add_kafka() {
   _do_add_kafka "${name}" "${ns}"
   info "Waiting for Kafka CR kafka-${name} to be Ready (max 2 min)..."
   oc wait kafka "kafka-${name}" \
-    --for=condition=Ready --timeout=120s -n "${ns}" 2>/dev/null \
+    --for=condition=Ready --timeout=300s -n "${ns}" 2>/dev/null \
     || warn "Kafka not ready yet — EG may not connect to ${name} on first try"
   _upsert_team_registry "${name}" "${ns}"
   _patch_event_generator
@@ -348,7 +351,7 @@ cmd_reset_team() {
   _do_add_kafka "${name}" "${ns}"
   info "Waiting for Kafka CR kafka-${name} to be Ready (max 2 min)..."
   oc wait kafka "kafka-${name}" \
-    --for=condition=Ready --timeout=120s -n "${ns}" 2>/dev/null \
+    --for=condition=Ready --timeout=300s -n "${ns}" 2>/dev/null \
     || warn "Kafka not ready yet — EG may not connect to ${name} on first try"
   _upsert_team_registry "${name}" "${ns}"
   _upsert_team_password "${name}" "${pwd}"
@@ -385,12 +388,15 @@ cmd_wipe_kafka_data() {
   fi
 
   confirm "Wipe all Kafka data for ${name} in ${ns}? This PERMANENTLY deletes the PVC."
-  # Delete the KafkaNodePool — operator removes the pod and PVC, then recreates fresh
+  # Delete the KafkaNodePool and PVC explicitly — operator may not GC the PVC fast enough
+  # and a stale PVC causes cluster.id mismatch on recreate
   info "Deleting KafkaNodePool to wipe storage..."
   run "oc delete kafkanodepool dual-role -n '${ns}' --ignore-not-found"
-  echo "Waiting for operator to clean up pod and PVC..."
+  echo "Waiting for operator to clean up pod..."
   run "oc wait pod -l 'strimzi.io/cluster=kafka-${name}' \
     --for=delete --timeout=120s -n '${ns}' 2>/dev/null || true"
+  info "Deleting Strimzi PVCs to ensure clean storage..."
+  run "oc delete pvc -l 'strimzi.io/cluster=kafka-${name}' -n '${ns}' --ignore-not-found"
   info "Recreating KafkaNodePool with fresh storage..."
   run "TEAM_NAME='${name}' TEAM_NAMESPACE='${ns}' STORAGE_CLASS='${STORAGE_CLASS}' \
     envsubst '\${TEAM_NAME} \${TEAM_NAMESPACE} \${STORAGE_CLASS}' \

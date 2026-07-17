@@ -60,13 +60,16 @@ kubectl delete kafka "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" || true
 echo "  Deleting KafkaNodePool CR..."
 kubectl delete kafkanodepool dual-role -n "${TEAM_NAMESPACE}" || true
 
+# Delete Strimzi-created PVCs — must delete or re-add crashes with cluster.id mismatch
+echo "  Deleting Strimzi PVCs..."
+kubectl delete pvc -l "strimzi.io/cluster=kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" || true
+
 echo ""
 echo "=========================================="
 echo "Deletion Complete!"
 echo "=========================================="
 echo ""
 echo "Kafka for ${TEAM_NAME} has been removed from ${TEAM_NAMESPACE}"
-echo "(operator is cascading cleanup of pods, services, and PVC)"
 echo ""
 echo "Verify deletion:"
 echo "  kubectl get kafka,kafkanodepool,pods,pvc -n ${TEAM_NAMESPACE}"

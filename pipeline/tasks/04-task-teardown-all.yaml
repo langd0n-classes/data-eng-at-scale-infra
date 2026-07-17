@@ -187,6 +187,8 @@ spec:
           echo "Deleting kafka-${name} in namespace: $ns"
           oc delete kafka "kafka-${name}" -n "$ns" --ignore-not-found
           oc delete kafkanodepool dual-role -n "$ns" --ignore-not-found
+          # Delete Strimzi-created PVCs — must delete or re-add crashes with cluster.id mismatch
+          oc delete pvc -l "strimzi.io/cluster=kafka-${name}" -n "$ns" --ignore-not-found
         done
 
         echo ""
