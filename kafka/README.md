@@ -110,7 +110,7 @@ cd shared-deployment
 # Configure environment
 source ../config.env
 
-# Deploy StatefulSet
+# Deploy shared Kafka StatefulSet
 envsubst < kafka-statefulset.yaml | kubectl apply -f -
 
 # Choose external access method:
