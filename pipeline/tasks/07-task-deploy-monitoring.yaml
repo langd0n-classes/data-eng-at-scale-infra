@@ -1,0 +1,175 @@
+# Task: deploy-monitoring
+#
+# Deploys per-team observability resources for a single team's Kafka instance:
+#   Step 1 (apply-jmx-configmap):   applies kafka-jmx-configmap-template.yaml to team namespace
+#   Step 2 (apply-prometheus-rbac): applies kafka-prometheus-rbac-template.yaml to team namespace
+#   Step 3 (patch-kafka-cr):        patches the Kafka CR to add metricsConfig + kafkaExporter
+#   Step 4 (wait-kafka-ready):      waits for the rolling restart triggered by the patch
+#
+# The ConfigMap MUST exist before the Kafka CR patch (step 1 before step 3).
+# Strimzi auto-creates a PodMonitor for kafkaExporter — do not create a duplicate.
+#
+# This task runs after deploy-kafka (Kafka CR must already exist) and before
+# deploy-nifi in the pipeline, per team.
+#
+# Variables substituted via envsubst (source config.env first):
+#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE
+#   ${OC_CLI_IMAGE}     — config.env: OC_CLI_IMAGE
+#
+# Apply with:
+#   source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' \
+#     < pipeline/tasks/07-task-deploy-monitoring.yaml | oc apply -f -
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-monitoring
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: tekton-pipeline
+    component: monitoring
+spec:
+  description: |
+    Deploys per-team Kafka observability resources: JMX ConfigMap, Prometheus
+    RBAC RoleBinding, and Kafka CR patch to activate the JMX exporter sidecar.
+    Waits for the Kafka rolling restart to complete before returning.
+
+  params:
+    - name: team-name
+      description: "Team identifier used in resource names (e.g., team01)"
+      type: string
+
+    - name: team-namespace
+      description: "Namespace where the team's Kafka is deployed (e.g., team-01)"
+      type: string
+
+  workspaces:
+    - name: source
+      description: Git repository root containing monitoring/ templates
+
+  steps:
+    # Step 1: Apply JMX Prometheus Exporter rules ConfigMap to team namespace
+    - name: apply-jmx-configmap
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        TEAM_NAMESPACE="$(params.team-namespace)"
+        WORKSPACE="$(workspaces.source.path)"
+        TEMPLATE="${WORKSPACE}/monitoring/kafka/kafka-jmx-configmap-template.yaml"
+
+        echo "Applying JMX ConfigMap to namespace: ${TEAM_NAMESPACE}"
+
+        sed -e "s|\${TEAM_NAMESPACE}|${TEAM_NAMESPACE}|g" \
+          "${TEMPLATE}" | oc apply -f -
+
+        echo "JMX ConfigMap applied."
+
+    # Step 2: Grant UWM Prometheus read access in the team namespace (cross-namespace scraping)
+    - name: apply-prometheus-rbac
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        TEAM_NAMESPACE="$(params.team-namespace)"
+        WORKSPACE="$(workspaces.source.path)"
+        TEMPLATE="${WORKSPACE}/monitoring/kafka/kafka-prometheus-rbac-template.yaml"
+
+        echo "Applying Prometheus RBAC to namespace: ${TEAM_NAMESPACE}"
+
+        sed -e "s|\${TEAM_NAMESPACE}|${TEAM_NAMESPACE}|g" \
+          "${TEMPLATE}" | oc apply -f -
+
+        echo "Prometheus RBAC applied."
+
+    # Step 3: Patch the Kafka CR to activate JMX exporter sidecar + kafkaExporter
+    # ConfigMap must already exist (Step 1 above) before Strimzi reads it.
+    # This patch triggers a Kafka pod rolling restart — wait-kafka-ready (Step 4) handles that.
+    - name: patch-kafka-cr
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        TEAM_NAME="$(params.team-name)"
+        TEAM_NAMESPACE="$(params.team-namespace)"
+
+        echo "Patching Kafka CR kafka-${TEAM_NAME} with metricsConfig + kafkaExporter..."
+
+        oc patch kafka "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" \
+          --type=merge \
+          -p '{
+            "spec": {
+              "kafka": {
+                "metricsConfig": {
+                  "type": "jmxPrometheusExporter",
+                  "valueFrom": {
+                    "configMapKeyRef": {
+                      "name": "kafka-metrics-config",
+                      "key": "kafka-metrics-config.yml"
+                    }
+                  }
+                }
+              },
+              "kafkaExporter": {
+                "resources": {
+                  "requests": {"memory": "64Mi", "cpu": "50m"},
+                  "limits": {"memory": "128Mi", "cpu": "200m"}
+                }
+              }
+            }
+          }'
+
+        echo "Kafka CR patched — Strimzi will perform a rolling restart."
+
+    # Step 4: Wait for Strimzi to complete the rolling restart triggered by the patch
+    - name: wait-kafka-ready
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        TEAM_NAME="$(params.team-name)"
+        TEAM_NAMESPACE="$(params.team-namespace)"
+
+        echo "Waiting for Kafka CR kafka-${TEAM_NAME} to be Ready after metrics patch..."
+        echo "(Rolling restart typically takes 1-2 minutes)"
+
+        oc wait kafka "kafka-${TEAM_NAME}" \
+          -n "${TEAM_NAMESPACE}" \
+          --for=condition=Ready \
+          --timeout=300s
+
+        echo ""
+        echo "Kafka is Ready with JMX exporter enabled."
+        echo "Verify JMX metrics: oc exec kafka-${TEAM_NAME}-dual-role-0 -n ${TEAM_NAMESPACE} -- curl -s http://localhost:9404/metrics | head -5"
