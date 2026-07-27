@@ -1,0 +1,25 @@
+# OLM Subscription for the Streams for Apache Kafka Console operator.
+#
+# Installs the streamshub/console operator cluster-wide via OperatorHub.
+# The operator watches for Console CRs in any namespace and spins up the
+# web console pod + route automatically.
+#
+# After apply, wait for the CSV to reach Succeeded:
+#   oc get csv -n openshift-operators | grep console
+#
+# The Console CR is generated dynamically by Tekton task 09 from active team
+# params — it is not committed to this repo.
+#
+# Applied by Tekton task 09-task-deploy-console.yaml.
+
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhosak-console
+  namespace: openshift-operators
+spec:
+  channel: stable
+  name: rhosak-console
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
