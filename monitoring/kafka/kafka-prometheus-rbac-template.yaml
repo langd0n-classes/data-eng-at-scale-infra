@@ -1,0 +1,30 @@
+# Grants OpenShift User Workload Monitoring Prometheus read access to pods in
+# a team namespace, enabling cross-namespace PodMonitor scraping.
+#
+# Without this RoleBinding in each team namespace, the UWM Prometheus pod
+# (running in openshift-user-workload-monitoring) cannot discover or scrape
+# Kafka pods in team-XX namespaces — scraping silently fails with no error.
+#
+# Applied once per team namespace by Tekton task 07-task-deploy-monitoring.yaml.
+#
+# Variables: ${TEAM_NAMESPACE}
+#
+# Apply with:
+#   sed -e "s|\${TEAM_NAMESPACE}|team-01|g" \
+#     monitoring/kafka/kafka-prometheus-rbac-template.yaml | oc apply -f -
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-scrape
+  namespace: ${TEAM_NAMESPACE}
+  labels:
+    app: kafka-monitoring
+subjects:
+  - kind: ServiceAccount
+    name: prometheus-user-workload
+    namespace: openshift-user-workload-monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
