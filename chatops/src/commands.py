@@ -14,13 +14,14 @@ from settings import settings
 core_v1: k8s_client.CoreV1Api | None = None
 apps_v1: k8s_client.AppsV1Api | None = None
 networking_v1: k8s_client.NetworkingV1Api | None = None   # for NetworkPolicy
+rbac_v1: k8s_client.RbacAuthorizationV1Api | None = None  # for RoleBindings
 custom: k8s_client.CustomObjectsApi | None = None          # Routes, BuildConfigs, Tekton
 http_client: httpx.Client | None = None
 
 
 def init_clients(k8s_module: Any, http: httpx.Client) -> None:
     """Called once from lifespan. k8s_module is the kubernetes.client module."""
-    global core_v1, apps_v1, networking_v1, custom, http_client
+    global core_v1, apps_v1, networking_v1, rbac_v1, custom, http_client
     # Set a 10s timeout on all API calls — prevents DNS hangs from blocking Slack responses
     cfg = k8s_module.Configuration.get_default_copy()
     cfg.retries = 1
@@ -28,6 +29,7 @@ def init_clients(k8s_module: Any, http: httpx.Client) -> None:
     core_v1 = k8s_module.CoreV1Api()
     apps_v1 = k8s_module.AppsV1Api()
     networking_v1 = k8s_module.NetworkingV1Api()
+    rbac_v1 = k8s_module.RbacAuthorizationV1Api()
     custom = k8s_module.CustomObjectsApi()
     http_client = http
 
@@ -97,9 +99,12 @@ def dispatch(subcmd: str, args: list[str], channel_id: str) -> str:
         case "run-reset":        return cmd_run_reset()
         case "pipeline-status":  return cmd_pipeline_status()
         case "cleanup-runs":     return cmd_cleanup_runs()
-        case "export-config":    return cmd_export_config()
-        case "help":             return HELP_TEXT
-        case _:                  return f"Unknown command: `{subcmd}`\n\n{HELP_TEXT}"
+        case "export-config":       return cmd_export_config()
+        case "deploy-monitoring":   return cmd_deploy_monitoring(*args)
+        case "deploy-grafana":      return cmd_deploy_grafana()
+        case "monitoring-status":   return cmd_monitoring_status(*args)
+        case "help":                return HELP_TEXT
+        case _:                     return f"Unknown command: `{subcmd}`\n\n{HELP_TEXT}"
 
 
 # ── Namespace discovery ────────────────────────────────────────────────────────
@@ -1733,6 +1738,559 @@ def cmd_export_config() -> str:
     return "\n".join(lines)
 
 
+# ── JMX Prometheus Exporter config — inlined so ChatOps pod needs no file access ─
+
+_JMX_CONFIG_CONTENT = """\
+# Strimzi Kafka JMX Exporter rules — KRaft mode (no ZooKeeper)
+# Covers: broker throughput, log metrics, KRaft controller, network, JVM
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+rules:
+  - pattern: >-
+      kafka.server<type=BrokerTopicMetrics, name=(BytesInPerSec|BytesOutPerSec|
+      MessagesInPerSec|BytesRejectedPerSec|FailedFetchRequestsPerSec|
+      FailedProduceRequestsPerSec), topic=(.+)><>OneMinuteRate
+    name: kafka_server_brokertopicmetrics_$1_rate
+    labels:
+      topic: "$2"
+    type: GAUGE
+  - pattern: >-
+      kafka.server<type=BrokerTopicMetrics, name=(BytesInPerSec|BytesOutPerSec|
+      MessagesInPerSec|BytesRejectedPerSec)><>OneMinuteRate
+    name: kafka_server_brokertopicmetrics_$1_total_rate
+    type: GAUGE
+  - pattern: >-
+      kafka.log<type=Log, name=(Size|NumLogSegments|LogStartOffset|LogEndOffset),
+      topic=(.+), partition=(\\d+)><>Value
+    name: kafka_log_$1
+    labels:
+      topic: "$2"
+      partition: "$3"
+    type: GAUGE
+  - pattern: >-
+      kafka.controller<type=KafkaController,
+      name=(ActiveControllerCount|GlobalPartitionCount|GlobalTopicCount|
+      OfflinePartitionsCount|PreferredReplicaImbalanceCount)><>Value
+    name: kafka_controller_kafkacontroller_$1
+    type: GAUGE
+  - pattern: >-
+      kafka.network<type=RequestMetrics, name=(RequestsPerSec|
+      TotalTimeMs|RequestQueueTimeMs|ResponseSendTimeMs),
+      request=(.+)><>(OneMinuteRate|50thPercentile|99thPercentile)
+    name: kafka_network_requestmetrics_$1_$3
+    labels:
+      request: "$2"
+    type: GAUGE
+  - pattern: kafka.network<type=RequestChannel, name=RequestQueueSize><>Value
+    name: kafka_network_requestchannel_requestqueuesize
+    type: GAUGE
+  - pattern: >-
+      kafka.server<type=ReplicaManager,
+      name=(LeaderCount|PartitionCount|UnderReplicatedPartitions|
+      UnderMinIsrPartitionCount|AtMinIsrPartitionCount)><>Value
+    name: kafka_server_replicamanager_$1
+    type: GAUGE
+  - pattern: >-
+      kafka.server<type=DelayedOperationPurgatory,
+      name=PurgatorySize, delayedOperation=(.+)><>Value
+    name: kafka_server_delayedoperation_purgatorysize
+    labels:
+      delayed_operation: "$1"
+    type: GAUGE
+  - pattern: java.lang<type=Memory><HeapMemoryUsage>used
+    name: jvm_memory_heap_used_bytes
+    type: GAUGE
+  - pattern: java.lang<type=Memory><HeapMemoryUsage>max
+    name: jvm_memory_heap_max_bytes
+    type: GAUGE
+  - pattern: java.lang<type=Memory><NonHeapMemoryUsage>used
+    name: jvm_memory_nonheap_used_bytes
+    type: GAUGE
+  - pattern: java.lang<type=GarbageCollector, name=(.+)><>CollectionCount
+    name: jvm_gc_collection_count_total
+    labels:
+      gc: "$1"
+    type: COUNTER
+  - pattern: java.lang<type=GarbageCollector, name=(.+)><>CollectionTime
+    name: jvm_gc_collection_time_ms_total
+    labels:
+      gc: "$1"
+    type: COUNTER
+  - pattern: java.lang<type=Threading><>ThreadCount
+    name: jvm_threads_current
+    type: GAUGE
+  - pattern: java.lang<type=Threading><>DaemonThreadCount
+    name: jvm_threads_daemon
+    type: GAUGE
+  - pattern: java.lang<type=OperatingSystem><>OpenFileDescriptorCount
+    name: jvm_os_open_file_descriptors
+    type: GAUGE
+  - pattern: java.lang<type=OperatingSystem><>MaxFileDescriptorCount
+    name: jvm_os_max_file_descriptors
+    type: GAUGE
+"""
+
+
+def _apply_or_update_config_map(ns: str, body: dict) -> None:
+    """Create ConfigMap if it doesn't exist; patch it if it does."""
+    name = body["metadata"]["name"]
+    try:
+        core_v1.create_namespaced_config_map(ns, body)
+    except k8s_client.ApiException as e:
+        if e.status == 409:
+            core_v1.patch_namespaced_config_map(name, ns, body)
+        else:
+            raise
+
+
+def _apply_or_update_role_binding(ns: str, body: dict) -> None:
+    """Create RoleBinding if it doesn't exist; patch it if it does."""
+    name = body["metadata"]["name"]
+    try:
+        rbac_v1.create_namespaced_role_binding(ns, body)
+    except k8s_client.ApiException as e:
+        if e.status == 409:
+            rbac_v1.patch_namespaced_role_binding(name, ns, body)
+        else:
+            raise
+
+
+# ── Monitoring command implementations ────────────────────────────────────────
+
+def cmd_deploy_monitoring(name: str, ns: str) -> str:
+    """Apply JMX ConfigMap + Prometheus RBAC to team namespace, then patch Kafka CR."""
+    _check_namespace(ns)
+
+    # Step 1: Apply JMX exporter ConfigMap — must exist before Kafka CR patch
+    _apply_or_update_config_map(ns, {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": "kafka-metrics-config",
+            "namespace": ns,
+            "labels": {"app": "kafka-monitoring"},
+        },
+        "data": {"kafka-metrics-config.yml": _JMX_CONFIG_CONTENT},
+    })
+
+    # Step 2: Apply RoleBinding so UWM Prometheus can scrape pods in this namespace
+    _apply_or_update_role_binding(ns, {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "RoleBinding",
+        "metadata": {"name": "prometheus-scrape", "namespace": ns},
+        "subjects": [{
+            "kind": "ServiceAccount",
+            "name": "prometheus-user-workload",
+            "namespace": "openshift-user-workload-monitoring",
+        }],
+        "roleRef": {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "view",
+        },
+    })
+
+    # Step 3: Patch Kafka CR to add metricsConfig + kafkaExporter (triggers rolling restart)
+    custom.patch_namespaced_custom_object(
+        "kafka.strimzi.io", "v1beta2", ns, "kafkas", f"kafka-{name}",
+        {
+            "spec": {
+                "kafka": {
+                    "metricsConfig": {
+                        "type": "jmxPrometheusExporter",
+                        "valueFrom": {
+                            "configMapKeyRef": {
+                                "name": "kafka-metrics-config",
+                                "key": "kafka-metrics-config.yml",
+                            }
+                        },
+                    }
+                },
+                "kafkaExporter": {
+                    "resources": {
+                        "requests": {"memory": "64Mi", "cpu": "50m"},
+                        "limits": {"memory": "128Mi", "cpu": "200m"},
+                    }
+                },
+            }
+        },
+    )
+
+    # Step 4: Wait up to 300s for Kafka to become Ready after rolling restart
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        kafka_cr = custom.get_namespaced_custom_object(
+            "kafka.strimzi.io", "v1beta2", ns, "kafkas", f"kafka-{name}"
+        )
+        conditions = kafka_cr.get("status", {}).get("conditions", [])
+        if any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions):
+            break
+        time.sleep(10)
+    else:
+        return (
+            f"Monitoring resources applied for {name} in {ns} "
+            f"— Kafka CR not Ready yet (check: oc get kafka kafka-{name} -n {ns})"
+        )
+
+    return (
+        f"Monitoring deployed for {name} in {ns}:\n"
+        f"  • kafka-metrics-config ConfigMap applied\n"
+        f"  • prometheus-scrape RoleBinding applied\n"
+        f"  • Kafka CR patched with metricsConfig + kafkaExporter\n"
+        f"  • Kafka CR Ready ✓"
+    )
+
+
+def cmd_deploy_grafana() -> str:
+    """Apply Grafana datasource, provisioning, deployment, service, route, and PodMonitor."""
+    ns = settings.infra_namespace
+    grafana_image = settings.grafana_image
+
+    # Step 1: Read grafana-sa-token (SA and CRB must have been applied by ops.sh or setup.sh)
+    try:
+        secret = core_v1.read_namespaced_secret("grafana-sa-token", ns)
+        token_b64 = (secret.data or {}).get("token", "")
+        if not token_b64:
+            raise RuntimeError("grafana-sa-token Secret exists but .data.token is empty")
+        import base64 as _b64
+        token = _b64.b64decode(token_b64).decode()
+    except k8s_client.ApiException as e:
+        if e.status == 404:
+            raise RuntimeError(
+                "grafana-sa-token Secret not found.\n"
+                "Apply the Grafana SA first: `bash pipeline/ops.sh deploy-grafana` "
+                "or run `bash pipeline/setup.sh`."
+            )
+        raise
+
+    # Step 2: Apply datasource ConfigMap (token substituted at runtime)
+    _apply_or_update_config_map(ns, {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": "grafana-datasources", "namespace": ns, "labels": {"app": "grafana"}},
+        "data": {
+            "datasources.yaml": (
+                "apiVersion: 1\n"
+                "datasources:\n"
+                "  - name: Prometheus\n"
+                "    type: prometheus\n"
+                "    url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091\n"
+                "    access: proxy\n"
+                "    isDefault: true\n"
+                "    jsonData:\n"
+                "      tlsSkipVerify: true\n"
+                '      httpHeaderName1: "Authorization"\n'
+                "    secureJsonData:\n"
+                f'      httpHeaderValue1: "Bearer {token}"\n'
+            )
+        },
+    })
+
+    # Step 3: Apply dashboard provisioning ConfigMap
+    _apply_or_update_config_map(ns, {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": "grafana-dashboard-provisioning",
+            "namespace": ns,
+            "labels": {"app": "grafana"},
+        },
+        "data": {
+            "dashboards.yaml": (
+                "apiVersion: 1\n"
+                "providers:\n"
+                "  - name: default\n"
+                "    type: file\n"
+                "    updateIntervalSeconds: 30\n"
+                "    options:\n"
+                "      path: /var/lib/grafana/dashboards\n"
+            )
+        },
+    })
+
+    # Step 4: Apply empty dashboards ConfigMap (dashboards require internet — load via ops.sh)
+    try:
+        core_v1.read_namespaced_config_map("grafana-dashboards", ns)
+    except k8s_client.ApiException as e:
+        if e.status == 404:
+            core_v1.create_namespaced_config_map(ns, {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {
+                    "name": "grafana-dashboards",
+                    "namespace": ns,
+                    "labels": {"app": "grafana"},
+                },
+                "data": {},
+            })
+
+    # Step 5: Apply Grafana Deployment
+    deployment_body = {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {"name": "grafana", "namespace": ns, "labels": {"app": "grafana"}},
+        "spec": {
+            "replicas": 1,
+            "selector": {"matchLabels": {"app": "grafana"}},
+            "template": {
+                "metadata": {"labels": {"app": "grafana"}},
+                "spec": {
+                    "serviceAccountName": "grafana-sa",
+                    "securityContext": {"runAsNonRoot": True},
+                    "containers": [{
+                        "name": "grafana",
+                        "image": grafana_image,
+                        "ports": [{"containerPort": 3000, "name": "http-grafana", "protocol": "TCP"}],
+                        "env": [
+                            {"name": "GF_SECURITY_ADMIN_USER", "value": "admin"},
+                            {"name": "GF_SECURITY_ADMIN_PASSWORD",
+                             "valueFrom": {"secretKeyRef": {
+                                 "name": "grafana-admin-secret", "key": "password"
+                             }}},
+                            {"name": "GF_PATHS_PROVISIONING", "value": "/etc/grafana/provisioning"},
+                            {"name": "GF_PATHS_DATA", "value": "/var/lib/grafana"},
+                            {"name": "GF_LOG_LEVEL", "value": "warn"},
+                        ],
+                        "resources": {
+                            "requests": {"memory": "256Mi", "cpu": "100m"},
+                            "limits": {"memory": "512Mi", "cpu": "500m"},
+                        },
+                        "readinessProbe": {
+                            "httpGet": {"path": "/api/health", "port": 3000},
+                            "initialDelaySeconds": 15, "periodSeconds": 10,
+                        },
+                        "livenessProbe": {
+                            "httpGet": {"path": "/api/health", "port": 3000},
+                            "initialDelaySeconds": 30, "periodSeconds": 30,
+                        },
+                        "volumeMounts": [
+                            {"name": "grafana-datasources",
+                             "mountPath": "/etc/grafana/provisioning/datasources", "readOnly": True},
+                            {"name": "grafana-dashboard-provisioning",
+                             "mountPath": "/etc/grafana/provisioning/dashboards", "readOnly": True},
+                            {"name": "grafana-dashboards",
+                             "mountPath": "/var/lib/grafana/dashboards", "readOnly": True},
+                            {"name": "grafana-storage", "mountPath": "/var/lib/grafana"},
+                        ],
+                    }],
+                    "volumes": [
+                        {"name": "grafana-datasources",
+                         "configMap": {"name": "grafana-datasources"}},
+                        {"name": "grafana-dashboard-provisioning",
+                         "configMap": {"name": "grafana-dashboard-provisioning"}},
+                        {"name": "grafana-dashboards",
+                         "configMap": {"name": "grafana-dashboards"}},
+                        {"name": "grafana-storage", "emptyDir": {}},
+                    ],
+                },
+            },
+        },
+    }
+    try:
+        apps_v1.create_namespaced_deployment(ns, deployment_body)
+    except k8s_client.ApiException as e:
+        if e.status == 409:
+            apps_v1.patch_namespaced_deployment("grafana", ns, deployment_body)
+        else:
+            raise
+
+    # Step 6: Apply Grafana Service
+    _apply_or_update_service(ns, k8s_client.V1Service(
+        metadata=k8s_client.V1ObjectMeta(
+            name="grafana", namespace=ns, labels={"app": "grafana"}
+        ),
+        spec=k8s_client.V1ServiceSpec(
+            type="ClusterIP",
+            ports=[k8s_client.V1ServicePort(port=3000, target_port=3000, name="http-grafana")],
+            selector={"app": "grafana"},
+        ),
+    ))
+
+    # Step 7: Apply Grafana Route (OpenShift CRD)
+    _apply_or_update_custom(
+        "route.openshift.io", "v1", "routes", ns,
+        {
+            "apiVersion": "route.openshift.io/v1",
+            "kind": "Route",
+            "metadata": {"name": "grafana", "namespace": ns, "labels": {"app": "grafana"}},
+            "spec": {
+                "to": {"kind": "Service", "name": "grafana"},
+                "port": {"targetPort": "http-grafana"},
+                "tls": {"termination": "edge", "insecureEdgeTerminationPolicy": "Redirect"},
+            },
+        },
+    )
+
+    # Step 8: Apply PodMonitor in infra namespace (covers all team Kafka pods)
+    _apply_or_update_custom(
+        "monitoring.coreos.com", "v1", "podmonitors", ns,
+        {
+            "apiVersion": "monitoring.coreos.com/v1",
+            "kind": "PodMonitor",
+            "metadata": {
+                "name": "kafka-all-teams-metrics",
+                "namespace": ns,
+                "labels": {"app": "kafka-monitoring"},
+            },
+            "spec": {
+                "namespaceSelector": {"any": True},
+                "selector": {"matchLabels": {"strimzi.io/kind": "Kafka"}},
+                "podMetricsEndpoints": [{
+                    "port": "tcp-prometheus",
+                    "path": "/metrics",
+                    "interval": "30s",
+                    "scheme": "http",
+                }],
+            },
+        },
+    )
+
+    # Step 9: Wait for Grafana rollout
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        try:
+            d = apps_v1.read_namespaced_deployment("grafana", ns)
+            if (d.status.ready_replicas or 0) >= 1:
+                break
+        except Exception:
+            pass
+        time.sleep(5)
+
+    # Step 10: Get Grafana URL
+    grafana_url = ""
+    try:
+        route = custom.get_namespaced_custom_object(
+            "route.openshift.io", "v1", ns, "routes", "grafana"
+        )
+        host = route.get("spec", {}).get("host", "")
+        if host:
+            grafana_url = f"https://{host}"
+    except Exception:
+        pass
+
+    return (
+        f"Grafana deployed in {ns}:\n"
+        f"  • Datasource, provisioning ConfigMaps applied\n"
+        f"  • Grafana Deployment, Service, Route applied\n"
+        f"  • PodMonitor (kafka-all-teams-metrics) applied\n"
+        + (f"  • URL: {grafana_url}\n" if grafana_url else "  • Route: oc get route grafana -n {ns}\n")
+        + "  ⚠️ Dashboards not loaded (requires internet). "
+        "Run `bash pipeline/ops.sh deploy-grafana` from a host with internet access to add dashboards."
+    )
+
+
+def cmd_monitoring_status(name: str, ns: str) -> str:
+    """Check JMX ConfigMap, Prometheus RBAC, PodMonitor, and Grafana pod status."""
+    lines = [f"*Monitoring status* — `{name}` / `{ns}`", ""]
+    ns_infra = settings.infra_namespace
+
+    # JMX ConfigMap
+    try:
+        core_v1.read_namespaced_config_map("kafka-metrics-config", ns)
+        lines.append("  ✅  JMX ConfigMap (kafka-metrics-config) present")
+    except k8s_client.ApiException as e:
+        if e.status == 404:
+            lines.append(f"  ❌  JMX ConfigMap missing — run: `/infra deploy-monitoring {name} {ns}`")
+        else:
+            lines.append(f"  ⚠️  ConfigMap check failed: {e}")
+
+    # Prometheus RBAC RoleBinding
+    try:
+        rbac_v1.read_namespaced_role_binding("prometheus-scrape", ns)
+        lines.append("  ✅  Prometheus RBAC (prometheus-scrape RoleBinding) present")
+    except k8s_client.ApiException as e:
+        if e.status == 404:
+            lines.append(f"  ❌  Prometheus RBAC missing — run: `/infra deploy-monitoring {name} {ns}`")
+        else:
+            lines.append(f"  ⚠️  RoleBinding check failed: {e}")
+
+    # Kafka CR metricsConfig
+    try:
+        kafka_cr = custom.get_namespaced_custom_object(
+            "kafka.strimzi.io", "v1beta2", ns, "kafkas", f"kafka-{name}"
+        )
+        metrics_type = (
+            kafka_cr.get("spec", {})
+            .get("kafka", {})
+            .get("metricsConfig", {})
+            .get("type", "")
+        )
+        if metrics_type == "jmxPrometheusExporter":
+            lines.append("  ✅  Kafka CR metricsConfig: jmxPrometheusExporter")
+        else:
+            lines.append(f"  ❌  Kafka CR metricsConfig not set — run: `/infra deploy-monitoring {name} {ns}`")
+    except k8s_client.ApiException as e:
+        lines.append(f"  ⚠️  Kafka CR check failed: {e}")
+
+    # PodMonitor in infra namespace
+    lines.append("")
+    try:
+        custom.get_namespaced_custom_object(
+            "monitoring.coreos.com", "v1", ns_infra, "podmonitors", "kafka-all-teams-metrics"
+        )
+        lines.append(f"  ✅  PodMonitor (kafka-all-teams-metrics) present in {ns_infra}")
+    except k8s_client.ApiException as e:
+        if e.status == 404:
+            lines.append(f"  ❌  PodMonitor missing in {ns_infra} — run: `/infra deploy-grafana`")
+        else:
+            lines.append(f"  ⚠️  PodMonitor check failed: {e}")
+
+    # Grafana pod
+    try:
+        pods = core_v1.list_namespaced_pod(
+            ns_infra, label_selector="app=grafana"
+        ).items
+        if pods:
+            pod = pods[0]
+            icon, detail = _pod_icon(pod)
+            lines.append(f"  {icon}  Grafana pod: {pod.metadata.name} ({detail})")
+        else:
+            lines.append(f"  ❌  Grafana pod not found — run: `/infra deploy-grafana`")
+    except Exception as e:
+        lines.append(f"  ⚠️  Grafana pod check failed: {e}")
+
+    # Grafana URL
+    try:
+        route = custom.get_namespaced_custom_object(
+            "route.openshift.io", "v1", ns_infra, "routes", "grafana"
+        )
+        host = route.get("spec", {}).get("host", "")
+        if host:
+            lines.append(f"  🔗  Grafana: https://{host}")
+    except Exception:
+        pass
+
+    # Kafka Console pod
+    try:
+        console_pods = core_v1.list_namespaced_pod(
+            ns_infra, label_selector="app.kubernetes.io/name=console"
+        ).items
+        if console_pods:
+            pod = console_pods[0]
+            icon, detail = _pod_icon(pod)
+            lines.append(f"  {icon}  Kafka Console pod: {pod.metadata.name} ({detail})")
+        else:
+            lines.append(f"  ❌  Kafka Console pod not found — run: `/infra deploy-console`")
+    except Exception as e:
+        lines.append(f"  ⚠️  Console pod check failed: {e}")
+
+    # Kafka Console URL
+    try:
+        console_routes = custom.list_namespaced_custom_object(
+            "route.openshift.io", "v1", ns_infra, "routes",
+            label_selector="app.kubernetes.io/name=console",
+        )
+        for r in console_routes.get("items", []):
+            host = r.get("spec", {}).get("host", "")
+            if host:
+                lines.append(f"  🔗  Kafka Console: https://{host}")
+                break
+    except Exception:
+        pass
+
+    return "\n".join(lines)
+
+
 HELP_TEXT = """\
 *Available commands* (`/infra <command> [args]`):
 
@@ -1771,6 +2329,11 @@ HELP_TEXT = """\
   `run-reset`         Trigger reset-and-deploy pipeline
   `pipeline-status`   Show last 5 PipelineRuns
   `cleanup-runs`      Delete old PipelineRuns (keep newest 3)
+
+*Observability*
+  `deploy-monitoring <name> <ns>`   Apply JMX ConfigMap + Prometheus RBAC + patch Kafka CR
+  `deploy-grafana`                  Deploy Grafana pod, datasource, and PodMonitor
+  `monitoring-status <name> <ns>`   Check JMX ConfigMap, PodMonitor, Grafana and Console pods
 
 *Config sync*
   `export-config`     Print team registry as config.env block (includes passwords from cluster)
