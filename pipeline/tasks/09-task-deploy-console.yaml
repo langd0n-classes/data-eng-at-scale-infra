@@ -1,0 +1,330 @@
+# Task: deploy-console
+#
+# One-time task that installs the Streams for Apache Kafka Console operator
+# and deploys a Console CR pointing to all active team Kafka clusters.
+# Runs once in the pipeline after deploy-grafana completes.
+#
+# What it does:
+#   Step 1 (install-operator):  applies OLM Subscription for the console operator
+#   Step 2 (wait-for-operator): waits for the operator CSV to reach Succeeded
+#   Step 3 (deploy-console-cr): generates Console CR from active team params and applies it
+#   Step 4 (wait-for-console):  waits for the console pod to start
+#   Step 5 (print-url):         prints the console Route URL
+#
+# Console CR uses apiVersion: console.streamshub.github.com/v1alpha1 / kind: Console.
+# kafkaClusters reference Strimzi Kafka CRs by name+namespace+listener (not bootstrap URLs).
+# listener name must match kafka-cr-template.yaml — it is "plain".
+#
+# Variables substituted via envsubst (source config.env first):
+#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE
+#   ${OC_CLI_IMAGE}     — config.env: OC_CLI_IMAGE
+#
+# Apply with:
+#   source config.env && envsubst '${INFRA_NAMESPACE} ${OC_CLI_IMAGE}' \
+#     < pipeline/tasks/09-task-deploy-console.yaml | oc apply -f -
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-console
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: tekton-pipeline
+    component: monitoring
+spec:
+  description: |
+    Installs the Kafka Console operator via OLM and deploys a Console CR
+    that references all active team Kafka clusters. The console provides live
+    topic, message, and consumer group visibility for the instructor.
+
+  params:
+    - name: infra-namespace
+      description: "Namespace where the Console CR will be created"
+      type: string
+      default: "infra"
+
+    # Active team params — non-skip teams are included in the Console CR
+    - name: team1-name
+      type: string
+      default: skip
+    - name: team1-namespace
+      type: string
+      default: skip
+    - name: team2-name
+      type: string
+      default: skip
+    - name: team2-namespace
+      type: string
+      default: skip
+    - name: team3-name
+      type: string
+      default: skip
+    - name: team3-namespace
+      type: string
+      default: skip
+    - name: team4-name
+      type: string
+      default: skip
+    - name: team4-namespace
+      type: string
+      default: skip
+    - name: team5-name
+      type: string
+      default: skip
+    - name: team5-namespace
+      type: string
+      default: skip
+    - name: team6-name
+      type: string
+      default: skip
+    - name: team6-namespace
+      type: string
+      default: skip
+    - name: team7-name
+      type: string
+      default: skip
+    - name: team7-namespace
+      type: string
+      default: skip
+    - name: team8-name
+      type: string
+      default: skip
+    - name: team8-namespace
+      type: string
+      default: skip
+    - name: team9-name
+      type: string
+      default: skip
+    - name: team9-namespace
+      type: string
+      default: skip
+    - name: team10-name
+      type: string
+      default: skip
+    - name: team10-namespace
+      type: string
+      default: skip
+    - name: team11-name
+      type: string
+      default: skip
+    - name: team11-namespace
+      type: string
+      default: skip
+    - name: team12-name
+      type: string
+      default: skip
+    - name: team12-namespace
+      type: string
+      default: skip
+    - name: team13-name
+      type: string
+      default: skip
+    - name: team13-namespace
+      type: string
+      default: skip
+    - name: team14-name
+      type: string
+      default: skip
+    - name: team14-namespace
+      type: string
+      default: skip
+    - name: team15-name
+      type: string
+      default: skip
+    - name: team15-namespace
+      type: string
+      default: skip
+
+  workspaces:
+    - name: source
+      description: Git repository root containing monitoring/ manifests
+
+  steps:
+    # Step 1: Apply OLM Subscription to install the Kafka Console operator
+    - name: install-operator
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        WORKSPACE="$(workspaces.source.path)"
+
+        echo "Applying Kafka Console operator Subscription..."
+        oc apply -f "${WORKSPACE}/monitoring/console/01-kafka-console-subscription.yaml"
+
+        echo "Subscription applied — operator installation starting."
+
+    # Step 2: Wait for the operator ClusterServiceVersion to reach Succeeded
+    - name: wait-for-operator
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        echo "Waiting for Kafka Console operator CSV to reach Succeeded..."
+        echo "(First install may take 2-5 minutes — operator image must be pulled)"
+
+        for i in $(seq 1 60); do
+          STATUS=$(oc get csv -n openshift-operators \
+            --no-headers 2>/dev/null | grep -i console | grep -i "Succeeded" | head -1 || echo "")
+          if [ -n "${STATUS}" ]; then
+            echo "Operator installed: ${STATUS}"
+            exit 0
+          fi
+          echo "  attempt ${i}/60 — waiting 10s..."
+          sleep 10
+        done
+
+        echo "ERROR: Console operator CSV did not reach Succeeded after 600s"
+        echo "Current CSVs:"
+        oc get csv -n openshift-operators 2>/dev/null || true
+        exit 1
+
+    # Step 3: Generate Console CR from active team params and apply it
+    # The CR references Kafka CRs by name+namespace+listener (Strimzi-native, not bootstrap URLs).
+    # listener "plain" matches the listener name in kafka-cr-template.yaml.
+    - name: deploy-console-cr
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        INFRA_NS="$(params.infra-namespace)"
+
+        # Build kafkaClusters YAML from non-skip team params
+        KAFKA_CLUSTERS=""
+        set -- \
+          "$(params.team1-name)"  "$(params.team1-namespace)" \
+          "$(params.team2-name)"  "$(params.team2-namespace)" \
+          "$(params.team3-name)"  "$(params.team3-namespace)" \
+          "$(params.team4-name)"  "$(params.team4-namespace)" \
+          "$(params.team5-name)"  "$(params.team5-namespace)" \
+          "$(params.team6-name)"  "$(params.team6-namespace)" \
+          "$(params.team7-name)"  "$(params.team7-namespace)" \
+          "$(params.team8-name)"  "$(params.team8-namespace)" \
+          "$(params.team9-name)"  "$(params.team9-namespace)" \
+          "$(params.team10-name)" "$(params.team10-namespace)" \
+          "$(params.team11-name)" "$(params.team11-namespace)" \
+          "$(params.team12-name)" "$(params.team12-namespace)" \
+          "$(params.team13-name)" "$(params.team13-namespace)" \
+          "$(params.team14-name)" "$(params.team14-namespace)" \
+          "$(params.team15-name)" "$(params.team15-namespace)"
+
+        while [ $# -gt 0 ]; do
+          name="$1"; ns="$2"; shift 2
+          [ "$name" = "skip" ] || [ "$ns" = "skip" ] && continue
+          KAFKA_CLUSTERS="${KAFKA_CLUSTERS}
+            - name: kafka-${name}
+              namespace: ${ns}
+              listener: plain
+              metricsSource: openshift-monitoring"
+        done
+
+        if [ -z "${KAFKA_CLUSTERS}" ]; then
+          echo "No active teams — skipping Console CR creation."
+          exit 0
+        fi
+
+        echo "Deploying Console CR for active teams..."
+
+        cat <<EOF | oc apply -f -
+        apiVersion: console.streamshub.github.com/v1alpha1
+        kind: Console
+        metadata:
+          name: kafka-console
+          namespace: ${INFRA_NS}
+          labels:
+            app: kafka-console
+        spec:
+          metricsSources:
+            - name: openshift-monitoring
+              type: standalone
+              url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
+          kafkaClusters:${KAFKA_CLUSTERS}
+        EOF
+
+        echo "Console CR applied."
+
+    # Step 4: Wait for console pod to start
+    - name: wait-for-console
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+      script: |
+        #!/bin/bash
+
+        INFRA_NS="$(params.infra-namespace)"
+
+        echo "Waiting for console pod to start (up to 120s)..."
+        for i in $(seq 1 24); do
+          RUNNING=$(oc get pods -n "${INFRA_NS}" \
+            -l "app.kubernetes.io/name=console" \
+            --no-headers 2>/dev/null | grep "Running" | head -1 || echo "")
+          if [ -n "${RUNNING}" ]; then
+            echo "Console pod running: ${RUNNING}"
+            exit 0
+          fi
+          echo "  attempt ${i}/24 — waiting 5s..."
+          sleep 5
+        done
+
+        echo "WARNING: Console pod not Running after 120s — check: oc get pods -n ${INFRA_NS}"
+
+    # Step 5: Print Kafka Console URL for the instructor
+    - name: print-url
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+      script: |
+        #!/bin/bash
+
+        INFRA_NS="$(params.infra-namespace)"
+
+        CONSOLE_HOST=$(oc get route -n "${INFRA_NS}" \
+          -l "app.kubernetes.io/name=console" \
+          -o jsonpath='{.items[0].spec.host}' 2>/dev/null || echo "")
+
+        echo ""
+        echo "=========================================="
+        echo " Kafka Console deployed!"
+        echo "=========================================="
+        echo ""
+        if [ -n "${CONSOLE_HOST}" ]; then
+          echo "  URL: https://${CONSOLE_HOST}"
+        else
+          echo "  Route: oc get route -n ${INFRA_NS}"
+        fi
+        echo ""
+        echo "Shows live topics, messages, and consumer group lag for all teams."
+        echo ""
