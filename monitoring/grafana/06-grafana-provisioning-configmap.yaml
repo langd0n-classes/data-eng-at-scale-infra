@@ -1,0 +1,28 @@
+# Grafana dashboard provisioning config — tells Grafana where to load dashboards.
+#
+# Grafana polls /var/lib/grafana/dashboards every 30 seconds for JSON files.
+# The dashboards ConfigMap (grafana-dashboards) is mounted at that path.
+# Strimzi dashboard JSONs are fetched via curl at deploy time by Task 08 and
+# stored in the grafana-dashboards ConfigMap — not committed to this repo.
+#
+# Variables: ${INFRA_NAMESPACE}
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provisioning
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: grafana
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: strimzi
+        orgId: 1
+        folder: "Strimzi"
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards

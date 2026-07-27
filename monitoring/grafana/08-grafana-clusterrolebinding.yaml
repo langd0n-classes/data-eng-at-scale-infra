@@ -1,0 +1,24 @@
+# Grants grafana-sa read-only access to Prometheus metrics via thanos-querier.
+#
+# cluster-monitoring-view is a built-in OpenShift ClusterRole that allows
+# GET requests to the thanos-querier metrics API — nothing else.
+# Applied by developer user (cluster-admin) — no kubeadmin needed.
+# Same pattern as pipeline/rbac/02-clusterrolebinding.yaml applied by setup.sh.
+#
+# Variables: ${INFRA_NAMESPACE}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grafana-cluster-monitoring-view
+  labels:
+    app: grafana
+subjects:
+  - kind: ServiceAccount
+    name: grafana-sa
+    namespace: ${INFRA_NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view

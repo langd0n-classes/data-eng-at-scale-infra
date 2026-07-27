@@ -1,0 +1,97 @@
+# Grafana Deployment — instructor-only historical metrics dashboard.
+#
+# Runs as grafana-sa (cluster-monitoring-view only — least privilege).
+# Admin password is read from the grafana-admin-secret Secret created by Task 08.
+#
+# Mounted volumes:
+#   grafana-datasources          → /etc/grafana/provisioning/datasources/
+#   grafana-dashboard-provisioning → /etc/grafana/provisioning/dashboards/
+#   grafana-dashboards           → /var/lib/grafana/dashboards/
+#   grafana-storage (emptyDir)   → /var/lib/grafana/ (writable, cleared on restart)
+#
+# Variables: ${INFRA_NAMESPACE}, ${GRAFANA_IMAGE}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      serviceAccountName: grafana-sa
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: grafana
+          image: ${GRAFANA_IMAGE}
+          ports:
+            - containerPort: 3000
+              name: http-grafana
+              protocol: TCP
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin-secret
+                  key: password
+            - name: GF_PATHS_PROVISIONING
+              value: /etc/grafana/provisioning
+            - name: GF_PATHS_DATA
+              value: /var/lib/grafana
+            - name: GF_LOG_LEVEL
+              value: warn
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - name: grafana-datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+            - name: grafana-dashboard-provisioning
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+            - name: grafana-dashboards
+              mountPath: /var/lib/grafana/dashboards
+              readOnly: true
+            - name: grafana-storage
+              mountPath: /var/lib/grafana
+      volumes:
+        - name: grafana-datasources
+          configMap:
+            name: grafana-datasources
+        - name: grafana-dashboard-provisioning
+          configMap:
+            name: grafana-dashboard-provisioning
+        - name: grafana-dashboards
+          configMap:
+            name: grafana-dashboards
+        - name: grafana-storage
+          emptyDir: {}
