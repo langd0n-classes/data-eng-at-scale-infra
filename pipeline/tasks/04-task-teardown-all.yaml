@@ -189,6 +189,9 @@ spec:
           oc delete kafkanodepool dual-role -n "$ns" --ignore-not-found
           # Delete Strimzi-created PVCs — must delete or re-add crashes with cluster.id mismatch
           oc delete pvc -l "strimzi.io/cluster=kafka-${name}" -n "$ns" --ignore-not-found
+          # Clean up per-team monitoring resources applied by deploy-monitoring task
+          oc delete configmap kafka-metrics-config -n "$ns" --ignore-not-found
+          oc delete rolebinding prometheus-scrape -n "$ns" --ignore-not-found
         done
 
         echo ""

@@ -210,6 +210,14 @@ spec:
     - name: admin-channel-id
       value: "${ADMIN_CHANNEL_ID}"
 
+    # ── Observability ────────────────────────────────────────────────────────
+    - name: grafana-image
+      value: "${GRAFANA_IMAGE}"
+    - name: grafana-admin-password
+      value: "${GRAFANA_ADMIN_PASSWORD}"
+    - name: strimzi-version
+      value: "${STRIMZI_VERSION}"
+
   workspaces:
     - name: shared-data
       volumeClaimTemplate:

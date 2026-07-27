@@ -157,6 +157,13 @@ else
   info "Step 4 — RBAC (skipped)"
 fi
 
+# ── Step 4b: Enable OpenShift User Workload Monitoring ─────────────────────────
+if [[ "$SKIP_RBAC" == "false" ]]; then
+  info "Step 4b — Enabling OpenShift User Workload Monitoring..."
+  run "oc apply -f '${REPO_ROOT}/monitoring/01-cluster-monitoring-config.yaml'"
+  ok "User Workload Monitoring enabled (allow 2-3 min for pods to start)"
+fi
+
 # ── Step 5: Apply Tasks and Pipelines ──────────────────────────────────────────
 if [[ "$SKIP_TASKS" == "false" ]]; then
   echo ""
