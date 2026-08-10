@@ -30,7 +30,7 @@ metadata:
   namespace: ${INFRA_NAMESPACE}
   labels:
     app: tekton-pipeline
-    component: monitoring
+    component: console
 spec:
   description: |
     Installs the Kafka Console operator via OLM and deploys a Console CR
@@ -156,10 +156,13 @@ spec:
 
         WORKSPACE="$(workspaces.source.path)"
 
-        echo "Applying Kafka Console operator Subscription..."
-        oc apply -f "${WORKSPACE}/monitoring/console/01-kafka-console-subscription.yaml"
-
-        echo "Subscription applied — operator installation starting."
+        if oc get crd consoles.console.streamshub.github.com &>/dev/null; then
+          echo "Console operator already installed — skipping Subscription."
+        else
+          echo "Applying OLM Subscription (requires cluster-admin)..."
+          oc apply -f "${WORKSPACE}/monitoring/console/01-kafka-console-subscription.yaml" || \
+            echo "WARNING: Subscription failed — ask cluster admin to pre-install Streams for Apache Kafka Console operator."
+        fi
 
     # Step 2: Wait for the operator ClusterServiceVersion to reach Succeeded
     - name: wait-for-operator
@@ -237,8 +240,7 @@ spec:
           KAFKA_CLUSTERS="${KAFKA_CLUSTERS}
             - name: kafka-${name}
               namespace: ${ns}
-              listener: plain
-              metricsSource: openshift-monitoring"
+              listener: plain"
         done
 
         if [ -z "${KAFKA_CLUSTERS}" ]; then
@@ -257,10 +259,6 @@ spec:
           labels:
             app: kafka-console
         spec:
-          metricsSources:
-            - name: openshift-monitoring
-              type: standalone
-              url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
           kafkaClusters:${KAFKA_CLUSTERS}
         EOF
 

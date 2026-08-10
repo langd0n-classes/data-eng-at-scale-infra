@@ -1,180 +1,163 @@
-# Kafka Observability Stack
+# Kafka Console
 
-Instructor-facing monitoring for all team Kafka clusters. Students are not given
-access to these dashboards — they debug using `oc` CLI from their team namespaces.
+Instructor-facing live visibility into all team Kafka clusters. Students are not given
+access — they debug using `oc` CLI from their team namespaces.
 
-## Two Tools
+## What It Shows
 
-| Tool | What it shows | When to use |
-|------|---------------|-------------|
-| **Grafana** | Historical time-series: throughput trends, GC pressure, lag over time | After class, long-running analysis |
-| **Kafka Console** | Live state: topics right now, messages right now, consumer group lag right now | During class, live debugging |
+- **Topics** — partition count, message count, retention settings
+- **Messages** — browse messages live within any topic
+- **Consumer Groups** — which groups are active and their current offsets
+- **Consumer Lag** — per-partition lag derived from Kafka's own offset data (no Prometheus needed)
 
-Both are deployed in the `infra` namespace. Routes are instructor-only.
+All data comes directly from Kafka's internal offset state via the Strimzi operator —
+no metrics pipeline or Prometheus required.
 
-## Architecture
+## Operator Installation
 
+The Kafka Console is provided by the **Streams for Apache Kafka Console** operator.
+Installation depends on the cluster environment:
+
+### Self-managed cluster (kubeadmin available)
+
+Apply the OLM Subscription, or install via OperatorHub UI:
+
+```bash
+oc apply -f monitoring/console/01-kafka-console-subscription.yaml
 ```
-Kafka pod (JMX Exporter sidecar, port 9404) [team-01, team-02, ...]
-  → PodMonitor (infra namespace, any: true — auto-picks up new teams)
-  → OpenShift User Workload Prometheus (openshift-user-workload-monitoring)
-  → thanos-querier (openshift-monitoring:9091)
-  → Grafana (infra namespace) — all teams on one screen
 
-Kafka CRs [team-01, team-02, ...] (referenced by name, not bootstrap URL)
-  → Kafka Console (infra namespace) — live state via operator
-```
+### Managed cluster (no kubeadmin)
 
-## Prerequisites
-
-OpenShift User Workload Monitoring must be enabled. `pipeline/setup.sh` does
-this automatically by applying `monitoring/01-cluster-monitoring-config.yaml`.
-
-No `kubeadmin` is required. Developer user with `cluster-admin` handles everything —
-same as existing RBAC in `pipeline/rbac/` applied by `setup.sh`.
+Ask the cluster admin to install the **Streams for Apache Kafka Console** operator
+from OperatorHub with install mode **All namespaces**. Once installed, all the steps
+below work with developer access only.
 
 ## Deployment
 
-### Primary: Tekton (auto, runs with `bash pipeline/setup.sh`)
+### Via Tekton (runs automatically with `bash pipeline/setup.sh`)
 
-The full observability stack deploys automatically during the normal pipeline run:
+The console deploys after all NiFi instances are up:
 
 ```
-deploy-kafka-teamN → deploy-monitoring-teamN → deploy-nifi-teamN
-                     ↓ (after all teams)
-                 deploy-grafana → deploy-console
+deploy-nifi-team1..15 → deploy-console
 ```
 
-### Fallback: ops.sh (no Tekton needed)
+### Via ops.sh (no Tekton needed)
 
 ```bash
 source config.env
-
-# Enable UWM (one-time, already done by setup.sh)
-oc apply -f monitoring/01-cluster-monitoring-config.yaml
-
-# Per team: apply JMX ConfigMap + Prometheus RBAC + patch Kafka CR
-bash pipeline/ops.sh deploy-monitoring team01 team-01
-bash pipeline/ops.sh deploy-monitoring team02 team-02
-
-# One-time: deploy Grafana to infra
-bash pipeline/ops.sh deploy-grafana
-
-# One-time: deploy Kafka Console to infra
 bash pipeline/ops.sh deploy-console
 ```
 
-### All teams at once (ops.sh)
+### Check status
 
 ```bash
-bash pipeline/ops.sh deploy-monitoring-all
+bash pipeline/ops.sh console-status
 ```
 
-### ChatOps (Slack)
-
-```
-/infra deploy-monitoring team01 team-01
-/infra deploy-grafana
-/infra monitoring-status team01 team-01
-```
-
-## Accessing Grafana
+## Accessing the Console
 
 ```bash
 # Get the URL
-oc get route grafana -n infra -o jsonpath='{.spec.host}'
-
-# Login: admin / value of GRAFANA_ADMIN_PASSWORD from config.env
+oc get route -n infra -l app.kubernetes.io/name=console -o jsonpath='{.items[0].spec.host}'
 ```
 
-Dashboards loaded automatically:
-- **Strimzi Kafka** — broker throughput, log size, KRaft controller state
-- **Strimzi Kafka Exporter** — consumer group lag (requires kafkaExporter on Kafka CR)
-- **Strimzi Operators** — Strimzi cluster operator reconciliation metrics
+Open `https://<host>` in a browser. All active team Kafka clusters appear in the sidebar.
 
-Note: ZooKeeper panels show "No data" — this is expected (KRaft mode, no ZooKeeper).
+## Self-Healing
 
-## Accessing Kafka Console
+Strimzi automatically restarts crashed Kafka broker pods. The operator monitors the
+KafkaNodePool and recreates pods that fail liveness or readiness probes.
+
+### Probe settings (kafka-cr-template.yaml)
+
+| Probe | Initial delay | Period | Timeout | Failure threshold |
+|-------|--------------|--------|---------|-------------------|
+| Liveness | 30s | 10s | 5s | 3 |
+| Readiness | 20s | 10s | 5s | 3 |
+
+A broker is restarted after 3 consecutive probe failures (~30s of unresponsiveness).
+
+### PodDisruptionBudget
+
+Each team has a PDB (`maxUnavailable: 1`) that ensures at most one broker is
+unavailable at a time during voluntary disruptions (node drain, rolling restarts).
+
+### Verify self-healing
 
 ```bash
-# Get the URL
-oc get route -n infra | grep console
+# Delete the broker pod — Strimzi recreates it automatically
+bash scripts/verify-self-healing.sh team01 team-01
+# Expected output: "Recovery time: N seconds" where N is typically < 60
 ```
 
-Shows all team Kafka clusters. Click a team → Topics → see messages and consumer groups live.
+## Slack Alerting
 
-## Key PromQL Queries (Grafana Explore)
+The ChatOps server polls Kafka broker restart counts every 60 seconds. When a broker
+restarts 4 or more times within a 10-minute window, an alert is posted to the admin
+Slack channel.
 
-```promql
-# Messages per second per team
-rate(kafka_server_brokertopicmetrics_messagesinpersec_rate{namespace="team-01"}[5m])
+### Prerequisites
 
-# Consumer group lag
-kafka_consumergroup_lag{namespace="team-01"}
+Add a Slack bot token (`xoxb-...`) to the existing `slack-credentials` Secret:
 
-# JVM heap usage
-jvm_memory_heap_used_bytes{namespace="team-01"} / jvm_memory_heap_max_bytes{namespace="team-01"}
-
-# Active controller (should always be 1)
-kafka_controller_kafkacontroller_activecontrollercount{namespace="team-01"}
+```bash
+oc create secret generic slack-credentials \
+  --from-literal=signing-secret=<existing-value> \
+  --from-literal=bot-token=xoxb-... \
+  -n infra --dry-run=client -o yaml | oc apply -f -
 ```
+
+If the bot token is missing or empty, the alerting loop starts but stays silent — no
+alerts are sent and the rest of ChatOps is unaffected.
+
+### Alert format
+
+```
+:rotating_light: *Kafka broker crash-loop detected*
+• *Namespace*: `team-01`
+• *Pod*: `kafka-team01-dual-role-0`
+• *Restarts*: +5 in last 10 minutes (total: 12)
+• *Action*: Run `/infra status team01 team-01` to investigate
+```
+
+### Tuning
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `ALERT_RESTART_THRESHOLD` | `4` | Restart delta that triggers an alert |
+| `ALERT_WINDOW_MINUTES` | `10` | Rolling window for counting restarts |
+
+Alerts for the same pod are suppressed for 300 seconds after firing to avoid spam
+during a sustained crash-loop.
 
 ## Troubleshooting
 
-### Grafana shows "No data"
-
-```bash
-# 1. Check UWM is running
-oc get pods -n openshift-user-workload-monitoring
-
-# 2. Check JMX exporter is running on Kafka pod
-oc exec kafka-team01-dual-role-0 -n team-01 -- curl -s http://localhost:9404/metrics | head -5
-
-# 3. Check PodMonitor exists
-oc get podmonitor kafka-all-teams-metrics -n infra
-
-# 4. Check Prometheus RBAC in team namespace
-oc get rolebinding prometheus-scrape -n team-01
-
-# 5. Port-forward to Prometheus and check targets
-oc port-forward -n openshift-user-workload-monitoring pod/prometheus-user-workload-0 9090:9090
-# Open http://localhost:9090/targets — look for infra/kafka-all-teams-metrics
-```
-
-### Kafka Console shows no clusters
+### Console shows no clusters
 
 ```bash
 # Check Console CR status
 oc get console kafka-console -n infra -o yaml | grep -A 10 status
 
 # Check console pod logs
-oc logs -n infra deployment/kafka-console 2>/dev/null || \
-  oc logs -n infra $(oc get pod -n infra -l app.kubernetes.io/name=console -o name | head -1)
+oc logs -n infra -l app.kubernetes.io/name=console
 ```
 
-### New team not appearing in Grafana
+### Console pod not starting
 
-New teams are picked up automatically by the PodMonitor (`namespaceSelector: any: true`).
-After running `ops.sh deploy-monitoring <name> <ns>`, allow 2-3 minutes for the first
-Prometheus scrape to complete. Then the team's metrics appear in Grafana.
+```bash
+# Check operator is installed
+oc get csv -n openshift-operators | grep -i console
+
+# Check CRD exists
+oc get crd consoles.console.streamshub.github.com
+```
 
 ## Files
 
 ```
 monitoring/
-  01-cluster-monitoring-config.yaml    Enable OpenShift User Workload Monitoring
-  kafka/
-    kafka-jmx-configmap-template.yaml  JMX rules ConfigMap (applied per team namespace)
-    kafka-prometheus-rbac-template.yaml RoleBinding for cross-namespace scraping
-    kafka-podmonitor.yaml              PodMonitor covering all team namespaces
-  grafana/
-    01-grafana-deployment.yaml         Grafana Deployment
-    02-grafana-service.yaml            Grafana Service
-    03-grafana-route.yaml              Grafana Route (instructor only)
-    04-grafana-datasource-configmap.yaml thanos-querier datasource (token injected at deploy)
-    06-grafana-provisioning-configmap.yaml Dashboard auto-discovery config
-    07-grafana-sa.yaml                 grafana-sa ServiceAccount + token Secret
-    08-grafana-clusterrolebinding.yaml cluster-monitoring-view only (least privilege)
   console/
-    01-kafka-console-subscription.yaml OLM Subscription for Kafka Console operator
+    01-kafka-console-subscription.yaml   OLM Subscription (cluster-admin required)
+  README.md                              This file
 ```

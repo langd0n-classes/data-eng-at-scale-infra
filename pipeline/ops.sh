@@ -982,8 +982,7 @@ _do_deploy_console() {
     kafka_clusters+="
     - name: kafka-${tname}
       namespace: ${tns}
-      listener: plain
-      metricsSource: openshift-monitoring"
+      listener: plain"
   done
 
   if [[ -z "${kafka_clusters}" ]]; then
@@ -1003,10 +1002,6 @@ metadata:
   labels:
     app: kafka-console
 spec:
-  metricsSources:
-    - name: openshift-monitoring
-      type: standalone
-      url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
   kafkaClusters:${kafka_clusters}
 EOF
   run "oc apply -f '${tmpfile}'"
@@ -1042,6 +1037,30 @@ EOF
 cmd_deploy_console() {
   _do_deploy_console
   ok "Kafka Console deployed in ${INFRA_NAMESPACE}"
+}
+
+cmd_console_status() {
+  info "Kafka Console status in ${INFRA_NAMESPACE}"
+
+  local pod_line
+  pod_line=$(oc get pods -n "${INFRA_NAMESPACE}" \
+    -l "app.kubernetes.io/name=console" \
+    --no-headers 2>/dev/null | head -1 || echo "")
+  if [[ -n "${pod_line}" ]]; then
+    ok "Console pod: ${pod_line}"
+  else
+    warn "No console pod found — run: bash pipeline/ops.sh deploy-console"
+  fi
+
+  local host
+  host=$(oc get route -n "${INFRA_NAMESPACE}" \
+    -l "app.kubernetes.io/name=console" \
+    -o jsonpath='{.items[0].spec.host}' 2>/dev/null || echo "")
+  if [[ -n "${host}" ]]; then
+    ok "Console URL: https://${host}"
+  else
+    warn "No console route found yet"
+  fi
 }
 
 cmd_help() {
@@ -1126,6 +1145,7 @@ case "$COMMAND" in
   status)               cmd_status              "${ARGS[@]}" ;;
   status-all)           cmd_status_all ;;
   deploy-console)       cmd_deploy_console ;;
+  console-status)       cmd_console_status ;;
   help|--help|-h)       cmd_help ;;
   *)
     err "Unknown command: ${COMMAND}"
