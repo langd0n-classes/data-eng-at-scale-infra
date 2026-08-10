@@ -78,6 +78,16 @@ spec:
       log.segment.bytes: 52428800          # 50MB segment size
       log.cleanup.policy: delete
       log.retention.check.interval.ms: 300000  # Check every 5 minutes
+    livenessProbe:
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readinessProbe:
+      initialDelaySeconds: 20
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
   entityOperator:
     topicOperator: {}
     userOperator: {}
