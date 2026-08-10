@@ -16,10 +16,7 @@ rules:
     verbs: ["get", "list", "delete", "deletecollection"]
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "list", "create", "update", "patch", "delete"]
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "delete"]
   - apiGroups: ["apps"]
     resources: ["deployments", "deployments/scale"]
     verbs: ["get", "list", "patch", "delete"]
@@ -41,14 +38,6 @@ rules:
   - apiGroups: ["build.openshift.io"]
     resources: ["buildconfigs"]
     verbs: ["get", "list", "delete"]
-  # Prometheus monitoring CRs — required for deploy-monitoring (PodMonitor status) and deploy-grafana
-  - apiGroups: ["monitoring.coreos.com"]
-    resources: ["podmonitors", "servicemonitors"]
-    verbs: ["get", "list", "create", "update", "patch", "delete"]
-  # RBAC for per-team Prometheus scraping — required for deploy-monitoring
-  - apiGroups: ["rbac.authorization.k8s.io"]
-    resources: ["rolebindings"]
-    verbs: ["get", "list", "create", "update", "patch"]
   # Kafka operator CRs (Strimzi) — required for add-kafka, remove-kafka, restart-kafka, wipe-kafka-data
   - apiGroups: ["kafka.strimzi.io"]
     resources:

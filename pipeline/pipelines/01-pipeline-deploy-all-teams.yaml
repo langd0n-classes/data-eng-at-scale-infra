@@ -215,17 +215,6 @@ spec:
       type: string
       default: "Boston,NYC,Chicago,Seattle,Austin"
 
-    # ── Observability (Grafana + Kafka Console) ───────────────────────────────
-    - name: grafana-image
-      type: string
-      default: "docker.io/grafana/grafana:11.1.0"
-    - name: grafana-admin-password
-      type: string
-      default: "changeme-grafana"
-    - name: strimzi-version
-      type: string
-      default: "0.51.0"
-
     # ── ChatOps ──────────────────────────────────────────────────────────────
     - name: chatops-enabled
       type: string
@@ -547,265 +536,9 @@ spec:
         - name: source
           workspace: shared-data
 
-    # ── Deploy monitoring — one task per team, runAfter its own kafka task ──────
-    - name: deploy-monitoring-team1
-      runAfter: [deploy-kafka-team1]
-      when:
-        - input: "$(params.team1-name)"
-          operator: notin
-          values: ["skip"]
-      taskRef:
-        name: deploy-monitoring
-      params:
-        - name: team-name
-          value: $(params.team1-name)
-        - name: team-namespace
-          value: $(params.team1-namespace)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
-    - name: deploy-monitoring-team2
-      runAfter: [deploy-kafka-team2]
-      when:
-        - input: "$(params.team2-name)"
-          operator: notin
-          values: ["skip"]
-      taskRef:
-        name: deploy-monitoring
-      params:
-        - name: team-name
-          value: $(params.team2-name)
-        - name: team-namespace
-          value: $(params.team2-namespace)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
-    - name: deploy-monitoring-team3
-      runAfter: [deploy-kafka-team3]
-      when:
-        - input: "$(params.team3-name)"
-          operator: notin
-          values: ["skip"]
-      taskRef:
-        name: deploy-monitoring
-      params:
-        - name: team-name
-          value: $(params.team3-name)
-        - name: team-namespace
-          value: $(params.team3-namespace)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
-    - name: deploy-monitoring-team4
-      runAfter: [deploy-kafka-team4]
-      when:
-        - input: "$(params.team4-name)"
-          operator: notin
-          values: ["skip"]
-      taskRef:
-        name: deploy-monitoring
-      params:
-        - name: team-name
-          value: $(params.team4-name)
-        - name: team-namespace
-          value: $(params.team4-namespace)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
-    - name: deploy-monitoring-team5
-      runAfter: [deploy-kafka-team5]
-      when:
-        - input: "$(params.team5-name)"
-          operator: notin
-          values: ["skip"]
-      taskRef:
-        name: deploy-monitoring
-      params:
-        - name: team-name
-          value: $(params.team5-name)
-        - name: team-namespace
-          value: $(params.team5-namespace)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
-    - name: deploy-monitoring-team6
-      runAfter: [deploy-kafka-team6]
-      when:
-        - input: "$(params.team6-name)"
-          operator: notin
-          values: ["skip"]
-      taskRef:
-        name: deploy-monitoring
-      params:
-        - name: team-name
-          value: $(params.team6-name)
-        - name: team-namespace
-          value: $(params.team6-namespace)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
-    - name: deploy-monitoring-team7
-      runAfter: [deploy-kafka-team7]
-      when:
-        - input: "$(params.team7-name)"
-          operator: notin
-          values: ["skip"]
-      taskRef:
-        name: deploy-monitoring
-      params:
-        - name: team-name
-          value: $(params.team7-name)
-        - name: team-namespace
-          value: $(params.team7-namespace)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
-    - name: deploy-monitoring-team8
-      runAfter: [deploy-kafka-team8]
-      when:
-        - input: "$(params.team8-name)"
-          operator: notin
-          values: ["skip"]
-      taskRef:
-        name: deploy-monitoring
-      params:
-        - name: team-name
-          value: $(params.team8-name)
-        - name: team-namespace
-          value: $(params.team8-namespace)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
-    - name: deploy-monitoring-team9
-      runAfter: [deploy-kafka-team9]
-      when:
-        - input: "$(params.team9-name)"
-          operator: notin
-          values: ["skip"]
-      taskRef:
-        name: deploy-monitoring
-      params:
-        - name: team-name
-          value: $(params.team9-name)
-        - name: team-namespace
-          value: $(params.team9-namespace)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
-    - name: deploy-monitoring-team10
-      runAfter: [deploy-kafka-team10]
-      when:
-        - input: "$(params.team10-name)"
-          operator: notin
-          values: ["skip"]
-      taskRef:
-        name: deploy-monitoring
-      params:
-        - name: team-name
-          value: $(params.team10-name)
-        - name: team-namespace
-          value: $(params.team10-namespace)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
-    - name: deploy-monitoring-team11
-      runAfter: [deploy-kafka-team11]
-      when:
-        - input: "$(params.team11-name)"
-          operator: notin
-          values: ["skip"]
-      taskRef:
-        name: deploy-monitoring
-      params:
-        - name: team-name
-          value: $(params.team11-name)
-        - name: team-namespace
-          value: $(params.team11-namespace)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
-    - name: deploy-monitoring-team12
-      runAfter: [deploy-kafka-team12]
-      when:
-        - input: "$(params.team12-name)"
-          operator: notin
-          values: ["skip"]
-      taskRef:
-        name: deploy-monitoring
-      params:
-        - name: team-name
-          value: $(params.team12-name)
-        - name: team-namespace
-          value: $(params.team12-namespace)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
-    - name: deploy-monitoring-team13
-      runAfter: [deploy-kafka-team13]
-      when:
-        - input: "$(params.team13-name)"
-          operator: notin
-          values: ["skip"]
-      taskRef:
-        name: deploy-monitoring
-      params:
-        - name: team-name
-          value: $(params.team13-name)
-        - name: team-namespace
-          value: $(params.team13-namespace)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
-    - name: deploy-monitoring-team14
-      runAfter: [deploy-kafka-team14]
-      when:
-        - input: "$(params.team14-name)"
-          operator: notin
-          values: ["skip"]
-      taskRef:
-        name: deploy-monitoring
-      params:
-        - name: team-name
-          value: $(params.team14-name)
-        - name: team-namespace
-          value: $(params.team14-namespace)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
-    - name: deploy-monitoring-team15
-      runAfter: [deploy-kafka-team15]
-      when:
-        - input: "$(params.team15-name)"
-          operator: notin
-          values: ["skip"]
-      taskRef:
-        name: deploy-monitoring
-      params:
-        - name: team-name
-          value: $(params.team15-name)
-        - name: team-namespace
-          value: $(params.team15-namespace)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
     # ── Deploy NiFi — one task per team, runAfter its own monitoring task ──────
     - name: deploy-nifi-team1
-      runAfter: [deploy-monitoring-team1]
+      runAfter: [deploy-kafka-team1]
       when:
         - input: "$(params.team1-name)"
           operator: notin
@@ -830,7 +563,7 @@ spec:
           workspace: shared-data
 
     - name: deploy-nifi-team2
-      runAfter: [deploy-monitoring-team2]
+      runAfter: [deploy-kafka-team2]
       when:
         - input: "$(params.team2-name)"
           operator: notin
@@ -855,7 +588,7 @@ spec:
           workspace: shared-data
 
     - name: deploy-nifi-team3
-      runAfter: [deploy-monitoring-team3]
+      runAfter: [deploy-kafka-team3]
       when:
         - input: "$(params.team3-name)"
           operator: notin
@@ -880,7 +613,7 @@ spec:
           workspace: shared-data
 
     - name: deploy-nifi-team4
-      runAfter: [deploy-monitoring-team4]
+      runAfter: [deploy-kafka-team4]
       when:
         - input: "$(params.team4-name)"
           operator: notin
@@ -905,7 +638,7 @@ spec:
           workspace: shared-data
 
     - name: deploy-nifi-team5
-      runAfter: [deploy-monitoring-team5]
+      runAfter: [deploy-kafka-team5]
       when:
         - input: "$(params.team5-name)"
           operator: notin
@@ -930,7 +663,7 @@ spec:
           workspace: shared-data
 
     - name: deploy-nifi-team6
-      runAfter: [deploy-monitoring-team6]
+      runAfter: [deploy-kafka-team6]
       when:
         - input: "$(params.team6-name)"
           operator: notin
@@ -955,7 +688,7 @@ spec:
           workspace: shared-data
 
     - name: deploy-nifi-team7
-      runAfter: [deploy-monitoring-team7]
+      runAfter: [deploy-kafka-team7]
       when:
         - input: "$(params.team7-name)"
           operator: notin
@@ -980,7 +713,7 @@ spec:
           workspace: shared-data
 
     - name: deploy-nifi-team8
-      runAfter: [deploy-monitoring-team8]
+      runAfter: [deploy-kafka-team8]
       when:
         - input: "$(params.team8-name)"
           operator: notin
@@ -1005,7 +738,7 @@ spec:
           workspace: shared-data
 
     - name: deploy-nifi-team9
-      runAfter: [deploy-monitoring-team9]
+      runAfter: [deploy-kafka-team9]
       when:
         - input: "$(params.team9-name)"
           operator: notin
@@ -1030,7 +763,7 @@ spec:
           workspace: shared-data
 
     - name: deploy-nifi-team10
-      runAfter: [deploy-monitoring-team10]
+      runAfter: [deploy-kafka-team10]
       when:
         - input: "$(params.team10-name)"
           operator: notin
@@ -1055,7 +788,7 @@ spec:
           workspace: shared-data
 
     - name: deploy-nifi-team11
-      runAfter: [deploy-monitoring-team11]
+      runAfter: [deploy-kafka-team11]
       when:
         - input: "$(params.team11-name)"
           operator: notin
@@ -1080,7 +813,7 @@ spec:
           workspace: shared-data
 
     - name: deploy-nifi-team12
-      runAfter: [deploy-monitoring-team12]
+      runAfter: [deploy-kafka-team12]
       when:
         - input: "$(params.team12-name)"
           operator: notin
@@ -1105,7 +838,7 @@ spec:
           workspace: shared-data
 
     - name: deploy-nifi-team13
-      runAfter: [deploy-monitoring-team13]
+      runAfter: [deploy-kafka-team13]
       when:
         - input: "$(params.team13-name)"
           operator: notin
@@ -1130,7 +863,7 @@ spec:
           workspace: shared-data
 
     - name: deploy-nifi-team14
-      runAfter: [deploy-monitoring-team14]
+      runAfter: [deploy-kafka-team14]
       when:
         - input: "$(params.team14-name)"
           operator: notin
@@ -1155,7 +888,7 @@ spec:
           workspace: shared-data
 
     - name: deploy-nifi-team15
-      runAfter: [deploy-monitoring-team15]
+      runAfter: [deploy-kafka-team15]
       when:
         - input: "$(params.team15-name)"
           operator: notin
@@ -1179,42 +912,24 @@ spec:
         - name: source
           workspace: shared-data
 
-    # ── Deploy Grafana once — after all monitoring tasks complete ─────────────
-    - name: deploy-grafana
-      runAfter:
-        - deploy-monitoring-team1
-        - deploy-monitoring-team2
-        - deploy-monitoring-team3
-        - deploy-monitoring-team4
-        - deploy-monitoring-team5
-        - deploy-monitoring-team6
-        - deploy-monitoring-team7
-        - deploy-monitoring-team8
-        - deploy-monitoring-team9
-        - deploy-monitoring-team10
-        - deploy-monitoring-team11
-        - deploy-monitoring-team12
-        - deploy-monitoring-team13
-        - deploy-monitoring-team14
-        - deploy-monitoring-team15
-      taskRef:
-        name: deploy-grafana
-      params:
-        - name: infra-namespace
-          value: $(context.pipelineRun.namespace)
-        - name: grafana-image
-          value: $(params.grafana-image)
-        - name: grafana-admin-password
-          value: $(params.grafana-admin-password)
-        - name: strimzi-version
-          value: $(params.strimzi-version)
-      workspaces:
-        - name: source
-          workspace: shared-data
-
-    # ── Deploy Kafka Console once — after Grafana is deployed ─────────────────
+    # ── Deploy Kafka Console once — after all NiFi tasks complete ───────────
     - name: deploy-console
-      runAfter: [deploy-grafana]
+      runAfter:
+        - deploy-nifi-team1
+        - deploy-nifi-team2
+        - deploy-nifi-team3
+        - deploy-nifi-team4
+        - deploy-nifi-team5
+        - deploy-nifi-team6
+        - deploy-nifi-team7
+        - deploy-nifi-team8
+        - deploy-nifi-team9
+        - deploy-nifi-team10
+        - deploy-nifi-team11
+        - deploy-nifi-team12
+        - deploy-nifi-team13
+        - deploy-nifi-team14
+        - deploy-nifi-team15
       taskRef:
         name: deploy-console
       params:

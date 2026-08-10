@@ -17,9 +17,6 @@ class Settings(BaseSettings):
     nifi_image: str = ""               # e.g. quay.io/langdon/nifi-openshift:latest
     external_domain: str = ""          # e.g. apps.your-cluster.example.com
 
-    # Observability — used by deploy-grafana command
-    grafana_image: str = "docker.io/grafana/grafana:11.1.0"
-
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

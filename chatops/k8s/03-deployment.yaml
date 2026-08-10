@@ -44,8 +44,6 @@ spec:
               value: ${EXTERNAL_DOMAIN}
             - name: CHATOPS_NAME
               value: ${CHATOPS_NAME}
-            - name: GRAFANA_IMAGE
-              value: ${GRAFANA_IMAGE}
           resources:
             requests:
               memory: 128Mi

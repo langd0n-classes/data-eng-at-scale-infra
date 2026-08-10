@@ -50,11 +50,8 @@
 #
 #   Observability
 #     status              <name> <ns>   Show pods, services, PVCs, routes, and recent events
-#     deploy-monitoring   <name> <ns>   Apply JMX ConfigMap + Prometheus RBAC + patch Kafka CR
-#     deploy-monitoring-all             deploy-monitoring for all active teams from config.env
-#     deploy-grafana                    Deploy Grafana to infra namespace (idempotent)
 #     deploy-console                    Deploy Kafka Console to infra namespace (idempotent)
-#     monitoring-status   <name> <ns>   Check JMX ConfigMap, PodMonitor, Grafana pod, and URLs
+#     console-status                    Check Kafka Console pod and route URL
 
 set -euo pipefail
 
@@ -947,131 +944,6 @@ print(f'config.env updated in-place with {len(teams)} team(s)')
   ok "config.env synced from cluster"
 }
 
-_do_deploy_monitoring() {
-  local name="$1" ns="$2"
-  info "Deploying monitoring for ${name} in ${ns}..."
-
-  # Step 1: Apply JMX exporter ConfigMap to team namespace (must exist before Kafka CR patch)
-  run "sed 's|\${TEAM_NAMESPACE}|${ns}|g' \
-    '${REPO_ROOT}/monitoring/kafka/kafka-jmx-configmap-template.yaml' | oc apply -f -"
-
-  # Step 2: Apply Prometheus RBAC so UWM can scrape pods in this namespace
-  run "sed 's|\${TEAM_NAMESPACE}|${ns}|g' \
-    '${REPO_ROOT}/monitoring/kafka/kafka-prometheus-rbac-template.yaml' | oc apply -f -"
-
-  # Step 3: Patch Kafka CR to add metricsConfig + kafkaExporter (triggers rolling restart)
-  run "oc patch kafka 'kafka-${name}' -n '${ns}' --type=merge \
-    -p '{\"spec\":{\"kafka\":{\"metricsConfig\":{\"type\":\"jmxPrometheusExporter\",\"valueFrom\":{\"configMapKeyRef\":{\"name\":\"kafka-metrics-config\",\"key\":\"kafka-metrics-config.yml\"}}}},\"kafkaExporter\":{\"resources\":{\"requests\":{\"memory\":\"64Mi\",\"cpu\":\"50m\"},\"limits\":{\"memory\":\"128Mi\",\"cpu\":\"200m\"}}}}}'"
-
-  # Step 4: Wait for Kafka to become Ready after rolling restart
-  info "Waiting for Kafka CR kafka-${name} to be Ready after rolling restart (max 5 min)..."
-  oc wait kafka "kafka-${name}" -n "${ns}" \
-    --for=condition=Ready --timeout=300s 2>/dev/null \
-    || warn "Kafka not Ready after 300s — check: oc get kafka kafka-${name} -n ${ns}"
-}
-
-_do_deploy_grafana() {
-  local grafana_img="${GRAFANA_IMAGE:-docker.io/grafana/grafana:11.1.0}"
-  local grafana_pwd="${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD not set in config.env}"
-  local strimzi_ver="${STRIMZI_VERSION:-0.51.0}"
-
-  # Step 1: Apply Grafana SA + ClusterRoleBinding (cluster-monitoring-view only)
-  info "Applying Grafana SA and ClusterRoleBinding..."
-  run "sed 's|\${INFRA_NAMESPACE}|${INFRA_NAMESPACE}|g' \
-    '${REPO_ROOT}/monitoring/grafana/07-grafana-sa.yaml' | oc apply -f -"
-  run "sed 's|\${INFRA_NAMESPACE}|${INFRA_NAMESPACE}|g' \
-    '${REPO_ROOT}/monitoring/grafana/08-grafana-clusterrolebinding.yaml' | oc apply -f -"
-
-  # Step 2: Create admin password secret from config.env (never committed to git)
-  run "oc create secret generic grafana-admin-secret \
-    --from-literal=password='${grafana_pwd}' \
-    -n '${INFRA_NAMESPACE}' --dry-run=client -o yaml | oc apply -f -"
-
-  # Step 3: Wait for SA token to be populated (skip in --dry-run)
-  local token=""
-  if [[ "${DRY_RUN:-false}" != "true" ]]; then
-    info "Waiting for grafana-sa-token to be populated..."
-    for i in $(seq 1 30); do
-      token=$(oc get secret grafana-sa-token -n "${INFRA_NAMESPACE}" \
-        -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
-      [[ -n "${token}" ]] && break
-      echo "  attempt ${i}/30 — waiting 5s..."
-      sleep 5
-    done
-    if [[ -z "${token}" ]]; then
-      err "grafana-sa-token not populated after 150s"
-      exit 1
-    fi
-    ok "SA token retrieved"
-  fi
-
-  # Step 4: Apply datasource ConfigMap (substitute token + namespace at runtime, never in git)
-  info "Applying Grafana datasource ConfigMap..."
-  run "sed \
-    -e 's|\${INFRA_NAMESPACE}|${INFRA_NAMESPACE}|g' \
-    -e 's|\${GRAFANA_SA_TOKEN}|${token}|g' \
-    '${REPO_ROOT}/monitoring/grafana/04-grafana-datasource-configmap.yaml' | oc apply -f -"
-
-  # Step 5: Apply dashboard provisioning ConfigMap
-  run "sed 's|\${INFRA_NAMESPACE}|${INFRA_NAMESPACE}|g' \
-    '${REPO_ROOT}/monitoring/grafana/06-grafana-provisioning-configmap.yaml' | oc apply -f -"
-
-  # Step 6: Fetch Strimzi dashboards and create ConfigMap (skips gracefully if no internet)
-  if [[ "${DRY_RUN:-false}" != "true" ]]; then
-    info "Fetching Strimzi dashboards (version ${strimzi_ver})..."
-    local base_url="https://raw.githubusercontent.com/strimzi/strimzi-kafka-operator/${strimzi_ver}/examples/metrics/grafana-dashboards"
-    local tmpdir
-    tmpdir=$(mktemp -d)
-    local dashboards_ok=true
-    for dash in strimzi-kafka strimzi-kafka-exporter strimzi-operators; do
-      if ! curl -fsSL --max-time 30 "${base_url}/${dash}.json" \
-          -o "${tmpdir}/${dash}.json" 2>/dev/null; then
-        warn "Could not fetch ${dash}.json — no internet? Dashboard skipped."
-        dashboards_ok=false
-      fi
-    done
-    if [[ "${dashboards_ok}" == "true" ]]; then
-      oc create configmap grafana-dashboards \
-        --from-file="${tmpdir}/strimzi-kafka.json" \
-        --from-file="${tmpdir}/strimzi-kafka-exporter.json" \
-        --from-file="${tmpdir}/strimzi-operators.json" \
-        -n "${INFRA_NAMESPACE}" \
-        --dry-run=client -o yaml | oc apply -f -
-      ok "Grafana dashboards ConfigMap created"
-    else
-      warn "Dashboard ConfigMap not applied — Grafana will start but show no dashboards."
-      warn "Re-run 'bash pipeline/ops.sh deploy-grafana' from a host with internet access."
-    fi
-    rm -rf "${tmpdir}"
-  fi
-
-  # Step 7: Apply Grafana Deployment, Service, Route
-  info "Applying Grafana Deployment, Service, and Route..."
-  run "sed \
-    -e 's|\${INFRA_NAMESPACE}|${INFRA_NAMESPACE}|g' \
-    -e 's|\${GRAFANA_IMAGE}|${grafana_img}|g' \
-    '${REPO_ROOT}/monitoring/grafana/01-grafana-deployment.yaml' | oc apply -f -"
-  run "sed 's|\${INFRA_NAMESPACE}|${INFRA_NAMESPACE}|g' \
-    '${REPO_ROOT}/monitoring/grafana/02-grafana-service.yaml' | oc apply -f -"
-  run "sed 's|\${INFRA_NAMESPACE}|${INFRA_NAMESPACE}|g' \
-    '${REPO_ROOT}/monitoring/grafana/03-grafana-route.yaml' | oc apply -f -"
-
-  # Step 8: Apply PodMonitor to infra namespace (covers all team Kafka pods)
-  run "sed 's|\${INFRA_NAMESPACE}|${INFRA_NAMESPACE}|g' \
-    '${REPO_ROOT}/monitoring/kafka/kafka-podmonitor.yaml' | oc apply -f -"
-
-  # Step 9: Wait for Grafana rollout
-  run "oc rollout status deployment/grafana -n '${INFRA_NAMESPACE}' --timeout=120s"
-
-  # Step 10: Print URL
-  if [[ "${DRY_RUN:-false}" != "true" ]]; then
-    local host
-    host=$(oc get route grafana -n "${INFRA_NAMESPACE}" \
-      -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
-    [[ -n "${host}" ]] && ok "Grafana URL: https://${host}"
-  fi
-}
-
 _do_deploy_console() {
   # Step 1: Apply OLM Subscription
   info "Applying Kafka Console operator Subscription..."
@@ -1167,123 +1039,9 @@ EOF
 
 # ── Command functions ──────────────────────────────────────────────────────────
 
-cmd_deploy_monitoring() {
-  local name="${1:?Usage: deploy-monitoring <name> <ns>}"
-  local ns="${2:?Usage: deploy-monitoring <name> <ns>}"
-  _do_deploy_monitoring "${name}" "${ns}"
-  ok "Monitoring deployed for ${name} in ${ns}"
-}
-
-cmd_deploy_monitoring_all() {
-  local count=0
-  for i in $(seq 1 15); do
-    local ns_var="TEAM${i}_NAMESPACE" name_var="TEAM${i}_NAME"
-    local ns="${!ns_var:-skip}" name="${!name_var:-skip}"
-    [[ "$ns" == "skip" ]] && continue
-    echo "  deploying monitoring for: ${name} in ${ns}"
-    _do_deploy_monitoring "${name}" "${ns}"
-    count=$((count + 1))
-  done
-  ok "Monitoring deployed for ${count} team(s)"
-}
-
-cmd_deploy_grafana() {
-  _do_deploy_grafana
-  ok "Grafana deployed in ${INFRA_NAMESPACE}"
-}
-
 cmd_deploy_console() {
   _do_deploy_console
   ok "Kafka Console deployed in ${INFRA_NAMESPACE}"
-}
-
-cmd_monitoring_status() {
-  local name="${1:?Usage: monitoring-status <name> <ns>}"
-  local ns="${2:?Usage: monitoring-status <name> <ns>}"
-
-  echo "Monitoring status — ${name} / ${ns}"
-  echo ""
-
-  # JMX ConfigMap
-  if oc get configmap kafka-metrics-config -n "${ns}" &>/dev/null; then
-    echo "  [OK] JMX ConfigMap (kafka-metrics-config) present in ${ns}"
-  else
-    echo "  [X]  JMX ConfigMap missing in ${ns} — run: ops.sh deploy-monitoring ${name} ${ns}"
-  fi
-
-  # Prometheus RBAC
-  if oc get rolebinding prometheus-scrape -n "${ns}" &>/dev/null; then
-    echo "  [OK] Prometheus RBAC (prometheus-scrape RoleBinding) present in ${ns}"
-  else
-    echo "  [X]  Prometheus RBAC missing in ${ns} — run: ops.sh deploy-monitoring ${name} ${ns}"
-  fi
-
-  # Kafka CR metricsConfig
-  local metrics_type
-  metrics_type=$(oc get kafka "kafka-${name}" -n "${ns}" \
-    -o jsonpath='{.spec.kafka.metricsConfig.type}' 2>/dev/null || echo "")
-  if [[ "${metrics_type}" == "jmxPrometheusExporter" ]]; then
-    echo "  [OK] Kafka CR metricsConfig: jmxPrometheusExporter"
-  else
-    echo "  [X]  Kafka CR metricsConfig not set — run: ops.sh deploy-monitoring ${name} ${ns}"
-  fi
-
-  # PodMonitor in infra namespace
-  if oc get podmonitor kafka-all-teams-metrics -n "${INFRA_NAMESPACE}" &>/dev/null; then
-    echo "  [OK] PodMonitor (kafka-all-teams-metrics) present in ${INFRA_NAMESPACE}"
-  else
-    echo "  [X]  PodMonitor missing — run: ops.sh deploy-grafana"
-  fi
-
-  echo ""
-
-  # Grafana pod
-  local grafana_pod
-  grafana_pod=$(oc get pods -n "${INFRA_NAMESPACE}" -l app=grafana \
-    --no-headers -o custom-columns='NAME:.metadata.name,PHASE:.status.phase' \
-    2>/dev/null | head -1 || echo "")
-  if [[ -n "${grafana_pod}" ]]; then
-    local gphase
-    gphase=$(echo "${grafana_pod}" | awk '{print $2}')
-    if [[ "${gphase}" == "Running" ]]; then
-      echo "  [OK] Grafana pod Running in ${INFRA_NAMESPACE}"
-    else
-      echo "  [!]  Grafana pod is ${gphase} — check: oc get pods -n ${INFRA_NAMESPACE} -l app=grafana"
-    fi
-  else
-    echo "  [X]  Grafana pod not found — run: ops.sh deploy-grafana"
-  fi
-
-  # Grafana URL
-  local grafana_host
-  grafana_host=$(oc get route grafana -n "${INFRA_NAMESPACE}" \
-    -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
-  [[ -n "${grafana_host}" ]] && echo "  Grafana:  https://${grafana_host}"
-
-  # Kafka Console pod
-  local console_pod
-  console_pod=$(oc get pods -n "${INFRA_NAMESPACE}" \
-    -l "app.kubernetes.io/name=console" \
-    --no-headers -o custom-columns='NAME:.metadata.name,PHASE:.status.phase' \
-    2>/dev/null | head -1 || echo "")
-  if [[ -n "${console_pod}" ]]; then
-    local cphase
-    cphase=$(echo "${console_pod}" | awk '{print $2}')
-    if [[ "${cphase}" == "Running" ]]; then
-      echo "  [OK] Kafka Console pod Running in ${INFRA_NAMESPACE}"
-    else
-      echo "  [!]  Kafka Console pod is ${cphase}"
-    fi
-  else
-    echo "  [X]  Kafka Console pod not found — run: ops.sh deploy-console"
-  fi
-
-  # Kafka Console URL
-  local console_host
-  console_host=$(oc get route -n "${INFRA_NAMESPACE}" \
-    -l "app.kubernetes.io/name=console" \
-    -o jsonpath='{.items[0].spec.host}' 2>/dev/null || echo "")
-  [[ -n "${console_host}" ]] && echo "  Console:  https://${console_host}"
 }
 
 cmd_help() {
@@ -1333,11 +1091,8 @@ Config sync:
 Observability:
   status              <name> <ns>   Show pods, services, PVCs, routes, and events for one team
   status-all                        Show pods, PVCs, routes, and pipeline runs across all namespaces
-  deploy-monitoring   <name> <ns>   Apply JMX ConfigMap + Prometheus RBAC + patch Kafka CR
-  deploy-monitoring-all             deploy-monitoring for all active teams from config.env
-  deploy-grafana                    Deploy Grafana to infra namespace (idempotent)
   deploy-console                    Deploy Kafka Console to infra namespace (idempotent)
-  monitoring-status   <name> <ns>   Check JMX ConfigMap, PodMonitor, Grafana pod, and URLs
+  console-status                    Check Kafka Console pod and route URL
 
 Note: namespaces are NEVER deleted by ops.sh.
       For full decommission, use: bash pipeline/cleanup.sh
@@ -1370,11 +1125,7 @@ case "$COMMAND" in
   sync-config)        cmd_sync_config ;;
   status)               cmd_status              "${ARGS[@]}" ;;
   status-all)           cmd_status_all ;;
-  deploy-monitoring)    cmd_deploy_monitoring   "${ARGS[@]}" ;;
-  deploy-monitoring-all) cmd_deploy_monitoring_all ;;
-  deploy-grafana)       cmd_deploy_grafana ;;
   deploy-console)       cmd_deploy_console ;;
-  monitoring-status)    cmd_monitoring_status   "${ARGS[@]}" ;;
   help|--help|-h)       cmd_help ;;
   *)
     err "Unknown command: ${COMMAND}"
