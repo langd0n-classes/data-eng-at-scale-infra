@@ -128,7 +128,7 @@ alerts are sent and the rest of ChatOps is unaffected.
 | `ALERT_RESTART_THRESHOLD` | `4` | Restart delta that triggers an alert |
 | `ALERT_WINDOW_MINUTES` | `10` | Rolling window for counting restarts |
 
-Alerts for the same pod are suppressed for 300 seconds after firing to avoid spam
+Alerts for the same pod are suppressed for 30 minutes after firing to avoid spam
 during a sustained crash-loop.
 
 ## Troubleshooting

@@ -1782,7 +1782,7 @@ HELP_TEXT = """\
 # ── Kafka crash-loop alerting ──────────────────────────────────────────────────
 
 # Tracks the last time an alert was sent per pod (key: "namespace/pod-name").
-# Alerts for the same pod are suppressed for 300s to avoid spam during sustained crash-loops.
+# Alerts for the same pod are suppressed for 1800s (30 min) to avoid spam during sustained crash-loops.
 _alert_sent: dict[str, float] = {}
 
 
@@ -1858,7 +1858,7 @@ async def _check_kafka_restarts(
                 continue
 
             alert_key = f"{ns}/{pod_name}"
-            if now - _alert_sent.get(alert_key, 0) < 300:
+            if now - _alert_sent.get(alert_key, 0) < 1800:
                 continue  # still in cooldown
 
             _alert_sent[alert_key] = now
