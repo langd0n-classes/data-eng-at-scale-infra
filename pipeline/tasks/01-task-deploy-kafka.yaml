@@ -168,3 +168,28 @@ spec:
         echo ""
         echo "Bootstrap server:"
         echo "  kafka-${TEAM_NAME}-kafka-bootstrap.${TEAM_NAMESPACE}.svc.cluster.local:9092"
+
+    # Step 3: Apply PodDisruptionBudget to protect broker during voluntary disruptions
+    - name: apply-pdb
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        TEAM_NAME="$(params.team-name)"
+        TEAM_NAMESPACE="$(params.team-namespace)"
+        WORKSPACE="$(workspaces.source.path)"
+        PDB_TEMPLATE="${WORKSPACE}/kafka/operator/pdb-template.yaml"
+
+        sed -e "s|\${TEAM_NAME}|${TEAM_NAME}|g" \
+            -e "s|\${TEAM_NAMESPACE}|${TEAM_NAMESPACE}|g" \
+            "${PDB_TEMPLATE}" | oc apply -f -
+
+        echo "PodDisruptionBudget kafka-${TEAM_NAME}-pdb applied in ${TEAM_NAMESPACE}."

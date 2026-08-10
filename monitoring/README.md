@@ -87,7 +87,7 @@ unavailable at a time during voluntary disruptions (node drain, rolling restarts
 
 ```bash
 # Delete the broker pod — Strimzi recreates it automatically
-bash scripts/verify-self-healing.sh team01 team-01
+bash kafka/per-team/verify-self-healing.sh team01 team-01
 # Expected output: "Recovery time: N seconds" where N is typically < 60
 ```
 
