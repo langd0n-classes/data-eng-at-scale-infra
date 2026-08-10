@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import functools
 import time
+from collections import deque
 from typing import Any
 
 import httpx
@@ -1775,3 +1778,108 @@ HELP_TEXT = """\
 *Config sync*
   `export-config`     Print team registry as config.env block (includes passwords from cluster)
 """
+
+# ── Kafka crash-loop alerting ──────────────────────────────────────────────────
+
+# Tracks the last time an alert was sent per pod (key: "namespace/pod-name").
+# Alerts for the same pod are suppressed for 300s to avoid spam during sustained crash-loops.
+_alert_sent: dict[str, float] = {}
+
+
+async def kafka_restart_monitor() -> None:
+    """Background loop: alert admin channel when Kafka broker restart count spikes."""
+    if not settings.slack_bot_token or not settings.admin_channel_id:
+        print("[kafka-monitor] disabled — SLACK_BOT_TOKEN or ADMIN_CHANNEL_ID not set")
+        return
+
+    # restart_history[namespace][pod_name] = deque of (timestamp, restart_count) pairs
+    restart_history: dict[str, dict[str, deque]] = {}
+
+    while True:
+        await asyncio.sleep(settings.alert_poll_interval_seconds)
+        try:
+            await _check_kafka_restarts(restart_history)
+        except Exception as exc:
+            print(f"[kafka-monitor] error: {exc}")
+
+
+async def _check_kafka_restarts(
+    restart_history: dict[str, dict[str, deque]]
+) -> None:
+    """Poll Kafka broker pods across all team namespaces and fire alerts on crash-loops."""
+    now = time.time()
+    window_seconds = settings.alert_window_minutes * 60
+
+    registry = await asyncio.to_thread(_get_team_registry)
+
+    for team_name, info in registry.items():
+        ns = info["namespace"]
+        if ns not in restart_history:
+            restart_history[ns] = {}
+
+        list_fn = functools.partial(
+            core_v1.list_namespaced_pod,
+            ns,
+            label_selector=f"strimzi.io/cluster=kafka-{team_name},strimzi.io/kind=Kafka",
+        )
+        try:
+            pod_list = await asyncio.to_thread(list_fn)
+        except Exception as exc:
+            print(f"[kafka-monitor] failed to list pods in {ns}: {exc}")
+            continue
+
+        for pod in pod_list.items:
+            pod_name = pod.metadata.name
+            if pod_name not in restart_history[ns]:
+                restart_history[ns][pod_name] = deque()
+
+            history = restart_history[ns][pod_name]
+
+            # Sum restart counts across all containers (handle None container_statuses)
+            total_restarts = sum(
+                cs.restart_count
+                for cs in (pod.status.container_statuses or [])
+            )
+
+            history.append((now, total_restarts))
+
+            # Evict entries outside the rolling window
+            while history and history[0][0] < now - window_seconds:
+                history.popleft()
+
+            if len(history) < 2:
+                continue
+
+            oldest_count = history[0][1]
+            newest_count = history[-1][1]
+            delta = newest_count - oldest_count
+
+            if delta < settings.alert_restart_threshold:
+                continue
+
+            alert_key = f"{ns}/{pod_name}"
+            if now - _alert_sent.get(alert_key, 0) < 300:
+                continue  # still in cooldown
+
+            _alert_sent[alert_key] = now
+
+            alert_text = (
+                ":rotating_light: *Kafka broker crash-loop detected*\n"
+                f"• *Namespace*: `{ns}`\n"
+                f"• *Pod*: `{pod_name}`\n"
+                f"• *Restarts*: +{delta} in last {settings.alert_window_minutes} minutes"
+                f" (total: {newest_count})\n"
+                f"• *Action*: Run `/infra status {team_name} {ns}` to investigate"
+            )
+
+            post_fn = functools.partial(
+                http_client.post,
+                "https://slack.com/api/chat.postMessage",
+                headers={"Authorization": f"Bearer {settings.slack_bot_token}"},
+                json={"channel": settings.admin_channel_id, "text": alert_text},
+            )
+            try:
+                await asyncio.to_thread(post_fn)
+                print(f"[kafka-monitor] alert sent for {alert_key} (+{delta} restarts)")
+            except Exception as exc:
+                print(f"[kafka-monitor] failed to post alert for {alert_key}: {exc}")
