@@ -86,6 +86,12 @@ rules:
       - networkpolicies
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # PodDisruptionBudget — required to apply PDB per team after Kafka is ready
+  - apiGroups: ["policy"]
+    resources:
+      - poddisruptionbudgets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
   # Kafka operator CRs (Strimzi) — required to create/manage Kafka clusters
   - apiGroups: ["kafka.strimzi.io"]
     resources:
