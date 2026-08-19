@@ -1879,7 +1879,11 @@ async def _check_kafka_restarts(
                 json={"channel": settings.admin_channel_id, "text": alert_text},
             )
             try:
-                await asyncio.to_thread(post_fn)
-                print(f"[kafka-monitor] alert sent for {alert_key} (+{delta} restarts)")
+                resp = await asyncio.to_thread(post_fn)
+                body = resp.json() if hasattr(resp, "json") else {}
+                if body.get("ok"):
+                    print(f"[kafka-monitor] alert sent for {alert_key} (+{delta} restarts)")
+                else:
+                    print(f"[kafka-monitor] Slack API error for {alert_key}: {body.get('error', body)}")
             except Exception as exc:
                 print(f"[kafka-monitor] failed to post alert for {alert_key}: {exc}")
