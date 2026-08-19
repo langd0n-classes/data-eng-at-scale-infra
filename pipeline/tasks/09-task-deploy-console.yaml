@@ -164,39 +164,6 @@ spec:
             echo "WARNING: Subscription failed — ask cluster admin to pre-install Streams for Apache Kafka Console operator."
         fi
 
-    # Step 2: Wait for the operator ClusterServiceVersion to reach Succeeded
-    - name: wait-for-operator
-      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
-      computeResources:
-        requests:
-          memory: "64Mi"
-          cpu: "50m"
-        limits:
-          memory: "128Mi"
-          cpu: "200m"
-      script: |
-        #!/bin/bash
-        set -e
-
-        echo "Waiting for Kafka Console operator CSV to reach Succeeded..."
-        echo "(First install may take 2-5 minutes — operator image must be pulled)"
-
-        for i in $(seq 1 60); do
-          STATUS=$(oc get csv -n openshift-operators \
-            --no-headers 2>/dev/null | grep -i console | grep -i "Succeeded" | head -1 || echo "")
-          if [ -n "${STATUS}" ]; then
-            echo "Operator installed: ${STATUS}"
-            exit 0
-          fi
-          echo "  attempt ${i}/60 — waiting 10s..."
-          sleep 10
-        done
-
-        echo "ERROR: Console operator CSV did not reach Succeeded after 600s"
-        echo "Current CSVs:"
-        oc get csv -n openshift-operators 2>/dev/null || true
-        exit 1
-
     # Step 3: Generate Console CR from active team params and apply it
     # The CR references Kafka CRs by name+namespace+listener (Strimzi-native, not bootstrap URLs).
     # listener "plain" matches the listener name in kafka-cr-template.yaml.
