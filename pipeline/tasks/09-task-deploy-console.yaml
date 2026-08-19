@@ -43,6 +43,11 @@ spec:
       type: string
       default: "infra"
 
+    - name: external-domain
+      description: "Cluster external domain (e.g. apps-crc.testing or apps.shift.nerc.mghpcc.org)"
+      type: string
+      default: "apps-crc.testing"
+
     # Active team params — non-skip teams are included in the Console CR
     - name: team1-name
       type: string
@@ -217,6 +222,8 @@ spec:
 
         echo "Deploying Console CR for active teams..."
 
+        EXTERNAL_DOMAIN="$(params.external-domain)"
+
         cat <<EOF | oc apply -f -
         apiVersion: console.streamshub.github.com/v1alpha1
         kind: Console
@@ -226,6 +233,7 @@ spec:
           labels:
             app: kafka-console
         spec:
+          hostname: kafka-console-${INFRA_NS}.${EXTERNAL_DOMAIN}
           kafkaClusters:${KAFKA_CLUSTERS}
         EOF
 

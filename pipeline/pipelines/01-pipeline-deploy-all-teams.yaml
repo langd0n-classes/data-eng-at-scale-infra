@@ -935,6 +935,8 @@ spec:
       params:
         - name: infra-namespace
           value: $(context.pipelineRun.namespace)
+        - name: external-domain
+          value: $(params.external-domain)
         - name: team1-name
           value: $(params.team1-name)
         - name: team1-namespace
