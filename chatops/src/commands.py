@@ -1861,8 +1861,6 @@ async def _check_kafka_restarts(
             if now - _alert_sent.get(alert_key, 0) < 1800:
                 continue  # still in cooldown
 
-            _alert_sent[alert_key] = now
-
             alert_text = (
                 ":rotating_light: *Kafka broker crash-loop detected*\n"
                 f"• *Namespace*: `{ns}`\n"
@@ -1882,6 +1880,7 @@ async def _check_kafka_restarts(
                 resp = await asyncio.to_thread(post_fn)
                 body = resp.json() if hasattr(resp, "json") else {}
                 if body.get("ok"):
+                    _alert_sent[alert_key] = now  # only stamp cooldown on success
                     print(f"[kafka-monitor] alert sent for {alert_key} (+{delta} restarts)")
                 else:
                     print(f"[kafka-monitor] Slack API error for {alert_key}: {body.get('error', body)}")
