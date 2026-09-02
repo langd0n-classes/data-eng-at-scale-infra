@@ -76,6 +76,17 @@ else
 fi
 
 # ------------------------------------------------------------
+# 2c. Kafka Console CR + route (deployed by deploy-console task or ops.sh)
+# ------------------------------------------------------------
+info "Step 2c/10 — Deleting Kafka Console..."
+oc delete console kafka-console \
+  -n "${INFRA_NAMESPACE}" --ignore-not-found
+oc delete route \
+  -l "app.kubernetes.io/name=console" \
+  -n "${INFRA_NAMESPACE}" --ignore-not-found
+ok "Kafka Console done"
+
+# ------------------------------------------------------------
 # 3. Event generator (label: app=${EVENT_GENERATOR_NAME})
 # ------------------------------------------------------------
 info "Step 3/10 — Deleting event generator (${EVENT_GENERATOR_NAME})..."
@@ -134,7 +145,7 @@ ok "NiFi done"
 # ------------------------------------------------------------
 info "Step 5/10 — Deleting Tekton tasks..."
 oc delete task \
-  deploy-kafka deploy-event-generator verify-health teardown-all deploy-nifi deploy-chatops \
+  deploy-kafka deploy-event-generator verify-health teardown-all deploy-nifi deploy-chatops deploy-console \
   -n "${INFRA_NAMESPACE}" --ignore-not-found
 
 info "          Deleting Tekton pipelines..."
