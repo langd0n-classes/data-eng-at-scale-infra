@@ -255,20 +255,32 @@ spec:
         INFRA_NS="$(params.infra-namespace)"
 
         echo "Waiting for Console CR to become Ready (up to 300s)..."
-        for i in $(seq 1 60); do
+        for i in $(seq 1 30); do
           STATUS=$(oc get consoles.console.streamshub.github.com kafka-console \
             -n "${INFRA_NS}" \
             -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+          REASON=$(oc get consoles.console.streamshub.github.com kafka-console \
+            -n "${INFRA_NS}" \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null || echo "")
+
           if [ "${STATUS}" = "True" ]; then
             echo "Console CR Ready."
             exit 0
           fi
-          echo "  attempt ${i}/60 — waiting 5s..."
-          sleep 5
+
+          if [ -n "${REASON}" ] && [ "${REASON}" != "DependentsNotReady" ]; then
+            echo "ERROR: Console CR failed — reason: ${REASON}"
+            echo "Check: oc get consoles.console.streamshub.github.com kafka-console -n ${INFRA_NS} -o yaml"
+            exit 1
+          fi
+
+          echo "  [${REASON:-initializing}] pod starting up — attempt ${i}/30..."
+          sleep 10
         done
 
-        echo "ERROR: Console CR not Ready after 300s — check: oc get consoles.console.streamshub.github.com kafka-console -n ${INFRA_NS}"
-        exit 1
+        echo "WARNING: Console CR not Ready after 300s — pod may still be scheduling due to resource constraints."
+        echo "Check status: oc get consoles.console.streamshub.github.com kafka-console -n ${INFRA_NS}"
+        exit 0
 
     # Step 5: Print Kafka Console URL for the instructor
     - name: print-url

@@ -1010,19 +1010,37 @@ EOF
 
   # Step 4: Wait for console pod (skip in --dry-run)
   if [[ "${DRY_RUN:-false}" != "true" ]]; then
-    info "Waiting for Console CR to become Ready (up to 120s)..."
-    for i in $(seq 1 24); do
-      local status
+    info "Waiting for Console CR to become Ready (up to 300s)..."
+    local console_ready=false
+    for i in $(seq 1 30); do
+      local status reason
       status=$(oc get consoles.console.streamshub.github.com kafka-console \
         -n "${INFRA_NAMESPACE}" \
         -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+      reason=$(oc get consoles.console.streamshub.github.com kafka-console \
+        -n "${INFRA_NAMESPACE}" \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null || echo "")
+
       if [[ "${status}" == "True" ]]; then
         ok "Console CR Ready"
+        console_ready=true
         break
       fi
-      echo "  attempt ${i}/24 — waiting 5s..."
-      sleep 5
+
+      if [[ -n "${reason}" && "${reason}" != "DependentsNotReady" ]]; then
+        err "Console CR failed — reason: ${reason}"
+        err "Check: oc get consoles.console.streamshub.github.com kafka-console -n ${INFRA_NAMESPACE} -o yaml"
+        exit 1
+      fi
+
+      echo "  [${reason:-initializing}] pod starting up — attempt ${i}/30..."
+      sleep 10
     done
+
+    if [[ "${console_ready}" != "true" ]]; then
+      warn "Console CR not Ready after 300s — pod may still be scheduling due to resource constraints."
+      warn "Check: bash pipeline/ops.sh console-status"
+    fi
 
     # Step 5: Print URL
     local host
