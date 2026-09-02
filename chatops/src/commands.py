@@ -1162,8 +1162,8 @@ def cmd_add_kafka(name: str, ns: str) -> str:
         },
         "spec": {
             "kafka": {
-                "version": "3.9.0",
-                "metadataVersion": "3.9-IV0",
+                "version": "4.2.0",
+                "metadataVersion": "4.2-IV0",
                 "listeners": [
                     {"name": "plain", "port": 9092, "type": "internal", "tls": False}
                 ],

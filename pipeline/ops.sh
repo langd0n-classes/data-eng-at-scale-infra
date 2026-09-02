@@ -1002,6 +1002,7 @@ metadata:
   labels:
     app: kafka-console
 spec:
+  hostname: kafka-console-${INFRA_NAMESPACE}.${EXTERNAL_DOMAIN}
   kafkaClusters:${kafka_clusters}
 EOF
   run "oc apply -f '${tmpfile}'"
