@@ -79,7 +79,7 @@ fi
 # 2c. Kafka Console CR + route (deployed by deploy-console task or ops.sh)
 # ------------------------------------------------------------
 info "Step 2c/10 — Deleting Kafka Console..."
-oc delete console kafka-console \
+oc delete consoles.console.streamshub.github.com kafka-console \
   -n "${INFRA_NAMESPACE}" --ignore-not-found
 oc delete route \
   -l "app.kubernetes.io/name=console" \
