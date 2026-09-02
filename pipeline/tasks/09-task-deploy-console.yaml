@@ -254,20 +254,20 @@ spec:
 
         INFRA_NS="$(params.infra-namespace)"
 
-        echo "Waiting for console pod to start (up to 300s)..."
+        echo "Waiting for Console CR to become Ready (up to 300s)..."
         for i in $(seq 1 60); do
-          RUNNING=$(oc get pods -n "${INFRA_NS}" \
-            -l "app.kubernetes.io/name=console" \
-            --no-headers 2>/dev/null | grep "Running" | head -1 || echo "")
-          if [ -n "${RUNNING}" ]; then
-            echo "Console pod running: ${RUNNING}"
+          STATUS=$(oc get consoles.console.streamshub.github.com kafka-console \
+            -n "${INFRA_NS}" \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+          if [ "${STATUS}" = "True" ]; then
+            echo "Console CR Ready."
             exit 0
           fi
           echo "  attempt ${i}/60 — waiting 5s..."
           sleep 5
         done
 
-        echo "ERROR: Console pod not Running after 300s — check: oc get pods -n ${INFRA_NS}"
+        echo "ERROR: Console CR not Ready after 300s — check: oc get consoles.console.streamshub.github.com kafka-console -n ${INFRA_NS}"
         exit 1
 
     # Step 5: Print Kafka Console URL for the instructor

@@ -1010,14 +1010,14 @@ EOF
 
   # Step 4: Wait for console pod (skip in --dry-run)
   if [[ "${DRY_RUN:-false}" != "true" ]]; then
-    info "Waiting for Kafka Console pod to start (up to 120s)..."
+    info "Waiting for Console CR to become Ready (up to 120s)..."
     for i in $(seq 1 24); do
-      local running
-      running=$(oc get pods -n "${INFRA_NAMESPACE}" \
-        -l "app.kubernetes.io/name=console" \
-        --no-headers 2>/dev/null | grep "Running" | head -1 || echo "")
-      if [[ -n "${running}" ]]; then
-        ok "Console pod running: ${running}"
+      local status
+      status=$(oc get consoles.console.streamshub.github.com kafka-console \
+        -n "${INFRA_NAMESPACE}" \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+      if [[ "${status}" == "True" ]]; then
+        ok "Console CR Ready"
         break
       fi
       echo "  attempt ${i}/24 — waiting 5s..."
@@ -1043,14 +1043,14 @@ cmd_deploy_console() {
 cmd_console_status() {
   info "Kafka Console status in ${INFRA_NAMESPACE}"
 
-  local pod_line
-  pod_line=$(oc get pods -n "${INFRA_NAMESPACE}" \
-    -l "app.kubernetes.io/name=console" \
-    --no-headers 2>/dev/null | head -1 || echo "")
-  if [[ -n "${pod_line}" ]]; then
-    ok "Console pod: ${pod_line}"
+  local cr_status
+  cr_status=$(oc get consoles.console.streamshub.github.com kafka-console \
+    -n "${INFRA_NAMESPACE}" \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+  if [[ "${cr_status}" == "True" ]]; then
+    ok "Console CR Ready"
   else
-    warn "No console pod found — run: bash pipeline/ops.sh deploy-console"
+    warn "Console CR not Ready — run: bash pipeline/ops.sh deploy-console"
   fi
 
   local host
