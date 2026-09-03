@@ -161,7 +161,7 @@ spec:
 
         WORKSPACE="$(workspaces.source.path)"
 
-        if oc get crd consoles.console.streamshub.github.com &>/dev/null; then
+        if oc api-resources --api-group=console.streamshub.github.com 2>/dev/null | grep -q console; then
           echo "Console operator already installed — skipping Subscription."
         else
           echo "Applying OLM Subscription (requires cluster-admin)..."
