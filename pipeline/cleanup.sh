@@ -7,6 +7,7 @@
 # Usage:
 #   bash pipeline/cleanup.sh                                      # interactive prompts, skips namespaces
 #   DELETE_NAMESPACES=true bash pipeline/cleanup.sh               # also delete namespaces (self-provisioned clusters)
+#   DELETE_CHATOPS=true bash pipeline/cleanup.sh                  # also delete ChatOps deployment
 #   FORCE=true bash pipeline/cleanup.sh                           # skip all confirmation prompts (CI/automation)
 #   FORCE=true DELETE_NAMESPACES=true bash pipeline/cleanup.sh    # skip prompts + delete namespaces
 #
@@ -60,6 +61,32 @@ tkn taskrun delete --all --force -n "${INFRA_NAMESPACE}" 2>/dev/null || true
 ok "TaskRuns done"
 
 # ------------------------------------------------------------
+# 2b. ChatOps — optional (DELETE_CHATOPS=true)
+# ------------------------------------------------------------
+if [[ "${DELETE_CHATOPS:-false}" == "true" ]]; then
+  info "Step 2b/10 — Deleting ChatOps (${CHATOPS_NAME})..."
+  oc delete deployment/"${CHATOPS_NAME}" \
+    -n "${INFRA_NAMESPACE}" --ignore-not-found
+  oc delete svc,buildconfig,imagestream,route \
+    -l "app=${CHATOPS_NAME}" \
+    -n "${INFRA_NAMESPACE}" --ignore-not-found
+  ok "ChatOps done"
+else
+  info "Step 2b/10 — ChatOps skipped (set DELETE_CHATOPS=true to include)"
+fi
+
+# ------------------------------------------------------------
+# 2c. Kafka Console CR + route (deployed by deploy-console task or ops.sh)
+# ------------------------------------------------------------
+info "Step 2c/10 — Deleting Kafka Console..."
+oc delete consoles.console.streamshub.github.com kafka-console \
+  -n "${INFRA_NAMESPACE}" --ignore-not-found
+oc delete route \
+  -l "app.kubernetes.io/name=console" \
+  -n "${INFRA_NAMESPACE}" --ignore-not-found
+ok "Kafka Console done"
+
+# ------------------------------------------------------------
 # 3. Event generator (label: app=${EVENT_GENERATOR_NAME})
 # ------------------------------------------------------------
 info "Step 3/10 — Deleting event generator (${EVENT_GENERATOR_NAME})..."
@@ -84,9 +111,10 @@ for i in $(seq 1 15); do
   name="${!name_var:-skip}"
   [[ "$ns" == "skip" ]] && continue
   echo "         kafka-${name} in ${ns}"
-  oc delete statefulset,svc,pvc \
-    -l "app=kafka-${name}" \
-    -n "${ns}" --ignore-not-found
+  oc delete kafka "kafka-${name}" -n "${ns}" --ignore-not-found
+  oc delete kafkanodepool dual-role -n "${ns}" --ignore-not-found
+  # Strimzi names PVCs as data-{cluster}-{nodepool}-{ordinal} — delete by label
+  oc delete pvc -l "strimzi.io/cluster=kafka-${name}" -n "${ns}" --ignore-not-found
 done
 ok "Kafka done"
 
@@ -117,7 +145,7 @@ ok "NiFi done"
 # ------------------------------------------------------------
 info "Step 5/10 — Deleting Tekton tasks..."
 oc delete task \
-  deploy-kafka deploy-event-generator verify-health teardown-all deploy-nifi \
+  deploy-kafka deploy-event-generator verify-health teardown-all deploy-nifi deploy-chatops deploy-console \
   -n "${INFRA_NAMESPACE}" --ignore-not-found
 
 info "          Deleting Tekton pipelines..."

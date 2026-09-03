@@ -209,7 +209,7 @@ _write_team_registry() {
     tname=$(eval echo "\${TEAM${i}_NAME:-skip}")
     tns=$(eval echo "\${TEAM${i}_NAMESPACE:-skip}")
     [[ "${tname}" == "skip" || "${tns}" == "skip" ]] && continue
-    local bootstrap="kafka-${tname}.${tns}.svc.cluster.local:9092"
+    local bootstrap="kafka-${tname}-kafka-bootstrap.${tns}.svc.cluster.local:9092"
     args+=("--from-literal=${tname}=namespace=${tns},bootstrap=${bootstrap}")
   done
   if [[ ${#args[@]} -eq 0 ]]; then

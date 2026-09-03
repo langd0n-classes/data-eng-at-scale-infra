@@ -7,14 +7,14 @@
 # Usage (single team, manual):
 #   source config.env && \
 #   export TEAM_ID=01 && \
-#   envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${KAFKA_CLUSTER_NAME} \
+#   envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} \
 #             ${INFRA_NAMESPACE} ${EXTERNAL_DOMAIN} ${NIFI_CLUSTER_NAME}' \
 #   < onboarding/05-team-configmap.yaml | oc apply -f -
 #
 # Called by: onboarding/apply-onboarding.sh (Step 6 loop)
-# Note: vars come from config.env (KAFKA_CLUSTER_NAME, INFRA_NAMESPACE,
-#       EXTERNAL_DOMAIN, NIFI_CLUSTER_NAME) and cluster.env (TEAM_NAMESPACE_PREFIX)
-# Required vars: TEAM_NAMESPACE_PREFIX, TEAM_ID, KAFKA_CLUSTER_NAME,
+# Note: vars come from config.env (INFRA_NAMESPACE, EXTERNAL_DOMAIN, NIFI_CLUSTER_NAME)
+#       and cluster.env (TEAM_NAMESPACE_PREFIX)
+# Required vars: TEAM_NAMESPACE_PREFIX, TEAM_ID,
 #   INFRA_NAMESPACE, EXTERNAL_DOMAIN, NIFI_CLUSTER_NAME
 apiVersion: v1
 kind: ConfigMap

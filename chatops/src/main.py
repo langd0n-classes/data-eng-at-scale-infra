@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 from contextlib import asynccontextmanager
 from fastapi import BackgroundTasks, Depends, FastAPI
@@ -18,7 +19,11 @@ async def lifespan(app: FastAPI):
             k8s_config.load_kube_config()  # local fallback for dev/testing
         http = httpx.Client(timeout=30.0)
         commands.init_clients(k8s_client, http)
-        yield
+        task = asyncio.create_task(commands.kafka_restart_monitor())
+        try:
+            yield
+        finally:
+            task.cancel()
     finally:
         if http is not None:
             http.close()

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import functools
 import time
+from collections import deque
 from typing import Any
 
 import httpx
@@ -97,9 +100,9 @@ def dispatch(subcmd: str, args: list[str], channel_id: str) -> str:
         case "run-reset":        return cmd_run_reset()
         case "pipeline-status":  return cmd_pipeline_status()
         case "cleanup-runs":     return cmd_cleanup_runs()
-        case "export-config":    return cmd_export_config()
-        case "help":             return HELP_TEXT
-        case _:                  return f"Unknown command: `{subcmd}`\n\n{HELP_TEXT}"
+        case "export-config":       return cmd_export_config()
+        case "help":                return HELP_TEXT
+        case _:                     return f"Unknown command: `{subcmd}`\n\n{HELP_TEXT}"
 
 
 # ── Namespace discovery ────────────────────────────────────────────────────────
@@ -304,7 +307,7 @@ def _label_selector_list(ns: str, label: str, kinds: list[str]) -> list[str]:
 
 # ── Team registry helpers ──────────────────────────────────────────────────────
 
-_BOOTSTRAP_TMPL = "kafka-{name}.{ns}.svc.cluster.local:9092"
+_BOOTSTRAP_TMPL = "kafka-{name}-kafka-bootstrap.{ns}.svc.cluster.local:9092"
 
 
 def _get_team_registry() -> dict[str, dict[str, str]]:
@@ -1114,190 +1117,120 @@ def cmd_status_all() -> str:
 
 def cmd_add_kafka(name: str, ns: str) -> str:
     """
-    Deploy Kafka for a single team using the same resource spec as
-    kafka/per-team/kafka-per-team-template.yaml. Mirrors ops.sh _do_add_kafka.
+    Deploy Kafka for a single team via the Kafka operator.
+    Creates KafkaNodePool + Kafka CRs; operator provisions pod, services, PVC.
+    Mirrors ops.sh _do_add_kafka.
     """
     _check_namespace(ns)
 
-    labels = {"app": f"kafka-{name}", "component": "kafka", "team": name}
-    selector = {"app": f"kafka-{name}"}
-    advertised = (
-        f"PLAINTEXT://kafka-{name}-0.kafka-{name}-headless"
-        f".{ns}.svc.cluster.local:9092"
-    )
-    quorum_voters = (
-        f"1@kafka-{name}-0.kafka-{name}-headless"
-        f".{ns}.svc.cluster.local:9093"
-    )
+    # KafkaNodePool CR — defines the broker/controller pod
+    node_pool_body = {
+        "apiVersion": "kafka.strimzi.io/v1beta2",
+        "kind": "KafkaNodePool",
+        "metadata": {
+            "name": "dual-role",
+            "namespace": ns,
+            "labels": {"strimzi.io/cluster": f"kafka-{name}"},
+        },
+        "spec": {
+            "replicas": 1,
+            "roles": ["controller", "broker"],
+            "storage": {
+                "type": "persistent-claim",
+                "size": "2Gi",
+                "deleteClaim": False,
+                "class": settings.storage_class,
+            },
+            "resources": {
+                "requests": {"memory": "512Mi", "cpu": "250m"},
+                "limits": {"memory": "1Gi", "cpu": "500m"},
+            },
+        },
+    }
 
-    # ClusterIP service
-    _apply_or_update_service(ns, k8s_client.V1Service(
-        metadata=k8s_client.V1ObjectMeta(name=f"kafka-{name}", namespace=ns, labels=labels),
-        spec=k8s_client.V1ServiceSpec(
-            type="ClusterIP",
-            ports=[k8s_client.V1ServicePort(port=9092, name="kafka", target_port=9092)],
-            selector=selector,
-        ),
-    ))
+    # Kafka CR — declares the cluster configuration
+    kafka_body = {
+        "apiVersion": "kafka.strimzi.io/v1beta2",
+        "kind": "Kafka",
+        "metadata": {
+            "name": f"kafka-{name}",
+            "namespace": ns,
+            "annotations": {
+                "strimzi.io/node-pools": "enabled",
+                "strimzi.io/kraft": "enabled",
+            },
+        },
+        "spec": {
+            "kafka": {
+                "version": "4.2.0",
+                "metadataVersion": "4.2-IV0",
+                "listeners": [
+                    {"name": "plain", "port": 9092, "type": "internal", "tls": False}
+                ],
+                "config": {
+                    "offsets.topic.replication.factor": 1,
+                    "transaction.state.log.replication.factor": 1,
+                    "transaction.state.log.min.isr": 1,
+                    "default.replication.factor": 1,
+                    "min.insync.replicas": 1,
+                    "auto.create.topics.enable": "true",
+                    "log.retention.hours": 24,
+                    "log.retention.bytes": 104857600,
+                    "log.segment.bytes": 52428800,
+                    "log.cleanup.policy": "delete",
+                    "log.retention.check.interval.ms": 300000,
+                },
+            },
+            "entityOperator": {
+                "topicOperator": {},
+                "userOperator": {},
+            },
+        },
+    }
 
-    # Headless service
-    _apply_or_update_service(ns, k8s_client.V1Service(
-        metadata=k8s_client.V1ObjectMeta(
-            name=f"kafka-{name}-headless", namespace=ns, labels=labels
-        ),
-        spec=k8s_client.V1ServiceSpec(
-            cluster_ip="None",
-            ports=[
-                k8s_client.V1ServicePort(port=9092, name="kafka", target_port=9092),
-                k8s_client.V1ServicePort(port=9093, name="controller", target_port=9093),
-            ],
-            selector=selector,
-        ),
-    ))
+    # Apply KafkaNodePool CR
+    try:
+        custom.get_namespaced_custom_object(
+            "kafka.strimzi.io", "v1beta2", ns, "kafkanodepools", "dual-role"
+        )
+        custom.replace_namespaced_custom_object(
+            "kafka.strimzi.io", "v1beta2", ns, "kafkanodepools", "dual-role", node_pool_body
+        )
+    except k8s_client.ApiException as e:
+        if e.status == 404:
+            custom.create_namespaced_custom_object(
+                "kafka.strimzi.io", "v1beta2", ns, "kafkanodepools", node_pool_body
+            )
+        else:
+            raise
 
-    # StatefulSet (mirrors kafka-per-team-template.yaml exactly)
-    _apply_or_update_stateful_set(ns, k8s_client.V1StatefulSet(
-        metadata=k8s_client.V1ObjectMeta(
-            name=f"kafka-{name}", namespace=ns, labels=labels
-        ),
-        spec=k8s_client.V1StatefulSetSpec(
-            service_name=f"kafka-{name}-headless",
-            replicas=1,
-            selector=k8s_client.V1LabelSelector(match_labels=selector),
-            template=k8s_client.V1PodTemplateSpec(
-                metadata=k8s_client.V1ObjectMeta(labels=labels),
-                spec=k8s_client.V1PodSpec(
-                    containers=[k8s_client.V1Container(
-                        name="kafka",
-                        image="confluentinc/cp-kafka:7.5.0",
-                        ports=[
-                            k8s_client.V1ContainerPort(
-                                container_port=9092, name="kafka", protocol="TCP"
-                            ),
-                            k8s_client.V1ContainerPort(
-                                container_port=9093, name="controller", protocol="TCP"
-                            ),
-                        ],
-                        env=[
-                            k8s_client.V1EnvVar(
-                                name="CLUSTER_ID", value="MkU3OEVBNTcwNTJENDM2Qk"
-                            ),
-                            k8s_client.V1EnvVar(name="KAFKA_NODE_ID", value="1"),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_PROCESS_ROLES", value="broker,controller"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LISTENERS",
-                                value="PLAINTEXT://:9092,CONTROLLER://:9093",
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_ADVERTISED_LISTENERS", value=advertised
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_CONTROLLER_LISTENER_NAMES", value="CONTROLLER"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LISTENER_SECURITY_PROTOCOL_MAP",
-                                value="CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_CONTROLLER_QUORUM_VOTERS", value=quorum_voters
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", value="1"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR",
-                                value="1",
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_TRANSACTION_STATE_LOG_MIN_ISR", value="1"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_DEFAULT_REPLICATION_FACTOR", value="1"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_MIN_INSYNC_REPLICAS", value="1"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_AUTO_CREATE_TOPICS_ENABLE", value="true"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LOG_DIRS", value="/mnt/kafka-data/logs"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LOG_RETENTION_HOURS", value="24"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LOG_RETENTION_BYTES", value="104857600"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LOG_SEGMENT_BYTES", value="52428800"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LOG_CLEANUP_POLICY", value="delete"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS", value="300000"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_LOG_SEGMENT_DELETE_DELAY_MS", value="60000"
-                            ),
-                            k8s_client.V1EnvVar(
-                                name="KAFKA_HEAP_OPTS", value="-Xms256m -Xmx512m"
-                            ),
-                        ],
-                        volume_mounts=[
-                            k8s_client.V1VolumeMount(
-                                name="data", mount_path="/mnt/kafka-data"
-                            )
-                        ],
-                        resources=k8s_client.V1ResourceRequirements(
-                            requests={"memory": "512Mi", "cpu": "250m"},
-                            limits={"memory": "1Gi", "cpu": "500m"},
-                        ),
-                        readiness_probe=k8s_client.V1Probe(
-                            tcp_socket=k8s_client.V1TCPSocketAction(port=9092),
-                            initial_delay_seconds=30,
-                            period_seconds=10,
-                            timeout_seconds=5,
-                            failure_threshold=3,
-                        ),
-                        liveness_probe=k8s_client.V1Probe(
-                            tcp_socket=k8s_client.V1TCPSocketAction(port=9092),
-                            initial_delay_seconds=60,
-                            period_seconds=30,
-                            timeout_seconds=10,
-                            failure_threshold=3,
-                        ),
-                    )]
-                ),
-            ),
-            volume_claim_templates=[
-                k8s_client.V1PersistentVolumeClaim(
-                    metadata=k8s_client.V1ObjectMeta(name="data", labels=labels),
-                    spec=k8s_client.V1PersistentVolumeClaimSpec(
-                        access_modes=["ReadWriteOnce"],
-                        resources=k8s_client.V1VolumeResourceRequirements(
-                            requests={"storage": "2Gi"}
-                        ),
-                        storage_class_name=settings.storage_class,
-                    ),
-                )
-            ],
-        ),
-    ))
+    # Apply Kafka CR
+    try:
+        custom.get_namespaced_custom_object(
+            "kafka.strimzi.io", "v1beta2", ns, "kafkas", f"kafka-{name}"
+        )
+        custom.replace_namespaced_custom_object(
+            "kafka.strimzi.io", "v1beta2", ns, "kafkas", f"kafka-{name}", kafka_body
+        )
+    except k8s_client.ApiException as e:
+        if e.status == 404:
+            custom.create_namespaced_custom_object(
+                "kafka.strimzi.io", "v1beta2", ns, "kafkas", kafka_body
+            )
+        else:
+            raise
 
-    # Wait for Kafka pod Ready before restarting EG.
+    # Wait for Kafka CR to be Ready before restarting EG.
     # EG has 5×3s retries at startup — if Kafka isn't up yet, the new team is
-    # permanently skipped (no reconnect). 120s covers normal pod scheduling.
-    pod_name = f"kafka-{name}-0"
-    deadline = time.time() + 120
+    # permanently skipped (no reconnect). 180s covers operator reconcile time.
+    deadline = time.time() + 180
     while time.time() < deadline:
         try:
-            pod = core_v1.read_namespaced_pod(pod_name, ns)
-            conditions = pod.status.conditions or []
-            if any(c.type == "Ready" and c.status == "True" for c in conditions):
+            kafka_cr = custom.get_namespaced_custom_object(
+                "kafka.strimzi.io", "v1beta2", ns, "kafkas", f"kafka-{name}"
+            )
+            conditions = kafka_cr.get("status", {}).get("conditions", [])
+            if any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions):
                 break
         except k8s_client.ApiException:
             pass
@@ -1305,9 +1238,7 @@ def cmd_add_kafka(name: str, ns: str) -> str:
 
     _upsert_team_registry(name, ns)
     eg_result = _patch_event_generator_bootstrap()
-    bootstrap = (
-        f"kafka-{name}-0.kafka-{name}-headless.{ns}.svc.cluster.local:9092"
-    )
+    bootstrap = _BOOTSTRAP_TMPL.format(name=name, ns=ns)
     return (
         f"Kafka deployed for {name} in {ns}\n"
         f"Bootstrap: {bootstrap}\n"
@@ -1368,20 +1299,26 @@ def cmd_remove_team(name: str, ns: str) -> str:
 
 
 def cmd_remove_kafka(name: str, ns: str) -> str:
-    label = f"app=kafka-{name}"
+    # Delete Kafka CR — operator cascades cleanup of pod, services, PVC
     try:
-        for sts in apps_v1.list_namespaced_stateful_set(ns, label_selector=label).items:
-            apps_v1.delete_namespaced_stateful_set(sts.metadata.name, ns)
-    except Exception:
-        pass
+        custom.delete_namespaced_custom_object(
+            "kafka.strimzi.io", "v1beta2", ns, "kafkas", f"kafka-{name}"
+        )
+    except k8s_client.ApiException as e:
+        if e.status != 404:
+            raise
+    # Delete KafkaNodePool CR
     try:
-        for svc in core_v1.list_namespaced_service(ns, label_selector=label).items:
-            core_v1.delete_namespaced_service(svc.metadata.name, ns)
-    except Exception:
-        pass
+        custom.delete_namespaced_custom_object(
+            "kafka.strimzi.io", "v1beta2", ns, "kafkanodepools", "dual-role"
+        )
+    except k8s_client.ApiException as e:
+        if e.status != 404:
+            raise
+    # Delete Strimzi-created PVCs — must delete or re-add crashes with cluster.id mismatch
     try:
         for pvc in core_v1.list_namespaced_persistent_volume_claim(
-            ns, label_selector=label
+            ns, label_selector=f"strimzi.io/cluster=kafka-{name}"
         ).items:
             core_v1.delete_namespaced_persistent_volume_claim(pvc.metadata.name, ns)
     except Exception:
@@ -1455,48 +1392,75 @@ def cmd_remove_all_teams() -> str:
 
 
 def cmd_wipe_kafka_data(name: str, ns: str) -> str:
-    sts_name = f"kafka-{name}"
-    # Verify StatefulSet exists first
+    # Verify Kafka CR exists first
     try:
-        apps_v1.read_namespaced_stateful_set(sts_name, ns)
+        custom.get_namespaced_custom_object(
+            "kafka.strimzi.io", "v1beta2", ns, "kafkas", f"kafka-{name}"
+        )
     except k8s_client.ApiException as e:
         if e.status == 404:
             raise RuntimeError(
-                f"StatefulSet {sts_name} not found in {ns} — Kafka is not deployed for this team."
+                f"Kafka CR kafka-{name} not found in {ns} — Kafka is not deployed for this team."
             )
         raise
 
-    # Scale to 0
-    apps_v1.patch_namespaced_stateful_set_scale(
-        sts_name, ns, {"spec": {"replicas": 0}}
-    )
-    # Wait up to 60s for pod to disappear
-    deadline = time.time() + 60
+    # Delete KafkaNodePool — operator removes pod and PVC, then we recreate fresh
+    try:
+        custom.delete_namespaced_custom_object(
+            "kafka.strimzi.io", "v1beta2", ns, "kafkanodepools", "dual-role"
+        )
+    except k8s_client.ApiException as e:
+        if e.status != 404:
+            raise
+
+    # Wait up to 120s for pod to disappear before recreating
+    label_selector = f"strimzi.io/cluster=kafka-{name}"
+    deadline = time.time() + 120
     while time.time() < deadline:
-        try:
-            core_v1.read_namespaced_pod(f"{sts_name}-0", ns)
-            time.sleep(3)
-        except k8s_client.ApiException as e:
-            if e.status == 404:
-                break
-    # Delete PVCs
-    label = f"app=kafka-{name}"
-    for pvc in core_v1.list_namespaced_persistent_volume_claim(
-        ns, label_selector=label
-    ).items:
-        core_v1.delete_namespaced_persistent_volume_claim(pvc.metadata.name, ns)
-    # Scale back to 1
-    apps_v1.patch_namespaced_stateful_set_scale(
-        sts_name, ns, {"spec": {"replicas": 1}}
+        pods = core_v1.list_namespaced_pod(ns, label_selector=label_selector).items
+        if not pods:
+            break
+        time.sleep(5)
+
+    # Recreate KafkaNodePool with fresh storage
+    node_pool_body = {
+        "apiVersion": "kafka.strimzi.io/v1beta2",
+        "kind": "KafkaNodePool",
+        "metadata": {
+            "name": "dual-role",
+            "namespace": ns,
+            "labels": {"strimzi.io/cluster": f"kafka-{name}"},
+        },
+        "spec": {
+            "replicas": 1,
+            "roles": ["controller", "broker"],
+            "storage": {
+                "type": "persistent-claim",
+                "size": "2Gi",
+                "deleteClaim": False,
+                "class": settings.storage_class,
+            },
+            "resources": {
+                "requests": {"memory": "512Mi", "cpu": "250m"},
+                "limits": {"memory": "1Gi", "cpu": "500m"},
+            },
+        },
+    }
+    custom.create_namespaced_custom_object(
+        "kafka.strimzi.io", "v1beta2", ns, "kafkanodepools", node_pool_body
     )
-    return f"Kafka data wiped for {name} in {ns}. Pod restarting with fresh storage."
+    return f"Kafka data wiped for {name} in {ns}. Operator is recreating broker with fresh storage."
 
 
 def cmd_restart_kafka(name: str, ns: str) -> str:
-    core_v1.delete_namespaced_pod(
-        f"kafka-{name}-0", ns, body=k8s_client.V1DeleteOptions()
-    )
-    return f"kafka-{name}-0 deleted — StatefulSet will restart it"
+    # Use label selector to find the actual pod name (Strimzi naming: kafka-{name}-dual-role-0)
+    label_selector = f"strimzi.io/cluster=kafka-{name},strimzi.io/kind=Kafka"
+    pods = core_v1.list_namespaced_pod(ns, label_selector=label_selector).items
+    if not pods:
+        raise RuntimeError(f"No Kafka pod found for kafka-{name} in {ns}")
+    pod_name = pods[0].metadata.name
+    core_v1.delete_namespaced_pod(pod_name, ns, body=k8s_client.V1DeleteOptions())
+    return f"{pod_name} deleted — Strimzi operator will restart it"
 
 
 def cmd_restart_nifi(name: str, ns: str) -> str:
@@ -1814,3 +1778,111 @@ HELP_TEXT = """\
 *Config sync*
   `export-config`     Print team registry as config.env block (includes passwords from cluster)
 """
+
+# ── Kafka crash-loop alerting ──────────────────────────────────────────────────
+
+# Tracks the last time an alert was sent per pod (key: "namespace/pod-name").
+# Alerts for the same pod are suppressed for 1800s (30 min) to avoid spam during sustained crash-loops.
+_alert_sent: dict[str, float] = {}
+
+
+async def kafka_restart_monitor() -> None:
+    """Background loop: alert admin channel when Kafka broker restart count spikes."""
+    if not settings.slack_bot_token or not settings.admin_channel_id:
+        print("[kafka-monitor] disabled — SLACK_BOT_TOKEN or ADMIN_CHANNEL_ID not set")
+        return
+
+    # restart_history[namespace][pod_name] = deque of (timestamp, restart_count) pairs
+    restart_history: dict[str, dict[str, deque]] = {}
+
+    while True:
+        await asyncio.sleep(settings.alert_poll_interval_seconds)
+        try:
+            await _check_kafka_restarts(restart_history)
+        except Exception as exc:
+            print(f"[kafka-monitor] error: {exc}")
+
+
+async def _check_kafka_restarts(
+    restart_history: dict[str, dict[str, deque]]
+) -> None:
+    """Poll Kafka broker pods across all team namespaces and fire alerts on crash-loops."""
+    now = time.time()
+    window_seconds = settings.alert_window_minutes * 60
+
+    registry = await asyncio.to_thread(_get_team_registry)
+
+    for team_name, info in registry.items():
+        ns = info["namespace"]
+        if ns not in restart_history:
+            restart_history[ns] = {}
+
+        list_fn = functools.partial(
+            core_v1.list_namespaced_pod,
+            ns,
+            label_selector=f"strimzi.io/cluster=kafka-{team_name},strimzi.io/kind=Kafka",
+        )
+        try:
+            pod_list = await asyncio.to_thread(list_fn)
+        except Exception as exc:
+            print(f"[kafka-monitor] failed to list pods in {ns}: {exc}")
+            continue
+
+        for pod in pod_list.items:
+            pod_name = pod.metadata.name
+            if pod_name not in restart_history[ns]:
+                restart_history[ns][pod_name] = deque()
+
+            history = restart_history[ns][pod_name]
+
+            # Sum restart counts across all containers (handle None container_statuses)
+            total_restarts = sum(
+                cs.restart_count
+                for cs in (pod.status.container_statuses or [])
+            )
+
+            history.append((now, total_restarts))
+
+            # Evict entries outside the rolling window
+            while history and history[0][0] < now - window_seconds:
+                history.popleft()
+
+            if len(history) < 2:
+                continue
+
+            oldest_count = history[0][1]
+            newest_count = history[-1][1]
+            delta = newest_count - oldest_count
+
+            if delta < settings.alert_restart_threshold:
+                continue
+
+            alert_key = f"{ns}/{pod_name}"
+            if now - _alert_sent.get(alert_key, 0) < 1800:
+                continue  # still in cooldown
+
+            alert_text = (
+                ":rotating_light: *Kafka broker crash-loop detected*\n"
+                f"• *Namespace*: `{ns}`\n"
+                f"• *Pod*: `{pod_name}`\n"
+                f"• *Restarts*: +{delta} in last {settings.alert_window_minutes} minutes"
+                f" (total: {newest_count})\n"
+                f"• *Action*: Run `/infra status {team_name} {ns}` to investigate"
+            )
+
+            post_fn = functools.partial(
+                http_client.post,
+                "https://slack.com/api/chat.postMessage",
+                headers={"Authorization": f"Bearer {settings.slack_bot_token}"},
+                json={"channel": settings.admin_channel_id, "text": alert_text},
+            )
+            try:
+                resp = await asyncio.to_thread(post_fn)
+                body = resp.json() if hasattr(resp, "json") else {}
+                if body.get("ok"):
+                    _alert_sent[alert_key] = now  # only stamp cooldown on success
+                    print(f"[kafka-monitor] alert sent for {alert_key} (+{delta} restarts)")
+                else:
+                    print(f"[kafka-monitor] Slack API error for {alert_key}: {body.get('error', body)}")
+            except Exception as exc:
+                print(f"[kafka-monitor] failed to post alert for {alert_key}: {exc}")

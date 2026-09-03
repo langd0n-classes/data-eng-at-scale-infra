@@ -28,19 +28,19 @@ if ! kubectl get namespace "${TEAM_NAMESPACE}" &>/dev/null; then
     exit 0
 fi
 
-# Check if Kafka resources exist
-if ! kubectl get statefulset "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" &>/dev/null; then
-    echo "WARNING: Kafka StatefulSet kafka-${TEAM_NAME} not found in ${TEAM_NAMESPACE}"
+# Check if Kafka CR exists
+if ! kubectl get kafka "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" &>/dev/null; then
+    echo "WARNING: Kafka CR kafka-${TEAM_NAME} not found in ${TEAM_NAMESPACE}"
     echo "Nothing to delete."
     exit 0
 fi
 
-echo "⚠️  WARNING: This will delete Kafka and ALL its data!"
+echo "WARNING: This will delete Kafka and ALL its data!"
 echo ""
 echo "Resources to be deleted:"
-echo "  - StatefulSet: kafka-${TEAM_NAME}"
-echo "  - Services: kafka-${TEAM_NAME}, kafka-${TEAM_NAME}-headless"
-echo "  - PVC: data-kafka-${TEAM_NAME}-0"
+echo "  - Kafka CR: kafka-${TEAM_NAME}"
+echo "  - KafkaNodePool CR: dual-role"
+echo "  - (operator cascades: pods, services, PVC)"
 echo ""
 read -p "Are you sure you want to continue? (yes/no): " confirm
 
@@ -50,20 +50,19 @@ if [ "${confirm}" != "yes" ]; then
 fi
 
 echo ""
-echo "Deleting Kafka resources..."
+echo "Deleting Kafka operator CRs..."
 
-# Delete StatefulSet first (this will delete the pod)
-echo "  Deleting StatefulSet..."
-kubectl delete statefulset "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" || true
+# Delete Kafka CR — operator cascades cleanup of pods, services, PVC
+echo "  Deleting Kafka CR..."
+kubectl delete kafka "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" || true
 
-# Delete Services
-echo "  Deleting Services..."
-kubectl delete service "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" || true
-kubectl delete service "kafka-${TEAM_NAME}-headless" -n "${TEAM_NAMESPACE}" || true
+# Delete KafkaNodePool CR
+echo "  Deleting KafkaNodePool CR..."
+kubectl delete kafkanodepool dual-role -n "${TEAM_NAMESPACE}" || true
 
-# Delete PVC (this removes the data)
-echo "  Deleting PVC..."
-kubectl delete pvc "data-kafka-${TEAM_NAME}-0" -n "${TEAM_NAMESPACE}" || true
+# Delete Strimzi-created PVCs — must delete or re-add crashes with cluster.id mismatch
+echo "  Deleting Strimzi PVCs..."
+kubectl delete pvc -l "strimzi.io/cluster=kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" || true
 
 echo ""
 echo "=========================================="
@@ -73,5 +72,5 @@ echo ""
 echo "Kafka for ${TEAM_NAME} has been removed from ${TEAM_NAMESPACE}"
 echo ""
 echo "Verify deletion:"
-echo "  kubectl get all,pvc -n ${TEAM_NAMESPACE} -l app=kafka-${TEAM_NAME}"
+echo "  kubectl get kafka,kafkanodepool,pods,pvc -n ${TEAM_NAMESPACE}"
 echo ""

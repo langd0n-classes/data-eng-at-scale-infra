@@ -38,6 +38,14 @@ rules:
   - apiGroups: ["build.openshift.io"]
     resources: ["buildconfigs"]
     verbs: ["get", "list", "delete"]
+  # Kafka operator CRs (Strimzi) — required for add-kafka, remove-kafka, restart-kafka, wipe-kafka-data
+  - apiGroups: ["kafka.strimzi.io"]
+    resources:
+      - kafkas
+      - kafkanodepools
+      - kafkatopics
+      - kafkausers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

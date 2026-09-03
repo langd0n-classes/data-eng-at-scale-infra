@@ -83,6 +83,21 @@ rules:
       - networkpolicies
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # PodDisruptionBudget — required to apply PDB per team after Kafka is ready
+  - apiGroups: ["policy"]
+    resources:
+      - poddisruptionbudgets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Kafka operator CRs (Strimzi) — required to create/manage Kafka clusters
+  - apiGroups: ["kafka.strimzi.io"]
+    resources:
+      - kafkas
+      - kafkanodepools
+      - kafkatopics
+      - kafkausers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
 ---
 # Bind the ClusterRole to our ServiceAccount in infra namespace
 apiVersion: rbac.authorization.k8s.io/v1
