@@ -945,31 +945,14 @@ print(f'config.env updated in-place with {len(teams)} team(s)')
 }
 
 _do_deploy_console() {
-  # Step 1: Apply OLM Subscription
-  info "Applying Kafka Console operator Subscription..."
-  run "oc apply -f '${REPO_ROOT}/monitoring/console/01-kafka-console-subscription.yaml'"
-
-  # Step 2: Wait for operator CSV to be Succeeded (skip in --dry-run)
-  if [[ "${DRY_RUN:-false}" != "true" ]]; then
-    info "Waiting for Kafka Console operator CSV to reach Succeeded (up to 10 min)..."
-    local operator_ready=false
-    for i in $(seq 1 60); do
-      local status
-      status=$(oc get csv -n openshift-operators --no-headers 2>/dev/null \
-        | grep -i console | grep -i "Succeeded" | head -1 || echo "")
-      if [[ -n "${status}" ]]; then
-        ok "Operator installed: ${status}"
-        operator_ready=true
-        break
-      fi
-      echo "  attempt ${i}/60 — waiting 10s..."
-      sleep 10
-    done
-    if [[ "${operator_ready}" != "true" ]]; then
-      err "Console operator CSV did not reach Succeeded after 600s"
-      err "Check: oc get csv -n openshift-operators"
-      exit 1
-    fi
+  # Step 1: Apply OLM Subscription (skip if operator already installed)
+  # api-resources check works without cluster-admin (no CRD get required)
+  if oc api-resources --api-group=console.streamshub.github.com 2>/dev/null | grep -q console; then
+    info "Console operator already installed — skipping Subscription."
+  else
+    info "Applying OLM Subscription (requires cluster-admin)..."
+    oc apply -f "${REPO_ROOT}/monitoring/console/01-kafka-console-subscription.yaml" 2>/dev/null || \
+      warn "Subscription failed — ask cluster admin to pre-install Streams for Apache Kafka Console operator."
   fi
 
   # Step 3: Build kafkaClusters list from active teams in config.env and apply Console CR
