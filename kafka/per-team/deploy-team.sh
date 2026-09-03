@@ -41,13 +41,17 @@ if [ -z "$TEAM_NAME" ] || [ -z "$TEAM_NAMESPACE" ]; then
 fi
 
 # Load config for STORAGE_CLASS
-if [ ! -f "${SCRIPT_DIR}/../config.env" ]; then
-    echo "ERROR: ../config.env not found!"
-    echo "Please ensure config.env exists in the infra directory"
+if [ ! -f "${SCRIPT_DIR}/../../config.env" ]; then
+    echo "ERROR: ../../config.env not found!"
+    echo "Please ensure config.env exists in the repo root"
     exit 1
 fi
 
-source "${SCRIPT_DIR}/../config.env"
+_TEAM_NAME_ARG="${TEAM_NAME}"
+_TEAM_NAMESPACE_ARG="${TEAM_NAMESPACE}"
+source "${SCRIPT_DIR}/../../config.env"
+TEAM_NAME="${_TEAM_NAME_ARG}"
+TEAM_NAMESPACE="${_TEAM_NAMESPACE_ARG}"
 
 echo "=========================================="
 echo "Deploying Kafka for ${TEAM_NAME}"
