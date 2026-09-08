@@ -8,11 +8,10 @@
 # instead of creating a Role in every team namespace.
 #
 # Variables substituted via envsubst (source config.env first):
-#   ${TEKTON_SA_NAME}   — config.env: TEKTON_SA_NAME   (default: pipeline)
-#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE  (e.g. ds551-2026-spring-9ab13b)
+#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE
 #
 # Apply with:
-#   source config.env && envsubst '${TEKTON_SA_NAME} ${INFRA_NAMESPACE}' \
+#   source config.env && envsubst '${INFRA_NAMESPACE}' \
 #     < pipeline/rbac/02-clusterrolebinding.yaml | oc apply -f -
 
 ---
@@ -98,6 +97,12 @@ rules:
       - kafkausers
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # Kafka Console CR (StreamsHub) — required by deploy-console task (task 09)
+  - apiGroups: ["console.streamshub.github.com"]
+    resources:
+      - consoles
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
 ---
 # Bind the ClusterRole to our ServiceAccount in infra namespace
 apiVersion: rbac.authorization.k8s.io/v1
@@ -113,5 +118,5 @@ roleRef:
   name: pipeline-runner-role
 subjects:
   - kind: ServiceAccount
-    name: ${TEKTON_SA_NAME}       # config.env: TEKTON_SA_NAME
-    namespace: ${INFRA_NAMESPACE} # config.env: INFRA_NAMESPACE
+    name: pipeline                 # auto-created by OpenShift Pipelines operator
+    namespace: ${INFRA_NAMESPACE}  # config.env: INFRA_NAMESPACE

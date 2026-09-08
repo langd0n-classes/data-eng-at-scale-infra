@@ -1,22 +1,24 @@
 # RoleBinding for pipeline SA — per team namespace (dedicated cluster)
 #
-# Use this file if your cluster does NOT allow ClusterRoleBinding
-# (e.g., shared clusters like NERC where you are a namespace-scoped admin).
+# Use this file on dedicated clusters (e.g. CRC) where you have cluster-admin
+# and applied 02-clusterrolebinding.yaml to create the ClusterRole.
 #
 # How it works:
 #   - The ClusterRole (pipeline-runner-role) is defined in 02-clusterrolebinding.yaml
-#   - A RoleBinding references that ClusterRole but scopes it to ONE namespace
-#   - You need one RoleBinding per team namespace
+#   - This RoleBinding references that ClusterRole but scopes it to ONE namespace
+#   - You need one RoleBinding per team namespace (setup.sh loops over all active teams)
+#
+# On shared clusters (NERC): use 04-role-rolebinding-namespace.yaml instead —
+# it creates a namespace-scoped Role so no ClusterRole is needed.
 #
 # Variables substituted via envsubst (source config.env first):
-#   ${TEKTON_SA_NAME}   — config.env: TEKTON_SA_NAME   (default: pipeline)
-#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE  (e.g. ds551-2026-spring-9ab13b)
+#   ${INFRA_NAMESPACE}  — config.env: INFRA_NAMESPACE
 #
 # Apply for a single team:
-#   source config.env && envsubst '${TEKTON_SA_NAME} ${INFRA_NAMESPACE}' \
+#   source config.env && envsubst '${INFRA_NAMESPACE}' \
 #     < pipeline/rbac/03-rolebinding-per-team.yaml | oc apply -f - -n <team-namespace>
 #
-# Or loop over all teams (see IMPLEMENTATION.md).
+# Or loop over all teams (see setup.sh dedicated-cluster path).
 
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -32,5 +34,5 @@ roleRef:
   name: pipeline-runner-role  # but only applies within the namespace this RoleBinding is in
 subjects:
   - kind: ServiceAccount
-    name: ${TEKTON_SA_NAME}       # config.env: TEKTON_SA_NAME
-    namespace: ${INFRA_NAMESPACE} # config.env: INFRA_NAMESPACE — SA lives here, not in team namespace
+    name: pipeline                 # auto-created by OpenShift Pipelines operator
+    namespace: ${INFRA_NAMESPACE}  # config.env: INFRA_NAMESPACE — SA lives here, not in team namespace
