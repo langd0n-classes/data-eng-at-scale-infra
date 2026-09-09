@@ -17,13 +17,14 @@ from settings import settings
 core_v1: k8s_client.CoreV1Api | None = None
 apps_v1: k8s_client.AppsV1Api | None = None
 networking_v1: k8s_client.NetworkingV1Api | None = None   # for NetworkPolicy
+rbac_v1: k8s_client.RbacAuthorizationV1Api | None = None  # for RoleBinding cleanup
 custom: k8s_client.CustomObjectsApi | None = None          # Routes, BuildConfigs, Tekton
 http_client: httpx.Client | None = None
 
 
 def init_clients(k8s_module: Any, http: httpx.Client) -> None:
     """Called once from lifespan. k8s_module is the kubernetes.client module."""
-    global core_v1, apps_v1, networking_v1, custom, http_client
+    global core_v1, apps_v1, networking_v1, rbac_v1, custom, http_client
     # Set a 10s timeout on all API calls — prevents DNS hangs from blocking Slack responses
     cfg = k8s_module.Configuration.get_default_copy()
     cfg.retries = 1
@@ -31,6 +32,7 @@ def init_clients(k8s_module: Any, http: httpx.Client) -> None:
     core_v1 = k8s_module.CoreV1Api()
     apps_v1 = k8s_module.AppsV1Api()
     networking_v1 = k8s_module.NetworkingV1Api()
+    rbac_v1 = k8s_module.RbacAuthorizationV1Api()
     custom = k8s_module.CustomObjectsApi()
     http_client = http
 
@@ -98,9 +100,12 @@ def dispatch(subcmd: str, args: list[str], channel_id: str) -> str:
         case "reset-all":        return cmd_reset_all()
         case "run-pipeline":     return cmd_run_pipeline()
         case "run-reset":        return cmd_run_reset()
+        case "run-cleanup":      return cmd_run_cleanup()
         case "pipeline-status":  return cmd_pipeline_status()
         case "cleanup-runs":     return cmd_cleanup_runs()
         case "export-config":       return cmd_export_config()
+        case "deploy-console":      return cmd_deploy_console()
+        case "console-status":      return cmd_console_status()
         case "help":                return HELP_TEXT
         case _:                     return f"Unknown command: `{subcmd}`\n\n{HELP_TEXT}"
 
@@ -416,9 +421,6 @@ def _patch_event_generator_bootstrap() -> str:
             {"data": {"TEAM_BOOTSTRAP_SERVERS": bootstrap_str}}
         )
 
-    if not registry:
-        return "All teams removed — event-generator ConfigMap cleared, restart skipped"
-
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     apps_v1.patch_namespaced_deployment(
         settings.event_generator_name, settings.infra_namespace,
@@ -426,11 +428,86 @@ def _patch_event_generator_bootstrap() -> str:
             {"kubectl.kubernetes.io/restartedAt": now}
         }}}}
     )
+    if not registry:
+        return "All teams removed — event-generator cleared and restarted (no active clusters)"
     return f"Event-generator patched with {len(registry)} team(s) and restarted"
 
 
+def _patch_console_clusters() -> str:
+    """Rebuild kafkaClusters in the Console CR from team-registry.
+
+    Best-effort — skips silently if the Console CR is not deployed.
+    Called after every add-kafka / remove-kafka to keep the Console in sync.
+    """
+    try:
+        custom.get_namespaced_custom_object(
+            "console.streamshub.github.com", "v1alpha1",
+            settings.infra_namespace, "consoles", "kafka-console"
+        )
+    except k8s_client.ApiException as e:
+        if e.status == 404:
+            return "Console CR not deployed — skipping cluster list update"
+        return f"Console CR check failed — {e.reason}"
+
+    registry = _get_team_registry()
+    kafka_clusters = [
+        {"name": f"kafka-{name}", "namespace": entry["namespace"], "listener": "plain"}
+        for name, entry in sorted(registry.items())
+        if "namespace" in entry
+    ]
+
+    try:
+        custom.patch_namespaced_custom_object(
+            "console.streamshub.github.com", "v1alpha1",
+            settings.infra_namespace, "consoles", "kafka-console",
+            {"spec": {"kafkaClusters": kafka_clusters}}
+        )
+    except k8s_client.ApiException as e:
+        return f"Console CR patch failed — {e.reason}"
+
+    if not kafka_clusters:
+        return "Console CR updated — no active clusters"
+    return f"Console CR updated with {len(kafka_clusters)} cluster(s)"
+
+
 def _remove_all_in_namespace(ns: str) -> None:
-    """Delete all Kafka/NiFi resources from a team namespace (no label selector)."""
+    """Fire all delete calls for Kafka/NiFi resources in a team namespace.
+
+    Does NOT wait for pods to terminate — caller is responsible for the wait.
+    Separating deletes from the wait allows all namespaces to be cleaned in
+    parallel rather than sequentially (15 teams in ~60s instead of ~30 min).
+    """
+    # Delete Kafka CRs first — the Strimzi operator watches these and will reconcile
+    # (recreate) any StatefulSets/Services we delete while the CR still exists.
+    try:
+        kafkas = custom.list_namespaced_custom_object(
+            "kafka.strimzi.io", "v1beta2", ns, "kafkas"
+        )
+        for k in kafkas.get("items", []):
+            try:
+                custom.delete_namespaced_custom_object(
+                    "kafka.strimzi.io", "v1beta2", ns, "kafkas", k["metadata"]["name"]
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Delete KafkaNodePool CRs
+    try:
+        pools = custom.list_namespaced_custom_object(
+            "kafka.strimzi.io", "v1beta2", ns, "kafkanodepools"
+        )
+        for p in pools.get("items", []):
+            try:
+                custom.delete_namespaced_custom_object(
+                    "kafka.strimzi.io", "v1beta2", ns, "kafkanodepools", p["metadata"]["name"]
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # StatefulSets (Kafka + NiFi)
     try:
         for sts in apps_v1.list_namespaced_stateful_set(ns).items:
@@ -487,6 +564,26 @@ def _remove_all_in_namespace(ns: str) -> None:
                 pass
     except Exception:
         pass
+
+    # Per-team monitoring resources
+    for cm_name in ["kafka-metrics-config"]:
+        try:
+            core_v1.delete_namespaced_config_map(cm_name, ns)
+        except Exception:
+            pass
+    for rb_name in ["prometheus-scrape"]:
+        try:
+            rbac_v1.delete_namespaced_role_binding(rb_name, ns)
+        except Exception:
+            pass
+
+
+def _has_pods(ns: str) -> bool:
+    """Return True if any pods exist in the namespace (used during teardown wait)."""
+    try:
+        return bool(core_v1.list_namespaced_pod(ns).items)
+    except Exception:
+        return False
 
 
 def _cancel_in_flight_runs() -> str:
@@ -587,6 +684,112 @@ def _wipe_tekton_history() -> str:
         pass
 
     return f"Wiped Tekton history: {deleted} objects deleted (ChatOps preserved)"
+
+
+def _delete_console() -> str:
+    """Delete Kafka Console CR and its operator-managed routes. Best-effort."""
+    ns = settings.infra_namespace
+    deleted = []
+    try:
+        custom.delete_namespaced_custom_object(
+            "console.streamshub.github.com", "v1alpha1",
+            ns, "consoles", "kafka-console"
+        )
+        deleted.append("Console CR")
+    except Exception:
+        pass
+    try:
+        routes = custom.list_namespaced_custom_object(
+            "route.openshift.io", "v1", ns, "routes",
+            label_selector="app.kubernetes.io/name=console"
+        )
+        for r in routes.get("items", []):
+            try:
+                custom.delete_namespaced_custom_object(
+                    "route.openshift.io", "v1", ns, "routes", r["metadata"]["name"]
+                )
+                deleted.append(f"route/{r['metadata']['name']}")
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return f"Console deleted: {', '.join(deleted)}" if deleted else "Console: nothing to delete"
+
+
+def _delete_tekton_definitions() -> str:
+    """Delete Tekton Task and Pipeline definitions by name (mirrors cleanup.sh step 5)."""
+    ns = settings.infra_namespace
+    task_names = [
+        "deploy-kafka", "deploy-event-generator", "verify-health",
+        "teardown-all", "deploy-nifi", "deploy-chatops", "deploy-console",
+    ]
+    pipeline_names = ["deploy-all-teams", "reset-and-deploy"]
+    deleted = 0
+    for task_name in task_names:
+        try:
+            custom.delete_namespaced_custom_object(
+                "tekton.dev", "v1", ns, "tasks", task_name
+            )
+            deleted += 1
+        except Exception:
+            pass
+    for pipeline_name in pipeline_names:
+        try:
+            custom.delete_namespaced_custom_object(
+                "tekton.dev", "v1", ns, "pipelines", pipeline_name
+            )
+            deleted += 1
+        except Exception:
+            pass
+    return f"Tekton definitions: {deleted} task(s)/pipeline(s) deleted"
+
+
+def _delete_rbac() -> str:
+    """Delete pipeline RBAC from team namespaces, infra namespace, and cluster-scoped (best-effort).
+
+    Mirrors cleanup.sh steps 7-9. Matches label: app=tekton-pipeline,component=rbac.
+    """
+    label = "app=tekton-pipeline,component=rbac"
+    ns = settings.infra_namespace
+    deleted = 0
+
+    try:
+        team_namespaces = _discover_team_namespaces()
+    except Exception:
+        team_namespaces = []
+
+    for target_ns in team_namespaces + [ns]:
+        try:
+            for role in rbac_v1.list_namespaced_role(target_ns, label_selector=label).items:
+                try:
+                    rbac_v1.delete_namespaced_role(role.metadata.name, target_ns)
+                    deleted += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            for rb in rbac_v1.list_namespaced_role_binding(target_ns, label_selector=label).items:
+                try:
+                    rbac_v1.delete_namespaced_role_binding(rb.metadata.name, target_ns)
+                    deleted += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # Cluster-scoped RBAC — dedicated clusters only, skip silently if no permission
+    for delete_fn, name in [
+        (rbac_v1.delete_cluster_role_binding, "pipeline-runner-binding"),
+        (rbac_v1.delete_cluster_role, "pipeline-runner-role"),
+    ]:
+        try:
+            delete_fn(name)
+            deleted += 1
+        except Exception:
+            pass
+
+    return f"RBAC: {deleted} object(s) deleted"
 
 
 # ── NiFi deploy core (shared by add-nifi and force-update-nifi) ───────────────
@@ -1190,9 +1393,10 @@ def cmd_add_kafka(name: str, ns: str) -> str:
 
     # Apply KafkaNodePool CR
     try:
-        custom.get_namespaced_custom_object(
+        existing = custom.get_namespaced_custom_object(
             "kafka.strimzi.io", "v1beta2", ns, "kafkanodepools", "dual-role"
         )
+        node_pool_body["metadata"]["resourceVersion"] = existing["metadata"]["resourceVersion"]
         custom.replace_namespaced_custom_object(
             "kafka.strimzi.io", "v1beta2", ns, "kafkanodepools", "dual-role", node_pool_body
         )
@@ -1206,9 +1410,10 @@ def cmd_add_kafka(name: str, ns: str) -> str:
 
     # Apply Kafka CR
     try:
-        custom.get_namespaced_custom_object(
+        existing = custom.get_namespaced_custom_object(
             "kafka.strimzi.io", "v1beta2", ns, "kafkas", f"kafka-{name}"
         )
+        kafka_body["metadata"]["resourceVersion"] = existing["metadata"]["resourceVersion"]
         custom.replace_namespaced_custom_object(
             "kafka.strimzi.io", "v1beta2", ns, "kafkas", f"kafka-{name}", kafka_body
         )
@@ -1238,11 +1443,12 @@ def cmd_add_kafka(name: str, ns: str) -> str:
 
     _upsert_team_registry(name, ns)
     eg_result = _patch_event_generator_bootstrap()
+    console_result = _patch_console_clusters()
     bootstrap = _BOOTSTRAP_TMPL.format(name=name, ns=ns)
     return (
         f"Kafka deployed for {name} in {ns}\n"
         f"Bootstrap: {bootstrap}\n"
-        f"{eg_result}"
+        f"{eg_result}\n{console_result}"
     )
 
 
@@ -1323,9 +1529,21 @@ def cmd_remove_kafka(name: str, ns: str) -> str:
             core_v1.delete_namespaced_persistent_volume_claim(pvc.metadata.name, ns)
     except Exception:
         pass
+    # Delete per-team monitoring resources
+    for cm_name in ["kafka-metrics-config"]:
+        try:
+            core_v1.delete_namespaced_config_map(cm_name, ns)
+        except k8s_client.ApiException:
+            pass
+    for rb_name in ["prometheus-scrape"]:
+        try:
+            rbac_v1.delete_namespaced_role_binding(rb_name, ns)
+        except k8s_client.ApiException:
+            pass
     _remove_from_team_registry(name)
     eg_result = _patch_event_generator_bootstrap()
-    return f"Kafka removed for {name} in {ns}\n{eg_result}"
+    console_result = _patch_console_clusters()
+    return f"Kafka removed for {name} in {ns}\n{eg_result}\n{console_result}"
 
 
 def cmd_remove_nifi(name: str, ns: str) -> str:
@@ -1369,26 +1587,55 @@ def cmd_remove_nifi(name: str, ns: str) -> str:
 
 
 def cmd_remove_all_teams() -> str:
-    """Remove all resources from every non-system, non-infra namespace."""
+    """Remove all resources from every non-system, non-infra namespace.
+
+    Two-phase approach: fire all deletes across all namespaces first, then do a
+    single consolidated wait. This means 15 teams take the same time as 1 team
+    (~30-60s) instead of up to 30 min with sequential per-namespace waits.
+    """
     namespaces = _discover_team_namespaces()
     if not namespaces:
         return "No team namespaces found."
-    # Collect team names from registry before removing so we can clean up
+
     registry = _get_team_registry()
     ns_to_name = {entry.get("namespace"): name for name, entry in registry.items()}
-    results = []
+
+    # Phase 1 — fire all deletes across every namespace (just API calls, no waiting)
     for ns in namespaces:
         try:
             _remove_all_in_namespace(ns)
-            results.append(f"  {ns}: removed")
-        except Exception as e:
-            results.append(f"  {ns}: error — {e}")
+        except Exception:
+            pass
         name = ns_to_name.get(ns)
         if name:
             _remove_from_team_registry(name)
             _remove_team_password(name)
-    _patch_event_generator_bootstrap()
-    return "Removed all teams:\n" + "\n".join(results)
+
+    # Phase 2 — single consolidated wait across all namespaces
+    deadline = time.time() + 180
+    still_terminating = list(namespaces)
+    while time.time() < deadline:
+        still_terminating = [
+            ns for ns in namespaces
+            if _has_pods(ns)
+        ]
+        if not still_terminating:
+            break
+        time.sleep(5)
+
+    eg_result = _patch_event_generator_bootstrap()
+    console_result = _patch_console_clusters()
+
+    if still_terminating:
+        return (
+            f"{len(namespaces)} team(s) removed — {len(still_terminating)} namespace(s) still "
+            f"terminating after 180s: {', '.join(still_terminating)}\n"
+            f"{eg_result}\n{console_result}"
+        )
+    return (
+        f"All {len(namespaces)} team(s) removed and pods confirmed gone.\n"
+        f"{eg_result}\n{console_result}"
+    )
 
 
 def cmd_wipe_kafka_data(name: str, ns: str) -> str:
@@ -1404,7 +1651,7 @@ def cmd_wipe_kafka_data(name: str, ns: str) -> str:
             )
         raise
 
-    # Delete KafkaNodePool — operator removes pod and PVC, then we recreate fresh
+    # Delete KafkaNodePool — operator removes the pod; PVC is handled explicitly below
     try:
         custom.delete_namespaced_custom_object(
             "kafka.strimzi.io", "v1beta2", ns, "kafkanodepools", "dual-role"
@@ -1413,7 +1660,7 @@ def cmd_wipe_kafka_data(name: str, ns: str) -> str:
         if e.status != 404:
             raise
 
-    # Wait up to 120s for pod to disappear before recreating
+    # Wait up to 120s for pod to disappear before deleting PVC
     label_selector = f"strimzi.io/cluster=kafka-{name}"
     deadline = time.time() + 120
     while time.time() < deadline:
@@ -1421,6 +1668,17 @@ def cmd_wipe_kafka_data(name: str, ns: str) -> str:
         if not pods:
             break
         time.sleep(5)
+
+    # Delete PVCs — deleteClaim: False means Strimzi does not GC them automatically.
+    # Without this the recreated broker finds the old PVC and its cluster.id stays intact.
+    pvcs = core_v1.list_namespaced_persistent_volume_claim(
+        ns, label_selector=label_selector
+    ).items
+    for pvc in pvcs:
+        try:
+            core_v1.delete_namespaced_persistent_volume_claim(pvc.metadata.name, ns)
+        except k8s_client.ApiException:
+            pass
 
     # Recreate KafkaNodePool with fresh storage
     node_pool_body = {
@@ -1561,16 +1819,12 @@ def cmd_remove_events() -> str:
 
 def cmd_teardown_all(*args) -> str:
     """
-    teardown-all           — remove events + remove all teams
-    teardown-all clean     — cancel in-flight runs first, then remove events + teams
-    teardown-all wipe      — cancel runs + wipe Tekton history (PipelineRuns/TaskRuns/PVCs)
-                             + remove events + teams (ChatOps stays up)
+    teardown-all         — cancel in-flight runs + remove events + all teams
+    teardown-all --wipe  — same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
     """
-    mode = args[0] if args else ""
-    lines = []
-    if mode in ("clean", "wipe"):
-        lines.append(_cancel_in_flight_runs())
-    if mode == "wipe":
+    wipe = "--wipe" in args
+    lines = [_cancel_in_flight_runs()]
+    if wipe:
         lines.append(_wipe_tekton_history())
     lines.append(cmd_remove_events())
     lines.append(cmd_remove_all_teams())
@@ -1579,7 +1833,7 @@ def cmd_teardown_all(*args) -> str:
 
 def cmd_reset_all() -> str:
     """Cancel in-flight runs, teardown all, then trigger reset-and-deploy pipeline."""
-    teardown_result = cmd_teardown_all("clean")
+    teardown_result = cmd_teardown_all()
     pipeline_result = cmd_run_reset()
     return f"{teardown_result}\n{pipeline_result}"
 
@@ -1590,6 +1844,24 @@ def cmd_run_pipeline() -> str:
 
 def cmd_run_reset() -> str:
     return _trigger_pipeline("reset-and-deploy", "reset-all-teams-run")
+
+
+def cmd_run_cleanup() -> str:
+    """Full cleanup: cancel runs, wipe Console, events, all teams, Tekton definitions, and RBAC.
+
+    Equivalent to: bash pipeline/cleanup.sh (ChatOps deployment is preserved).
+    Namespaces are kept — run setup.sh or run-pipeline to redeploy from scratch.
+    """
+    lines = [
+        _cancel_in_flight_runs(),
+        _delete_console(),
+        cmd_remove_events(),
+        cmd_remove_all_teams(),
+        _wipe_tekton_history(),
+        _delete_tekton_definitions(),
+        _delete_rbac(),
+    ]
+    return "\n".join(lines)
 
 
 def _trigger_pipeline(pipeline_name: str, name_prefix: str) -> str:
@@ -1736,6 +2008,103 @@ def cmd_export_config() -> str:
     return "\n".join(lines)
 
 
+def cmd_deploy_console() -> str:
+    """Deploy or update the Kafka Console CR in the infra namespace.
+
+    - If the Console CR does not exist: creates it with hostname + kafkaClusters from registry.
+    - If it already exists: patches kafkaClusters to match current registry.
+    Skips gracefully if the Console operator CRD is not installed.
+    """
+    # Check operator is installed
+    try:
+        custom.list_namespaced_custom_object(
+            "console.streamshub.github.com", "v1alpha1",
+            settings.infra_namespace, "consoles", _request_timeout=5
+        )
+    except k8s_client.ApiException as e:
+        if e.status == 404:
+            return "Console operator not installed — ask cluster admin to install Streams for Apache Kafka Console operator."
+        # Other errors (e.g. 403) treated as operator missing
+        return f"Console operator check failed ({e.status}) — operator may not be installed."
+
+    registry = _get_team_registry()
+    kafka_clusters = [
+        {"name": f"kafka-{name}", "namespace": entry["namespace"], "listener": "plain"}
+        for name, entry in sorted(registry.items())
+        if "namespace" in entry
+    ]
+
+    if not kafka_clusters:
+        return "No active teams in registry — deploy teams first before deploying Console."
+
+    hostname = f"kafka-console-{settings.infra_namespace}.{settings.external_domain}"
+
+    try:
+        custom.get_namespaced_custom_object(
+            "console.streamshub.github.com", "v1alpha1",
+            settings.infra_namespace, "consoles", "kafka-console"
+        )
+        # Already exists — patch kafkaClusters only
+        custom.patch_namespaced_custom_object(
+            "console.streamshub.github.com", "v1alpha1",
+            settings.infra_namespace, "consoles", "kafka-console",
+            {"spec": {"kafkaClusters": kafka_clusters}}
+        )
+        return f"Console CR updated with {len(kafka_clusters)} cluster(s)\nURL: https://{hostname}"
+    except k8s_client.ApiException as e:
+        if e.status != 404:
+            raise
+
+    # Does not exist — create with full spec
+    console_body = {
+        "apiVersion": "console.streamshub.github.com/v1alpha1",
+        "kind": "Console",
+        "metadata": {
+            "name": "kafka-console",
+            "namespace": settings.infra_namespace,
+            "labels": {"app": "kafka-console"},
+        },
+        "spec": {
+            "hostname": hostname,
+            "kafkaClusters": kafka_clusters,
+        },
+    }
+    custom.create_namespaced_custom_object(
+        "console.streamshub.github.com", "v1alpha1",
+        settings.infra_namespace, "consoles", console_body
+    )
+    return (
+        f"Console CR created with {len(kafka_clusters)} cluster(s)\n"
+        f"URL: https://{hostname}\n"
+        f"Pod is starting — may take a few minutes on first deploy."
+    )
+
+
+def cmd_console_status() -> str:
+    """Check Kafka Console CR status and route URL."""
+    try:
+        cr = custom.get_namespaced_custom_object(
+            "console.streamshub.github.com", "v1alpha1",
+            settings.infra_namespace, "consoles", "kafka-console"
+        )
+    except k8s_client.ApiException as e:
+        if e.status == 404:
+            return "Console CR not found — run: `/infra deploy-console`"
+        return f"Console CR check failed — {e.reason}"
+
+    conditions = cr.get("status", {}).get("conditions", [])
+    ready = next((c for c in conditions if c.get("type") == "Ready"), None)
+    status_line = "Ready ✅" if ready and ready.get("status") == "True" else \
+                  f"Not ready — {ready.get('reason', 'initializing')}" if ready else "No status yet"
+
+    hostname = cr.get("spec", {}).get("hostname", "")
+    clusters = cr.get("spec", {}).get("kafkaClusters", [])
+    url_line = f"URL: https://{hostname}" if hostname else "URL: not set"
+    clusters_line = f"Clusters: {', '.join(c['name'] for c in clusters)}" if clusters else "Clusters: none"
+
+    return f"Console: {status_line}\n{url_line}\n{clusters_line}"
+
+
 HELP_TEXT = """\
 *Available commands* (`/infra <command> [args]`):
 
@@ -1758,11 +2127,10 @@ HELP_TEXT = """\
   `reset-password <name> <ns> <pwd>`        Reset NiFi login password (min 12 chars)
 
 *Bulk operations*
-  `remove-all-teams`          Remove Kafka + NiFi from all team namespaces
-  `teardown-all`              Remove events + all teams
-  `teardown-all clean`        Cancel in-flight runs + remove events + all teams
-  `teardown-all wipe`         Cancel runs + wipe Tekton history + remove events + all teams (ChatOps stays up)
-  `reset-all`                 teardown-all clean + trigger reset pipeline
+  `remove-all-teams`            Remove Kafka + NiFi from all team namespaces
+  `teardown-all`                Cancel in-flight runs → remove events + all teams
+  `teardown-all --wipe`         Same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
+  `reset-all`                   teardown-all + trigger reset-and-deploy pipeline
 
 *Event generator*
   `pause-events`     Scale to 0 replicas
@@ -1772,8 +2140,13 @@ HELP_TEXT = """\
 *Pipeline*
   `run-pipeline`      Trigger deploy-all-teams pipeline
   `run-reset`         Trigger reset-and-deploy pipeline
+  `run-cleanup`       Full cleanup: wipe everything except ChatOps and namespaces (tasks/pipelines/RBAC/Console removed)
   `pipeline-status`   Show last 5 PipelineRuns
   `cleanup-runs`      Delete old PipelineRuns (keep newest 3)
+
+*Kafka Console*
+  `deploy-console`    Deploy or update Kafka Console CR (creates if missing, patches clusters if exists)
+  `console-status`    Show Console CR ready state, URL, and connected clusters
 
 *Config sync*
   `export-config`     Print team registry as config.env block (includes passwords from cluster)
