@@ -35,10 +35,11 @@
 #     remove-events   Delete entire event generator deployment
 #
 #   Bulk operations
-#     remove-all-teams   Remove all configured teams (Kafka + NiFi, no namespace deletion)
-#     teardown-all       Cancel runs → remove events → remove all teams
-#     reset-all          teardown-all then re-run the reset pipeline
-#     cleanup-runs       Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
+#     remove-all-teams        Remove all configured teams (Kafka + NiFi, no namespace deletion)
+#     teardown-all            Cancel runs → remove events → remove all teams
+#     teardown-all --wipe     Same + wipe Tekton run history
+#     reset-all               teardown-all then re-run the reset pipeline
+#     cleanup-runs            Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
 #
 #   ChatOps
 #     rebuild-chatops          Trigger ChatOps rebuild from Git (cluster must reach GitHub)
@@ -132,8 +133,8 @@ _remove_team_password() {
 
 _patch_event_generator() {
   # Rebuild TEAM_BOOTSTRAP_SERVERS from team-registry and patch + restart EG.
-  # Always patches ConfigMap (clears stale entries even when registry is empty).
-  # Skips rollout restart if registry is empty — avoids crash-loop with no Kafka.
+  # Always patches ConfigMap and always restarts — event_generator.py handles
+  # the empty-config case gracefully (waits instead of exiting).
   local bootstrap_str=""
   if oc get configmap team-registry -n "${INFRA_NAMESPACE}" &>/dev/null; then
     bootstrap_str=$(oc get configmap team-registry \
@@ -161,12 +162,40 @@ print(','.join(parts))
   run "oc patch configmap '${eg_cm}' -n '${INFRA_NAMESPACE}' \
     --type merge -p '{\"data\":{\"TEAM_BOOTSTRAP_SERVERS\":\"${bootstrap_str}\"}}'"
 
+  run "oc rollout restart deployment/'${EVENT_GENERATOR_NAME}' -n '${INFRA_NAMESPACE}'"
   if [[ -z "${bootstrap_str}" ]]; then
-    info "Registry empty — EG ConfigMap cleared, restart skipped"
+    ok "Event-generator cleared and restarted (no active clusters)"
+  else
+    ok "Event-generator patched and restarted"
+  fi
+}
+
+_patch_console() {
+  # Rebuild kafkaClusters in Console CR from team-registry.
+  # Best-effort — skips silently if Console CR is not deployed.
+  if ! oc get consoles.console.streamshub.github.com kafka-console \
+      -n "${INFRA_NAMESPACE}" &>/dev/null 2>&1; then
     return
   fi
-  run "oc rollout restart deployment/'${EVENT_GENERATOR_NAME}' -n '${INFRA_NAMESPACE}'"
-  ok "Event-generator patched and restarted"
+
+  local clusters_json
+  clusters_json=$(oc get configmap team-registry \
+    -n "${INFRA_NAMESPACE}" -o json 2>/dev/null \
+    | python3 -c "
+import sys, json
+data = json.load(sys.stdin).get('data', {})
+clusters = []
+for name, val in sorted(data.items()):
+    entry = dict(kv.split('=', 1) for kv in val.split(',') if '=' in kv)
+    if 'namespace' in entry:
+        clusters.append({'name': f'kafka-{name}', 'namespace': entry['namespace'], 'listener': 'plain'})
+print(json.dumps(clusters))
+" 2>/dev/null || echo "[]")
+
+  run "oc patch consoles.console.streamshub.github.com kafka-console \
+    -n '${INFRA_NAMESPACE}' \
+    --type merge -p '{\"spec\":{\"kafkaClusters\":${clusters_json}}}'"
+  ok "Console CR updated"
 }
 
 _do_add_kafka() {
@@ -303,6 +332,7 @@ cmd_add_team() {
   _upsert_team_registry "${name}" "${ns}"
   _upsert_team_password "${name}" "${pwd}"
   _patch_event_generator
+  _patch_console
   _do_add_nifi "${name}" "${ns}" "${pwd}"
   ok "Team ${name} deployed in ${ns}"
 }
@@ -317,6 +347,7 @@ cmd_add_kafka() {
     || warn "Kafka not ready yet — EG may not connect to ${name} on first try"
   _upsert_team_registry "${name}" "${ns}"
   _patch_event_generator
+  _patch_console
   ok "Kafka deployed for ${name} in ${ns}"
 }
 
@@ -337,6 +368,7 @@ cmd_remove_team() {
   _remove_from_team_registry "${name}"
   _remove_team_password "${name}"
   _patch_event_generator
+  _patch_console
   _do_remove_nifi "${name}" "${ns}"
   ok "Team ${name} removed from ${ns}"
 }
@@ -361,6 +393,7 @@ cmd_reset_team() {
   _upsert_team_registry "${name}" "${ns}"
   _upsert_team_password "${name}" "${pwd}"
   _patch_event_generator
+  _patch_console
   _do_add_nifi "${name}" "${ns}" "${pwd}"
   ok "Team ${name} reset in ${ns}"
 }
@@ -372,6 +405,7 @@ cmd_remove_kafka() {
   _do_remove_kafka "${name}" "${ns}"
   _remove_from_team_registry "${name}"
   _patch_event_generator
+  _patch_console
   ok "Kafka removed for ${name} in ${ns}"
 }
 
@@ -494,24 +528,27 @@ cmd_remove_all_teams() {
     _remove_team_password "${name}"
   done
   _patch_event_generator
+  _patch_console
   ok "All teams removed"
 }
 
 cmd_teardown_all() {
-  local clean=false
+  # teardown-all         — cancel in-flight runs + remove events + all teams
+  # teardown-all --wipe  — same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
+  local wipe=false
   for arg in "${ARGS[@]:-}"; do
-    [[ "$arg" == "--clean" ]] && clean=true
+    [[ "$arg" == "--wipe" ]] && wipe=true
   done
 
-  if [[ "$clean" == "true" ]]; then
-    confirm "Teardown all apps AND delete pipeline history + workspace PVCs? (full clean slate — Tekton tasks/pipelines/RBAC untouched)"
+  if [[ "$wipe" == "true" ]]; then
+    confirm "Cancel in-flight runs, remove all apps, AND wipe Tekton run history + workspace PVCs? Tasks/pipelines/RBAC and namespaces are untouched."
   else
-    confirm "Teardown all deployed apps (events + all teams)? Tekton tasks/pipelines/RBAC and namespaces are untouched."
+    confirm "Cancel in-flight runs and remove all deployed apps (events + all teams)? Tekton tasks/pipelines/RBAC and namespaces are untouched."
   fi
 
   _do_teardown_body
 
-  if [[ "$clean" == "true" ]]; then
+  if [[ "$wipe" == "true" ]]; then
     _do_clean_history
   fi
 }
@@ -521,6 +558,28 @@ cmd_reset_all() {
   _do_teardown_body
   info "Launching reset pipeline..."
   run "bash '${REPO_ROOT}/pipeline/setup.sh' --reset"
+}
+
+cmd_run_pipeline() {
+  info "Triggering deploy-all-teams pipeline..."
+  run "bash '${REPO_ROOT}/pipeline/setup.sh' --run-only"
+}
+
+cmd_run_reset() {
+  confirm "Trigger reset-and-deploy pipeline? This will wipe all teams and redeploy."
+  run "bash '${REPO_ROOT}/pipeline/setup.sh' --reset"
+}
+
+cmd_run_cleanup() {
+  confirm "Wipe all deployed apps, Tekton tasks/pipelines/RBAC, and ChatOps? Namespaces are kept. Run setup.sh to redeploy."
+  FORCE=true DELETE_CHATOPS=true bash "${REPO_ROOT}/pipeline/cleanup.sh"
+}
+
+cmd_pipeline_status() {
+  oc get pipelinerun -n "${INFRA_NAMESPACE}" \
+    --sort-by='.metadata.creationTimestamp' \
+    -o custom-columns='NAME:.metadata.name,STATUS:.status.conditions[0].reason,STARTED:.metadata.creationTimestamp' \
+    2>/dev/null | tail -5 || echo "No PipelineRuns found"
 }
 
 cmd_cleanup_runs() {
@@ -1096,10 +1155,16 @@ Event generator:
 
 Bulk operations:
   remove-all-teams      Remove all configured teams (Kafka + NiFi, namespaces kept)
-  teardown-all          Cancel runs → remove events → remove all teams
-  teardown-all --clean  Same + delete all PipelineRuns, TaskRuns, and workspace PVCs (full clean slate)
-  reset-all             teardown-all then re-run the reset pipeline
+  teardown-all          Cancel in-flight runs → remove events + all teams
+  teardown-all --wipe   Same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
+  reset-all             teardown-all then re-run the reset-and-deploy pipeline
   cleanup-runs          Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
+
+Pipeline:
+  run-pipeline      Trigger deploy-all-teams pipeline (same as setup.sh --run-only)
+  run-reset         Trigger reset-and-deploy pipeline (same as setup.sh --reset)
+  run-cleanup       Full cleanup: wipe everything except namespaces (tasks/pipelines/RBAC/Console/ChatOps removed)
+  pipeline-status   Show last 5 PipelineRuns
 
 ChatOps:
   rebuild-chatops           Trigger git-based build (cluster must reach GitHub)
@@ -1140,6 +1205,10 @@ case "$COMMAND" in
   remove-all-teams)   cmd_remove_all_teams ;;
   teardown-all)       cmd_teardown_all ;;
   reset-all)          cmd_reset_all ;;
+  run-pipeline)       cmd_run_pipeline ;;
+  run-reset)          cmd_run_reset ;;
+  run-cleanup)        cmd_run_cleanup ;;
+  pipeline-status)    cmd_pipeline_status ;;
   cleanup-runs)       cmd_cleanup_runs ;;
   rebuild-chatops)    cmd_rebuild_chatops ;;
   export-config)      cmd_export_config ;;
