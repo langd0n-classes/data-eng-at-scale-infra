@@ -77,10 +77,15 @@ logger.info(f"Loaded {len(TEAM_KAFKA_MAPPING)} team Kafka mappings")
 # Health check Flask app
 app = Flask(__name__)
 
-_generator = None  # set in main() after generator.start()
+_generator = None          # set in main() after generator.start()
+_waiting_for_config = False  # True when pod is running but no Kafka config is present
 
 @app.route('/health')
 def health():
+    if _waiting_for_config:
+        body = {'status': 'waiting', 'reason': 'no Kafka clusters configured',
+                'timestamp': datetime.now(timezone.utc).isoformat()}
+        return body, 200
     alive = _generator is not None and _generator.running
     body = {'status': 'healthy' if alive else 'unhealthy',
             'timestamp': datetime.now(timezone.utc).isoformat()}
@@ -837,9 +842,15 @@ def main():
     global _generator
 
     if not TEAM_KAFKA_MAPPING and not SINGLE_BOOTSTRAP:
-        logger.error("No Kafka configuration provided.")
-        logger.error("Set TEAM_BOOTSTRAP_SERVERS (multi-team) or KAFKA_BOOTSTRAP_SERVERS (single-cluster).")
-        return 1
+        global _waiting_for_config
+        _waiting_for_config = True
+        logger.info("No active Kafka clusters configured — event generation paused.")
+        logger.info("Waiting for teams to be deployed. Pod will be restarted automatically when teams are added.")
+        health_thread = Thread(target=lambda: serve(app, host='0.0.0.0', port=8000), daemon=True)
+        health_thread.start()
+        while True:
+            time.sleep(60)
+            logger.info("No active Kafka clusters configured — still waiting.")
 
     generator = EventGenerator()
 
