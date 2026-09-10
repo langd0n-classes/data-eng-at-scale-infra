@@ -96,6 +96,7 @@ def dispatch(subcmd: str, args: list[str], channel_id: str) -> str:
         case "pause-events":     return cmd_pause_events()
         case "resume-events":    return cmd_resume_events()
         case "remove-events":    return cmd_remove_events()
+        case "rebuild-events":   return cmd_rebuild_events()
         case "teardown-all":     return cmd_teardown_all(*args)
         case "reset-all":        return cmd_reset_all()
         case "run-pipeline":     return cmd_run_pipeline()
@@ -1871,21 +1872,48 @@ def cmd_remove_events() -> str:
             core_v1.delete_namespaced_config_map(cm.metadata.name, ns)
     except Exception:
         pass
-    for group, plural in [
-        ("build.openshift.io", "buildconfigs"),
-        ("image.openshift.io", "imagestreams"),
-    ]:
-        try:
-            items = custom.list_namespaced_custom_object(
-                group, "v1", ns, plural, label_selector=label
-            )
-            for item in items.get("items", []):
-                custom.delete_namespaced_custom_object(
-                    group, "v1", ns, plural, item["metadata"]["name"]
-                )
-        except Exception:
-            pass
+    # BuildConfig and ImageStream are intentionally kept so that
+    # rebuild-events works after teardown without needing run-pipeline.
     return "Event generator removed"
+
+
+def cmd_rebuild_events() -> str:
+    """Trigger a new BuildConfig build for the event generator.
+
+    BuildConfig and ImageStream survive teardown-all so this works without
+    needing to run the full pipeline again. The ImageChange trigger on the
+    Deployment automatically rolls out the new pod once the build completes.
+    """
+    ns = settings.infra_namespace
+    name = settings.event_generator_name
+    try:
+        custom.get_namespaced_custom_object(
+            "build.openshift.io", "v1", ns, "buildconfigs", name
+        )
+    except k8s_client.ApiException as e:
+        if e.status == 404:
+            raise RuntimeError(
+                f"BuildConfig '{name}' not found — run `run-pipeline` first to apply manifests."
+            )
+        raise
+    build_request = {
+        "apiVersion": "build.openshift.io/v1",
+        "kind": "BuildRequest",
+        "metadata": {"name": name},
+    }
+    # BuildConfig instantiate is a subresource — must POST directly to the path
+    # since create_namespaced_custom_object does not support subresources.
+    response = custom.api_client.call_api(
+        f"/apis/build.openshift.io/v1/namespaces/{ns}/buildconfigs/{name}/instantiate",
+        "POST",
+        header_params={"Content-Type": "application/json", "Accept": "application/json"},
+        body=build_request,
+        response_type=object,
+        auth_settings=["BearerToken"],
+        _return_http_data_only=True,
+    )
+    build_name = response.get("metadata", {}).get("name", "unknown") if isinstance(response, dict) else "unknown"
+    return f"Build started: `{build_name}`\nNew pod will roll out automatically when build completes."
 
 
 def cmd_teardown_all(*args) -> str:
@@ -2205,9 +2233,10 @@ HELP_TEXT = """\
   `reset-all`                   teardown-all + trigger reset-and-deploy pipeline
 
 *Event generator*
-  `pause-events`     Scale to 0 replicas
-  `resume-events`    Scale back to 1 replica
-  `remove-events`    Delete entire event generator
+  `pause-events`      Scale to 0 replicas
+  `resume-events`     Scale back to 1 replica
+  `remove-events`     Delete event generator deployment (BuildConfig/ImageStream kept)
+  `rebuild-events`    Trigger new build + rollout (BuildConfig must exist)
 
 *Pipeline*
   `run-pipeline`      Trigger deploy-all-teams pipeline

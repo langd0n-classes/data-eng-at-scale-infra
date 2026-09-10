@@ -276,10 +276,12 @@ _do_remove_nifi() {
 }
 
 _do_remove_events() {
+  # Deletes the running deployment + configmap + service but keeps ImageStream
+  # and BuildConfig so that rebuild-events works without needing run-pipeline.
   info "Removing event generator..."
   run "oc delete deployment '${EVENT_GENERATOR_NAME}' \
     -n '${INFRA_NAMESPACE}' --ignore-not-found"
-  run "oc delete svc,configmap,buildconfig,imagestream \
+  run "oc delete svc,configmap \
     -l 'app=${EVENT_GENERATOR_NAME}' \
     -n '${INFRA_NAMESPACE}' --ignore-not-found"
 }
@@ -940,6 +942,37 @@ cmd_rebuild_chatops() {
   info "Check pod status: oc get pod -l app=${chatops_name} -n ${INFRA_NAMESPACE}"
 }
 
+cmd_rebuild_events() {
+  # Trigger a new build of the event generator from Git (or local with --local).
+  # BuildConfig and ImageStream are preserved by teardown-all so this works
+  # without needing to run the full pipeline again.
+  local local_build=false
+  for arg in "${ARGS[@]:-}"; do
+    [[ "$arg" == "--local" ]] && local_build=true
+  done
+
+  if ! oc get buildconfig "${EVENT_GENERATOR_NAME}" -n "${INFRA_NAMESPACE}" &>/dev/null; then
+    err "BuildConfig '${EVENT_GENERATOR_NAME}' not found — run 'bash pipeline/setup.sh --run-only' first to apply manifests."
+    exit 1
+  fi
+
+  if [[ "$local_build" == "true" ]]; then
+    info "Starting binary build of ${EVENT_GENERATOR_NAME} from local repo root..."
+    run "oc start-build '${EVENT_GENERATOR_NAME}' \
+      --from-dir='${REPO_ROOT}' \
+      --follow \
+      -n '${INFRA_NAMESPACE}'"
+  else
+    info "Starting git-based build of ${EVENT_GENERATOR_NAME}..."
+    run "oc start-build '${EVENT_GENERATOR_NAME}' \
+      --follow \
+      -n '${INFRA_NAMESPACE}'"
+  fi
+
+  ok "Build complete — new event generator pod rolling out"
+  info "Check pod status: oc get pod -l app=${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE}"
+}
+
 cmd_export_config() {
   if ! oc get configmap team-registry -n "${INFRA_NAMESPACE}" &>/dev/null; then
     warn "team-registry ConfigMap not found. Run setup.sh first."
@@ -1217,9 +1250,11 @@ Component operations:
   restart-nifi      <name> <ns>          Delete NiFi pod (StatefulSet restarts it)
 
 Event generator:
-  pause-events    Scale event generator to 0 replicas
-  resume-events   Scale event generator to 1 replica
-  remove-events   Delete entire event generator deployment
+  pause-events             Scale event generator to 0 replicas
+  resume-events            Scale event generator to 1 replica
+  remove-events            Delete event generator deployment (BuildConfig/ImageStream kept)
+  rebuild-events           Trigger git-based rebuild + rollout (cluster must reach GitHub)
+  rebuild-events --local   Binary rebuild from local repo root (offline clusters)
 
 Bulk operations:
   remove-all-teams      Remove all configured teams (Kafka + NiFi, namespaces kept)
@@ -1279,6 +1314,7 @@ case "$COMMAND" in
   pipeline-status)    cmd_pipeline_status ;;
   cleanup-runs)       cmd_cleanup_runs ;;
   rebuild-chatops)    cmd_rebuild_chatops ;;
+  rebuild-events)     cmd_rebuild_events ;;
   export-config)      cmd_export_config ;;
   sync-config)        cmd_sync_config ;;
   status)               cmd_status              "${ARGS[@]}" ;;
