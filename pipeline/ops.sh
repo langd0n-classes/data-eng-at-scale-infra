@@ -445,21 +445,52 @@ cmd_wipe_kafka_data() {
   fi
 
   confirm "Wipe all Kafka data for ${name} in ${ns}? This PERMANENTLY deletes the PVC."
-  # Delete the KafkaNodePool and PVC explicitly — operator may not GC the PVC fast enough
-  # and a stale PVC causes cluster.id mismatch on recreate
+
+  # Phase 1: Delete KafkaNodePool — operator removes the broker pod
   info "Deleting KafkaNodePool to wipe storage..."
   run "oc delete kafkanodepool dual-role -n '${ns}' --ignore-not-found"
-  echo "Waiting for operator to clean up pod..."
-  run "oc wait pod -l 'strimzi.io/cluster=kafka-${name}' \
-    --for=delete --timeout=120s -n '${ns}' 2>/dev/null || true"
-  info "Deleting Strimzi PVCs to ensure clean storage..."
+
+  # Phase 2: Wait for pod to disappear — must be gone before PVC can be released.
+  # Force-delete after 120s: safe here since data is intentionally being wiped.
+  info "Waiting for broker pod to terminate (max 2 min)..."
+  if ! oc wait pod -l "strimzi.io/cluster=kafka-${name}" \
+      --for=delete --timeout=120s -n "${ns}" 2>/dev/null; then
+    warn "Pod still running after 2 min — force deleting to unblock PVC..."
+    oc delete pod -l "strimzi.io/cluster=kafka-${name}" \
+      -n "${ns}" --force --grace-period=0 2>/dev/null || true
+    sleep 5
+  fi
+
+  # Phase 3: Delete PVC then wait for it to fully disappear.
+  # If deleted while pod was still attached, PVC stays in Terminating and the
+  # recreated KafkaNodePool cannot claim a new PVC with the same name.
+  info "Deleting Strimzi PVCs..."
   run "oc delete pvc -l 'strimzi.io/cluster=kafka-${name}' -n '${ns}' --ignore-not-found"
+  info "Waiting for PVC to fully terminate..."
+  local pvc_deadline=$(( $(date +%s) + 60 ))
+  while (( $(date +%s) < pvc_deadline )); do
+    local pvc_count
+    pvc_count=$(oc get pvc -l "strimzi.io/cluster=kafka-${name}" \
+      -n "${ns}" --no-headers 2>/dev/null | wc -l)
+    [[ "${pvc_count}" -eq 0 ]] && break
+    sleep 3
+  done
+
+  # Phase 4: Recreate KafkaNodePool with fresh storage
   info "Recreating KafkaNodePool with fresh storage..."
   run "TEAM_NAME='${name}' TEAM_NAMESPACE='${ns}' STORAGE_CLASS='${STORAGE_CLASS}' \
     envsubst '\${TEAM_NAME} \${TEAM_NAMESPACE} \${STORAGE_CLASS}' \
     < '${REPO_ROOT}/kafka/operator/kafka-cr-template.yaml' \
     | oc apply -f - --selector='kafka.strimzi.io/kind=KafkaNodePool'"
-  ok "Kafka data wiped for ${name} in ${ns}. Operator is recreating broker with fresh storage."
+
+  # Phase 5: Wait for broker to be Ready again before returning.
+  # KafkaNodePool deletion toggles Kafka CR to NotReady, so oc wait correctly
+  # blocks until the new pod is up — no generation check needed here.
+  info "Waiting for broker to be Ready (max 4 min)..."
+  oc wait kafka "kafka-${name}" \
+    --for=condition=Ready --timeout=240s -n "${ns}" 2>/dev/null \
+    && ok "Kafka data wiped and broker Ready for ${name} in ${ns}." \
+    || warn "Broker not yet Ready — check: bash pipeline/ops.sh status ${name} ${ns}"
 }
 
 cmd_force_update_nifi() {

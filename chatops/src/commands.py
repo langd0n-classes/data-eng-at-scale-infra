@@ -1681,7 +1681,9 @@ def cmd_wipe_kafka_data(name: str, ns: str) -> str:
             )
         raise
 
-    # Delete KafkaNodePool — operator removes the pod; PVC is handled explicitly below
+    label_selector = f"strimzi.io/cluster=kafka-{name}"
+
+    # Phase 1: Delete KafkaNodePool — operator removes the broker pod
     try:
         custom.delete_namespaced_custom_object(
             "kafka.strimzi.io", "v1beta2", ns, "kafkanodepools", "dual-role"
@@ -1690,17 +1692,30 @@ def cmd_wipe_kafka_data(name: str, ns: str) -> str:
         if e.status != 404:
             raise
 
-    # Wait up to 120s for pod to disappear before deleting PVC
-    label_selector = f"strimzi.io/cluster=kafka-{name}"
+    # Phase 2: Wait up to 120s for pod to disappear.
+    # Force-delete after timeout — safe here since data is intentionally being wiped.
     deadline = time.time() + 120
     while time.time() < deadline:
         pods = core_v1.list_namespaced_pod(ns, label_selector=label_selector).items
         if not pods:
             break
         time.sleep(5)
+    else:
+        # Pod still running — force delete to unblock PVC release
+        pods = core_v1.list_namespaced_pod(ns, label_selector=label_selector).items
+        for pod in pods:
+            try:
+                core_v1.delete_namespaced_pod(
+                    pod.metadata.name, ns,
+                    grace_period_seconds=0,
+                )
+            except k8s_client.ApiException:
+                pass
+        time.sleep(5)
 
-    # Delete PVCs — deleteClaim: False means Strimzi does not GC them automatically.
-    # Without this the recreated broker finds the old PVC and its cluster.id stays intact.
+    # Phase 3: Delete PVCs then wait for them to fully disappear.
+    # If deleted while pod was still attached, PVC stays in Terminating and the
+    # recreated KafkaNodePool cannot claim a new PVC with the same name.
     pvcs = core_v1.list_namespaced_persistent_volume_claim(
         ns, label_selector=label_selector
     ).items
@@ -1710,7 +1725,16 @@ def cmd_wipe_kafka_data(name: str, ns: str) -> str:
         except k8s_client.ApiException:
             pass
 
-    # Recreate KafkaNodePool with fresh storage
+    pvc_deadline = time.time() + 60
+    while time.time() < pvc_deadline:
+        remaining = core_v1.list_namespaced_persistent_volume_claim(
+            ns, label_selector=label_selector
+        ).items
+        if not remaining:
+            break
+        time.sleep(3)
+
+    # Phase 4: Recreate KafkaNodePool with fresh storage
     node_pool_body = {
         "apiVersion": "kafka.strimzi.io/v1beta2",
         "kind": "KafkaNodePool",
@@ -1737,7 +1761,24 @@ def cmd_wipe_kafka_data(name: str, ns: str) -> str:
     custom.create_namespaced_custom_object(
         "kafka.strimzi.io", "v1beta2", ns, "kafkanodepools", node_pool_body
     )
-    return f"Kafka data wiped for {name} in {ns}. Operator is recreating broker with fresh storage."
+
+    # Phase 5: Wait for broker to be Ready again before returning.
+    # KafkaNodePool deletion toggles Kafka CR to NotReady, so checking Ready=True
+    # correctly blocks until the new pod is up — no generation check needed here.
+    ready_deadline = time.time() + 240
+    while time.time() < ready_deadline:
+        try:
+            kafka_cr = custom.get_namespaced_custom_object(
+                "kafka.strimzi.io", "v1beta2", ns, "kafkas", f"kafka-{name}"
+            )
+            conditions = kafka_cr.get("status", {}).get("conditions", [])
+            if any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions):
+                return f"Kafka data wiped and broker Ready for {name} in {ns}."
+        except k8s_client.ApiException:
+            pass
+        time.sleep(5)
+
+    return f"Kafka data wiped for {name} in {ns}. Broker still initialising — check status shortly."
 
 
 def cmd_restart_kafka(name: str, ns: str) -> str:
