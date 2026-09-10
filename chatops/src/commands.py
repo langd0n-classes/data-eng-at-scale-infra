@@ -1193,7 +1193,7 @@ def cmd_status_all() -> str:
 
     # Last pipeline run
     try:
-        result = custom.list_namespaced_custom_object("tekton.dev", "v1", "pipelineruns", ns)
+        result = custom.list_namespaced_custom_object("tekton.dev", "v1", ns, "pipelineruns")
         runs = sorted(
             result.get("items", []),
             key=lambda r: r["metadata"].get("creationTimestamp", ""),
@@ -1205,7 +1205,7 @@ def cmd_status_all() -> str:
             conditions = run.get("status", {}).get("conditions", [])
             reason = conditions[0].get("reason", "Unknown") if conditions else "Unknown"
             ts = run["metadata"].get("creationTimestamp", "")[:10]
-            icon = "✅" if reason == "Succeeded" else ("❌" if reason in ("Failed", "PipelineRunCancelled") else "⏳")
+            icon = "✅" if reason in ("Succeeded", "Completed") else ("❌" if reason in ("Failed", "PipelineRunCancelled") else "⏳")
             short_name = rname if len(rname) <= 30 else rname[-30:]
             lines.append(f"  {'pipeline':<24} {icon}  {reason}  {short_name}  {ts}")
             if icon == "❌":
@@ -1237,6 +1237,22 @@ def cmd_status_all() -> str:
                     f"Latest build failed: {latest.metadata.name}"
                     f" — run: `ops.sh rebuild-chatops` or check logs"
                 )
+    except Exception:
+        pass
+
+    # Console URL
+    try:
+        routes = custom.list_namespaced_custom_object(
+            "route.openshift.io", "v1", ns, "routes",
+            label_selector="app.kubernetes.io/name=console"
+        )
+        items = routes.get("items", [])
+        host = items[0].get("spec", {}).get("host", "") if items else ""
+        lines.append("")
+        if host:
+            lines.append(f"*Kafka Console URL:* https://{host}")
+        else:
+            lines.append("*Kafka Console URL:* not deployed")
     except Exception:
         pass
 

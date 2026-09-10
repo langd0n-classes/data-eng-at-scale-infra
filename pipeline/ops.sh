@@ -735,6 +735,18 @@ cmd_status_all() {
     [[ "${pr_icon}" == "[X]" ]] && issues+=("Last pipeline run failed: ${pr_name}")
   fi
 
+  # Console URL
+  local console_host
+  console_host=$(oc get route -n "${INFRA_NAMESPACE}" \
+    -l "app.kubernetes.io/name=console" \
+    -o jsonpath='{.items[0].spec.host}' 2>/dev/null || echo "")
+  echo ""
+  if [[ -n "${console_host}" ]]; then
+    echo "Kafka Console URL: https://${console_host}"
+  else
+    echo "Kafka Console URL: not deployed"
+  fi
+
   # ── Teams ───────────────────────────────────────────────
   echo ""
   echo "Teams"
