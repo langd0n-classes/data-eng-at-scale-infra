@@ -1252,21 +1252,27 @@ Component operations:
 Event generator:
   pause-events             Scale event generator to 0 replicas
   resume-events            Scale event generator to 1 replica
-  remove-events            Delete event generator deployment (BuildConfig/ImageStream kept)
-  rebuild-events           Trigger git-based rebuild + rollout (cluster must reach GitHub)
-  rebuild-events --local   Binary rebuild from local repo root (offline clusters)
+  remove-events            Delete deployment only — BuildConfig and ImageStream kept so rebuild-events works
+  rebuild-events           Trigger new build + rollout — requires BuildConfig/ImageStream (created by setup.sh);
+                           if missing run: bash pipeline/setup.sh --run-only
+  rebuild-events --local   Same but builds from local repo root instead of Git (offline clusters)
 
 Bulk operations:
   remove-all-teams      Remove all configured teams (Kafka + NiFi, namespaces kept)
+
+  -- Safe reset (Tekton tasks/pipelines/RBAC and ChatOps survive — all commands still work after) --
   teardown-all          Cancel in-flight runs → remove events + Console + all teams
   teardown-all --wipe   Same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
   reset-all             teardown-all then re-run the reset-and-deploy pipeline
-  cleanup-runs          Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
+
+  -- Nuclear options (require bash pipeline/setup.sh to recover) --
+  run-cleanup       Wipe everything except namespaces: removes teams, events, Console,
+                    Tekton tasks/pipelines/RBAC, and ChatOps. Use for full decommission.
+  cleanup-runs      Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
 
 Pipeline:
   run-pipeline      Trigger deploy-all-teams pipeline (same as setup.sh --run-only)
   run-reset         Trigger reset-and-deploy pipeline (same as setup.sh --reset)
-  run-cleanup       Full cleanup: wipe everything except namespaces (tasks/pipelines/RBAC/Console/ChatOps removed)
   pipeline-status   Show last 5 PipelineRuns
 
 ChatOps:

@@ -2228,20 +2228,25 @@ HELP_TEXT = """\
 
 *Bulk operations*
   `remove-all-teams`            Remove Kafka + NiFi from all team namespaces
+
+  _Safe reset — Tekton tasks/pipelines/RBAC survive, all Slack commands still work after:_
   `teardown-all`                Cancel in-flight runs → remove events + Console + all teams
   `teardown-all --wipe`         Same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
   `reset-all`                   teardown-all + trigger reset-and-deploy pipeline
 
+  _Nuclear — removes tasks/pipelines/RBAC/Console; run `bash pipeline/setup.sh` to recover:_
+  `run-cleanup`                 Wipe everything except ChatOps and namespaces
+
 *Event generator*
   `pause-events`      Scale to 0 replicas
   `resume-events`     Scale back to 1 replica
-  `remove-events`     Delete event generator deployment (BuildConfig/ImageStream kept)
-  `rebuild-events`    Trigger new build + rollout (BuildConfig must exist)
+  `remove-events`     Delete deployment only — BuildConfig and ImageStream are kept so rebuild-events works
+  `rebuild-events`    Trigger new build + rollout — requires BuildConfig/ImageStream (created by setup.sh);
+                      if missing run `run-pipeline` first
 
 *Pipeline*
   `run-pipeline`      Trigger deploy-all-teams pipeline
   `run-reset`         Trigger reset-and-deploy pipeline
-  `run-cleanup`       Full cleanup: wipe everything except ChatOps and namespaces (tasks/pipelines/RBAC/Console removed)
   `pipeline-status`   Show last 5 PipelineRuns
   `cleanup-runs`      Delete old PipelineRuns (keep newest 3)
 
