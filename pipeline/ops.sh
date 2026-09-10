@@ -131,6 +131,33 @@ _remove_team_password() {
     --type merge -p '{\"data\":{\"${name}\":null}}' 2>/dev/null || true"
 }
 
+_wait_kafka_ready() {
+  # Wait for Kafka CR to reach Ready after apply, checking both observedGeneration
+  # and the Ready condition. A plain `oc wait --for=condition=Ready` exits immediately
+  # if the CR was previously Ready — even if the operator hasn't started reconciling
+  # the new generation yet. Reading the generation after apply and waiting for
+  # observedGeneration to catch up avoids this race.
+  local name="$1" ns="$2"
+  local target_gen
+  target_gen=$(oc get kafka "kafka-${name}" -n "${ns}" \
+    -o jsonpath='{.metadata.generation}' 2>/dev/null || echo 1)
+  info "Waiting for Kafka kafka-${name} to be Ready (generation ${target_gen}, max 4 min)..."
+  local deadline=$(( $(date +%s) + 240 ))
+  while (( $(date +%s) < deadline )); do
+    local obs_gen ready
+    obs_gen=$(oc get kafka "kafka-${name}" -n "${ns}" \
+      -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo 0)
+    ready=$(oc get kafka "kafka-${name}" -n "${ns}" \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+    if [[ "${obs_gen}" -ge "${target_gen}" && "${ready}" == "True" ]]; then
+      ok "Kafka kafka-${name} is Ready"
+      return 0
+    fi
+    sleep 5
+  done
+  warn "Kafka not ready after 4 min — EG may not connect to ${name} on first try"
+}
+
 _patch_event_generator() {
   # Rebuild TEAM_BOOTSTRAP_SERVERS from team-registry and patch + restart EG.
   # Always patches ConfigMap and always restarts — event_generator.py handles
@@ -325,10 +352,7 @@ cmd_add_team() {
   local ns="${2:?Usage: add-team <name> <ns> <pwd>}"
   local pwd="${3:?Usage: add-team <name> <ns> <pwd>}"
   _do_add_kafka "${name}" "${ns}"
-  info "Waiting for Kafka CR kafka-${name} to be Ready (max 2 min)..."
-  oc wait kafka "kafka-${name}" \
-    --for=condition=Ready --timeout=300s -n "${ns}" 2>/dev/null \
-    || warn "Kafka not ready yet — EG may not connect to ${name} on first try"
+  _wait_kafka_ready "${name}" "${ns}"
   _upsert_team_registry "${name}" "${ns}"
   _upsert_team_password "${name}" "${pwd}"
   _patch_event_generator
@@ -341,10 +365,7 @@ cmd_add_kafka() {
   local name="${1:?Usage: add-kafka <name> <ns>}"
   local ns="${2:?Usage: add-kafka <name> <ns>}"
   _do_add_kafka "${name}" "${ns}"
-  info "Waiting for Kafka CR kafka-${name} to be Ready (max 2 min)..."
-  oc wait kafka "kafka-${name}" \
-    --for=condition=Ready --timeout=300s -n "${ns}" 2>/dev/null \
-    || warn "Kafka not ready yet — EG may not connect to ${name} on first try"
+  _wait_kafka_ready "${name}" "${ns}"
   _upsert_team_registry "${name}" "${ns}"
   _patch_event_generator
   _patch_console
@@ -386,10 +407,7 @@ cmd_reset_team() {
   _do_remove_nifi "${name}" "${ns}"
   # Redeploy phase
   _do_add_kafka "${name}" "${ns}"
-  info "Waiting for Kafka CR kafka-${name} to be Ready (max 2 min)..."
-  oc wait kafka "kafka-${name}" \
-    --for=condition=Ready --timeout=300s -n "${ns}" 2>/dev/null \
-    || warn "Kafka not ready yet — EG may not connect to ${name} on first try"
+  _wait_kafka_ready "${name}" "${ns}"
   _upsert_team_registry "${name}" "${ns}"
   _upsert_team_password "${name}" "${pwd}"
   _patch_event_generator

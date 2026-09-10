@@ -1443,15 +1443,29 @@ def cmd_add_kafka(name: str, ns: str) -> str:
 
     # Wait for Kafka CR to be Ready before restarting EG.
     # EG has 5×3s retries at startup — if Kafka isn't up yet, the new team is
-    # permanently skipped (no reconnect). 180s covers operator reconcile time.
-    deadline = time.time() + 180
+    # permanently skipped (no reconnect). 240s covers operator reconcile time.
+    #
+    # We check observedGeneration >= metadata.generation so that a re-deploy of
+    # an already-Ready CR doesn't break out of the loop immediately — we wait
+    # for the operator to process the current spec version first.
+    try:
+        kafka_cr = custom.get_namespaced_custom_object(
+            "kafka.strimzi.io", "v1beta2", ns, "kafkas", f"kafka-{name}"
+        )
+        target_generation = kafka_cr["metadata"].get("generation", 1)
+    except k8s_client.ApiException:
+        target_generation = 1
+
+    deadline = time.time() + 240
     while time.time() < deadline:
         try:
             kafka_cr = custom.get_namespaced_custom_object(
                 "kafka.strimzi.io", "v1beta2", ns, "kafkas", f"kafka-{name}"
             )
+            observed_gen = kafka_cr.get("status", {}).get("observedGeneration", 0)
             conditions = kafka_cr.get("status", {}).get("conditions", [])
-            if any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions):
+            if (observed_gen >= target_generation and
+                    any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)):
                 break
         except k8s_client.ApiException:
             pass
