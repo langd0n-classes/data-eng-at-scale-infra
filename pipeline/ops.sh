@@ -36,7 +36,7 @@
 #
 #   Bulk operations
 #     remove-all-teams        Remove all configured teams (Kafka + NiFi, no namespace deletion)
-#     teardown-all            Cancel runs → remove events → remove all teams
+#     teardown-all            Cancel runs → remove events → remove Console → remove all teams
 #     teardown-all --wipe     Same + wipe Tekton run history
 #     reset-all               teardown-all then re-run the reset pipeline
 #     cleanup-runs            Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
@@ -308,7 +308,14 @@ _do_teardown_body() {
   # Step 2: Remove event generator
   _do_remove_events
 
-  # Step 3: Remove all configured teams
+  # Step 3: Remove Kafka Console — no active teams, nothing left to inspect
+  echo "Removing Kafka Console..."
+  run "oc delete consoles.console.streamshub.github.com kafka-console \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found"
+  run "oc delete route -l 'app.kubernetes.io/name=console' \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found"
+
+  # Step 4: Remove all configured teams
   for i in $(seq 1 15); do
     local ns_var="TEAM${i}_NAMESPACE" name_var="TEAM${i}_NAME"
     local ns="${!ns_var:-skip}" name="${!name_var:-skip}"
@@ -318,7 +325,7 @@ _do_teardown_body() {
     _do_remove_nifi  "${name}" "${ns}"
   done
 
-  # Step 4: Optionally wipe Tekton workspace PVCs (created per PipelineRun)
+  # Step 5: Optionally wipe Tekton workspace PVCs (created per PipelineRun)
   if [[ "${WIPE_PVCS:-false}" == "true" ]]; then
     echo "Deleting workspace PVCs (WIPE_PVCS=true)..."
     run "oc delete pvc \
@@ -1216,7 +1223,7 @@ Event generator:
 
 Bulk operations:
   remove-all-teams      Remove all configured teams (Kafka + NiFi, namespaces kept)
-  teardown-all          Cancel in-flight runs → remove events + all teams
+  teardown-all          Cancel in-flight runs → remove events + Console + all teams
   teardown-all --wipe   Same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
   reset-all             teardown-all then re-run the reset-and-deploy pipeline
   cleanup-runs          Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)

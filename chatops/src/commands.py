@@ -1890,7 +1890,7 @@ def cmd_remove_events() -> str:
 
 def cmd_teardown_all(*args) -> str:
     """
-    teardown-all         — cancel in-flight runs + remove events + all teams
+    teardown-all         — cancel in-flight runs + remove events + Console + all teams
     teardown-all --wipe  — same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
     """
     wipe = "--wipe" in args
@@ -1898,6 +1898,7 @@ def cmd_teardown_all(*args) -> str:
     if wipe:
         lines.append(_wipe_tekton_history())
     lines.append(cmd_remove_events())
+    lines.append(_delete_console())
     lines.append(cmd_remove_all_teams())
     return "\n".join(lines)
 
@@ -2199,7 +2200,7 @@ HELP_TEXT = """\
 
 *Bulk operations*
   `remove-all-teams`            Remove Kafka + NiFi from all team namespaces
-  `teardown-all`                Cancel in-flight runs → remove events + all teams
+  `teardown-all`                Cancel in-flight runs → remove events + Console + all teams
   `teardown-all --wipe`         Same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
   `reset-all`                   teardown-all + trigger reset-and-deploy pipeline
 
