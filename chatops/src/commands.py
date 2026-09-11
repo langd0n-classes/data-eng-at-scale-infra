@@ -1893,7 +1893,7 @@ def cmd_rebuild_events() -> str:
     except k8s_client.ApiException as e:
         if e.status == 404:
             raise RuntimeError(
-                f"BuildConfig '{name}' not found — run `run-pipeline` first to apply manifests."
+                f"BuildConfig '{name}' not found — run `bash pipeline/setup.sh` first to apply build manifests."
             )
         raise
     build_request = {
@@ -2034,30 +2034,31 @@ def cmd_pipeline_status() -> str:
 
 
 def cmd_cleanup_runs() -> str:
-    result = custom.list_namespaced_custom_object(
-        group="tekton.dev",
-        version="v1",
-        plural="pipelineruns",
-        namespace=settings.infra_namespace,
-    )
-    items = sorted(
-        result.get("items", []),
-        key=lambda r: r["metadata"].get("creationTimestamp", ""),
-        reverse=True,
-    )
-    to_delete = items[3:]  # keep newest 3
-    for run in to_delete:
-        try:
-            custom.delete_namespaced_custom_object(
-                group="tekton.dev",
-                version="v1",
-                namespace=settings.infra_namespace,
-                plural="pipelineruns",
-                name=run["metadata"]["name"],
-            )
-        except Exception:
-            pass
-    return f"Kept 3 newest PipelineRuns, deleted {len(to_delete)} old ones."
+    ns = settings.infra_namespace
+
+    def _delete_old(plural: str, keep: int) -> int:
+        result = custom.list_namespaced_custom_object(
+            group="tekton.dev", version="v1", plural=plural, namespace=ns
+        )
+        items = sorted(
+            result.get("items", []),
+            key=lambda r: r["metadata"].get("creationTimestamp", ""),
+            reverse=True,
+        )
+        to_delete = items[keep:]
+        for run in to_delete:
+            try:
+                custom.delete_namespaced_custom_object(
+                    group="tekton.dev", version="v1", namespace=ns,
+                    plural=plural, name=run["metadata"]["name"],
+                )
+            except Exception:
+                pass
+        return len(to_delete)
+
+    pr_deleted = _delete_old("pipelineruns", keep=3)
+    tr_deleted = _delete_old("taskruns", keep=5)
+    return f"Kept 3 newest PipelineRuns (deleted {pr_deleted}), kept 5 newest TaskRuns (deleted {tr_deleted})."
 
 
 def cmd_export_config() -> str:
