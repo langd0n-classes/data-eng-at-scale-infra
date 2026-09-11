@@ -9,6 +9,12 @@ from collections import deque
 from typing import Any
 
 logger = logging.getLogger("chatops")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s — %(message)s"))
+    logger.addHandler(_handler)
+    logger.propagate = False
 
 # Commands that take a password as their last argument — redact it in logs
 _PASSWORD_COMMANDS = {"add-nifi", "add-team", "reset-team", "reset-password"}
