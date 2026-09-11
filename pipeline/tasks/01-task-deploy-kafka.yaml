@@ -169,7 +169,40 @@ spec:
         echo "Bootstrap server:"
         echo "  kafka-${TEAM_NAME}-kafka-bootstrap.${TEAM_NAMESPACE}.svc.cluster.local:9092"
 
-    # Step 3: Apply PodDisruptionBudget to protect broker during voluntary disruptions
+    # Step 3: Register team in team-registry so ChatOps commands and EG patching
+    # stay in sync with cluster state. Without this, ChatOps remove-kafka reads an
+    # empty registry and wipes the EG bootstrap servers for all other teams.
+    - name: register-team
+      image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
+      computeResources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+          cpu: "200m"
+      script: |
+        #!/bin/bash
+        set -e
+
+        TEAM_NAME="$(params.team-name)"
+        TEAM_NAMESPACE="$(params.team-namespace)"
+        INFRA_NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+        BOOTSTRAP="kafka-${TEAM_NAME}-kafka-bootstrap.${TEAM_NAMESPACE}.svc.cluster.local:9092"
+        VALUE="namespace=${TEAM_NAMESPACE},bootstrap=${BOOTSTRAP}"
+
+        echo "Registering ${TEAM_NAME} in team-registry (namespace: ${INFRA_NAMESPACE})..."
+
+        oc get configmap team-registry -n "${INFRA_NAMESPACE}" &>/dev/null \
+          || oc create configmap team-registry -n "${INFRA_NAMESPACE}"
+
+        oc patch configmap team-registry -n "${INFRA_NAMESPACE}" \
+          --type merge \
+          -p "{\"data\":{\"${TEAM_NAME}\":\"${VALUE}\"}}"
+
+        echo "Registered: ${TEAM_NAME} -> ${VALUE}"
+
+    # Step 4: Apply PodDisruptionBudget to protect broker during voluntary disruptions
     - name: apply-pdb
       image: ${OC_CLI_IMAGE}  # config.env: OC_CLI_IMAGE
       computeResources:
