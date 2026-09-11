@@ -275,7 +275,7 @@ def _get_last_pipeline_params() -> dict[str, str]:
         if pipeline_name not in ("deploy-all-teams", "reset-and-deploy"):
             continue
         conditions = run.get("status", {}).get("conditions", [])
-        if any(c.get("reason") == "Succeeded" for c in conditions):
+        if any(c.get("reason") in ("Succeeded", "Completed") for c in conditions):
             return {
                 p["name"]: p["value"]
                 for p in run.get("spec", {}).get("params", [])
@@ -1968,18 +1968,19 @@ def _trigger_pipeline(pipeline_name: str, name_prefix: str) -> str:
     try:
         cluster_params = _get_last_pipeline_params()
         params = [{"name": k, "value": v} for k, v in cluster_params.items()]
-    except RuntimeError:
-        params = []
+    except RuntimeError as e:
+        return f"Cannot trigger pipeline: {e}"
 
     body = {
         "apiVersion": "tekton.dev/v1",
         "kind": "PipelineRun",
         "metadata": {
-            "generateName": f"{name_prefix}-",
+            "name": f"{name_prefix}-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}",
             "namespace": settings.infra_namespace,
             "labels": {"app": "tekton-pipeline"},
         },
         "spec": {
+            "taskRunTemplate": {"serviceAccountName": "pipeline"},
             "pipelineRef": {"name": pipeline_name},
             "params": params,
             "workspaces": [
@@ -2229,12 +2230,12 @@ HELP_TEXT = """\
 *Bulk operations*
   `remove-all-teams`            Remove Kafka + NiFi from all team namespaces
 
-  _Safe reset — Tekton tasks/pipelines/RBAC survive, all Slack commands still work after:_
+  *Safe reset — Tekton tasks/pipelines/RBAC survive, all Slack commands still work after:*
   `teardown-all`                Cancel in-flight runs → remove events + Console + all teams
   `teardown-all --wipe`         Same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
   `reset-all`                   teardown-all + trigger reset-and-deploy pipeline
 
-  _Nuclear — removes tasks/pipelines/RBAC/Console; run `bash pipeline/setup.sh` to recover:_
+  *Nuclear — removes tasks/pipelines/RBAC/Console; run `bash pipeline/setup.sh` to recover:*
   `run-cleanup`                 Wipe everything except ChatOps and namespaces
 
 *Event generator*
