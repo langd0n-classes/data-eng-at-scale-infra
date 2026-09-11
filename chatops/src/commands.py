@@ -3,9 +3,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
+import logging
 import time
 from collections import deque
 from typing import Any
+
+logger = logging.getLogger("chatops")
+
+# Commands that take a password as their last argument — redact it in logs
+_PASSWORD_COMMANDS = {"add-nifi", "add-team", "reset-team", "reset-password"}
 
 import httpx
 from kubernetes import client as k8s_client
@@ -51,13 +57,23 @@ def post_to_slack(response_url: str, text: str, *, in_channel: bool = True) -> N
 
 # ── Background task entry point ────────────────────────────────────────────────
 
-def run_command(subcmd: str, args: list[str], response_url: str, channel_id: str) -> None:
+def run_command(subcmd: str, args: list[str], response_url: str, channel_id: str, channel_name: str = "unknown") -> None:
+    safe_args = args[:-1] + ["***"] if subcmd in _PASSWORD_COMMANDS and args else args
+    invocation = " ".join([subcmd] + safe_args)
+    logger.info("cmd start  [#%s] %s", channel_name, invocation)
+    t0 = time.monotonic()
     try:
         result = dispatch(subcmd, args, channel_id)
+        elapsed = time.monotonic() - t0
+        logger.info("cmd ok     [#%s] %s (%.1fs)", channel_name, subcmd, elapsed)
         post_to_slack(response_url, f"`{subcmd}` done\n```\n{result}\n```")
     except PermissionError as exc:
+        elapsed = time.monotonic() - t0
+        logger.warning("cmd denied [#%s] %s — %s (%.1fs)", channel_name, subcmd, exc, elapsed)
         post_to_slack(response_url, f"Not allowed: {exc}", in_channel=False)
     except Exception as exc:
+        elapsed = time.monotonic() - t0
+        logger.error("cmd error  [#%s] %s — %s (%.1fs)", channel_name, subcmd, exc, elapsed)
         post_to_slack(response_url, f"`{subcmd}` failed: {exc}")
 
 

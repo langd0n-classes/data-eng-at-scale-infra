@@ -40,11 +40,12 @@ async def handle_command(
     form = parse_qs(body.decode())
     text = form.get("text", [""])[0].strip()
     resp_url = form.get("response_url", [""])[0]
-    channel = form.get("channel_id", [""])[0]
+    channel_id = form.get("channel_id", [""])[0]
+    channel_name = form.get("channel_name", ["unknown"])[0]
 
     parts = text.split()
     subcmd = parts[0] if parts else "help"
     args = parts[1:]
 
-    background_tasks.add_task(commands.run_command, subcmd, args, resp_url, channel)
+    background_tasks.add_task(commands.run_command, subcmd, args, resp_url, channel_id, channel_name)
     return JSONResponse({"response_type": "ephemeral", "text": f"Running: `{text}`..."})
