@@ -446,12 +446,20 @@ def _patch_event_generator_bootstrap() -> str:
         )
 
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    apps_v1.patch_namespaced_deployment(
-        settings.event_generator_name, settings.infra_namespace,
-        {"spec": {"template": {"metadata": {"annotations":
-            {"kubectl.kubernetes.io/restartedAt": now}
-        }}}}
-    )
+    try:
+        apps_v1.patch_namespaced_deployment(
+            settings.event_generator_name, settings.infra_namespace,
+            {"spec": {"template": {"metadata": {"annotations":
+                {"kubectl.kubernetes.io/restartedAt": now}
+            }}}}
+        )
+    except k8s_client.ApiException as e:
+        if e.status == 404:
+            return (
+                "event-generator ConfigMap patched but Deployment is missing — "
+                "run `/infra deploy-events` to redeploy."
+            )
+        raise
     if not registry:
         return "All teams removed — event-generator cleared and restarted (no active clusters)"
     return f"Event-generator patched with {len(registry)} team(s) and restarted"
@@ -610,6 +618,37 @@ def _has_pods(ns: str) -> bool:
         return False
 
 
+def _delete_affinity_assistants(ns: str) -> None:
+    """Delete Tekton affinity-assistant resources in namespace.
+
+    Handles both StatefulSet-backed (Tekton >= 0.41 / OpenShift Pipelines >= 1.8)
+    and standalone Pod implementations. StatefulSet deletion cascades to its pod
+    via owner reference. Force-deletes pods to clear any stuck-terminating state
+    (e.g. after the backing PVC was deleted first).
+    """
+    label = "app.kubernetes.io/component=affinity-assistant"
+    # StatefulSets (newer Tekton) — cascades to pod deletion
+    try:
+        sts_list = apps_v1.list_namespaced_stateful_set(ns, label_selector=label)
+        for sts in sts_list.items:
+            try:
+                apps_v1.delete_namespaced_stateful_set(sts.metadata.name, ns)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # Pods — standalone (older Tekton) or already-stuck pods after StatefulSet deletion
+    try:
+        pod_list = core_v1.list_namespaced_pod(ns, label_selector=label)
+        for pod in pod_list.items:
+            try:
+                core_v1.delete_namespaced_pod(pod.metadata.name, ns, grace_period_seconds=0)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def _cancel_in_flight_runs() -> str:
     """Patch all running PipelineRuns and TaskRuns to cancelled state."""
     cancelled = 0
@@ -654,6 +693,7 @@ def _cancel_in_flight_runs() -> str:
     except Exception:
         pass
 
+    _delete_affinity_assistants(settings.infra_namespace)
     return f"Cancelled {cancelled} in-flight run(s)"
 
 
@@ -707,6 +747,7 @@ def _wipe_tekton_history() -> str:
     except Exception:
         pass
 
+    _delete_affinity_assistants(ns)
     return f"Wiped Tekton history: {deleted} objects deleted (ChatOps preserved)"
 
 
@@ -2280,6 +2321,8 @@ def cmd_cleanup_runs() -> str:
 
     pr_deleted = _delete_old("pipelineruns", keep=3)
     tr_deleted = _delete_old("taskruns", keep=5)
+
+    _delete_affinity_assistants(ns)
     return f"Kept 3 newest PipelineRuns (deleted {pr_deleted}), kept 5 newest TaskRuns (deleted {tr_deleted})."
 
 

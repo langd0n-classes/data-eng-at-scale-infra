@@ -310,6 +310,12 @@ _do_teardown_body() {
     -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[0].reason}{"\n"}{end}' \
     2>/dev/null | awk '/\tRunning/{print $1}' || true)
 
+  echo "Deleting affinity-assistant pods..."
+  run "oc delete statefulset -l 'app.kubernetes.io/component=affinity-assistant' \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found"
+  run "oc delete pod -l 'app.kubernetes.io/component=affinity-assistant' \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found --force --grace-period=0"
+
   # Step 2: Remove event generator
   _do_remove_events
 
@@ -344,7 +350,7 @@ _do_teardown_body() {
 }
 
 _do_clean_history() {
-  # Deletes all PipelineRuns, TaskRuns, and workspace PVCs — full clean slate.
+  # Deletes all PipelineRuns, TaskRuns, workspace PVCs, and affinity-assistant pods.
   echo "Deleting all PipelineRuns..."
   run "oc delete pipelinerun --all -n '${INFRA_NAMESPACE}' --ignore-not-found"
 
@@ -353,6 +359,12 @@ _do_clean_history() {
 
   echo "Deleting all workspace PVCs..."
   run "oc delete pvc --all -n '${INFRA_NAMESPACE}' --ignore-not-found"
+
+  echo "Deleting affinity-assistant pods..."
+  run "oc delete statefulset -l 'app.kubernetes.io/component=affinity-assistant' \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found"
+  run "oc delete pod -l 'app.kubernetes.io/component=affinity-assistant' \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found --force --grace-period=0"
 
   ok "Pipeline history and workspace PVCs deleted."
 }
@@ -651,7 +663,11 @@ cmd_cleanup_runs() {
   fi
   run "tkn pipelinerun delete --keep=3 -n '${INFRA_NAMESPACE}' --force"
   run "tkn taskrun delete --keep=5 -n '${INFRA_NAMESPACE}' --force"
-  ok "Old PipelineRuns and TaskRuns cleaned up"
+  run "oc delete statefulset -l 'app.kubernetes.io/component=affinity-assistant' \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found"
+  run "oc delete pod -l 'app.kubernetes.io/component=affinity-assistant' \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found --force --grace-period=0"
+  ok "Old PipelineRuns, TaskRuns, and affinity-assistant pods cleaned up"
 }
 
 cmd_status() {
@@ -989,7 +1005,7 @@ cmd_deploy_events() {
 
   for resource in imagestream buildconfig; do
     if ! oc get "${resource}" "${EVENT_GENERATOR_NAME}" -n "${INFRA_NAMESPACE}" &>/dev/null; then
-      err "${resource^} '${EVENT_GENERATOR_NAME}' not found — run 'bash pipeline/setup.sh' first."
+      err "${resource} '${EVENT_GENERATOR_NAME}' not found — run 'bash pipeline/setup.sh' first."
       exit 1
     fi
   done
