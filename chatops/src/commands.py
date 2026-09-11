@@ -97,6 +97,7 @@ def dispatch(subcmd: str, args: list[str], channel_id: str) -> str:
         case "resume-events":    return cmd_resume_events()
         case "remove-events":    return cmd_remove_events()
         case "rebuild-events":   return cmd_rebuild_events()
+        case "deploy-events":    return cmd_deploy_events()
         case "teardown-all":     return cmd_teardown_all(*args)
         case "reset-all":        return cmd_reset_all()
         case "run-pipeline":     return cmd_run_pipeline()
@@ -1872,17 +1873,22 @@ def cmd_remove_events() -> str:
             core_v1.delete_namespaced_config_map(cm.metadata.name, ns)
     except Exception:
         pass
-    # BuildConfig and ImageStream are intentionally kept so that
-    # rebuild-events works after teardown without needing run-pipeline.
+    # BuildConfig and ImageStream are intentionally kept so rebuild-events can
+    # trigger a fresh image build. However, the Deployment is deleted here, so
+    # rebuild-events alone will NOT bring the pod back — run deploy-events to
+    # redeploy with a fresh ConfigMap and the latest image.
     return "Event generator removed"
 
 
 def cmd_rebuild_events() -> str:
     """Trigger a new BuildConfig build for the event generator.
 
-    BuildConfig and ImageStream survive teardown-all so this works without
-    needing to run the full pipeline again. The ImageChange trigger on the
-    Deployment automatically rolls out the new pod once the build completes.
+    BuildConfig and ImageStream survive teardown-all so a fresh image build
+    always works. However, if the Deployment does not exist, the new image will
+    land in the ImageStream but no pod will roll out — run deploy-events to
+    redeploy the Deployment with a fresh ConfigMap.
+    If the Deployment still exists, the ImageChange trigger rolls out the new
+    pod automatically once the build completes.
     """
     ns = settings.infra_namespace
     name = settings.event_generator_name
@@ -1913,7 +1919,201 @@ def cmd_rebuild_events() -> str:
         _return_http_data_only=True,
     )
     build_name = response.get("metadata", {}).get("name", "unknown") if isinstance(response, dict) else "unknown"
-    return f"Build started: `{build_name}`\nNew pod will roll out automatically when build completes."
+    # Check whether the Deployment still exists before reporting rollout status.
+    # Swallow all errors — build is already started, don't fail the response over a status check.
+    deployment_exists = True
+    try:
+        apps_v1.read_namespaced_deployment(name, ns)
+    except k8s_client.ApiException as e:
+        if e.status == 404:
+            deployment_exists = False
+    except Exception:
+        pass  # unknown error — assume exists, user will see pod status themselves
+    if deployment_exists:
+        rollout_note = "New pod will roll out automatically when build completes."
+    else:
+        rollout_note = (
+            "Deployment does not exist — new image is being built but no pod will start.\n\n"
+            "*What do you want to do next?*\n"
+            "• `/infra deploy-events` — redeploy event generator only (fast, uses live team registry)\n"
+            "• `/infra run-pipeline` — redeploy everything: Kafka + NiFi + event generator for all teams"
+        )
+    return f"Build started: `{build_name}`\n{rollout_note}"
+
+
+def cmd_deploy_events() -> str:
+    """Deploy or redeploy the event generator Deployment + ConfigMap.
+
+    Works even when the Deployment was previously deleted (remove-events, teardown-all).
+    Builds TEAM_BOOTSTRAP_SERVERS from the live team-registry ConfigMap.
+    Reads EVENT_RATE_PER_SEC, TOPIC_PREFIX, TOPIC_SUFFIX, REGIONS from the existing
+    EG ConfigMap if it exists, otherwise falls back to defaults.
+    Requires ImageStream and BuildConfig to exist (created by setup.sh).
+    """
+    ns = settings.infra_namespace
+    name = settings.event_generator_name
+
+    # Fail fast if image build resources are missing
+    for kind, plural in [("ImageStream", "imagestreams"), ("BuildConfig", "buildconfigs")]:
+        try:
+            custom.get_namespaced_custom_object(
+                "image.openshift.io" if kind == "ImageStream" else "build.openshift.io",
+                "v1", ns, plural, name
+            )
+        except k8s_client.ApiException as e:
+            if e.status == 404:
+                raise RuntimeError(
+                    f"{kind} '{name}' not found — run `bash pipeline/setup.sh` first to apply build manifests."
+                )
+            raise
+
+    # Build TEAM_BOOTSTRAP_SERVERS from live team registry.
+    # If empty, Kafka was deployed without chatops add-kafka — user must register teams first.
+    registry = _get_team_registry()
+    bootstrap_str = ",".join(
+        f"{tname}={entry['bootstrap']}"
+        for tname, entry in sorted(registry.items())
+        if "bootstrap" in entry
+    )
+    if not bootstrap_str:
+        raise RuntimeError(
+            "No teams registered. Run `/infra add-kafka <name> <ns>` for each team first, "
+            "then retry `deploy-events`."
+        )
+
+    # Read existing ConfigMap values (preserved if it exists, defaults if deleted)
+    existing_cm_data: dict = {}
+    cms = core_v1.list_namespaced_config_map(
+        ns, label_selector=f"app={name}"
+    ).items
+    if cms:
+        existing_cm_data = cms[0].data or {}
+
+    event_rate   = existing_cm_data.get("EVENT_RATE_PER_SEC", "10")
+    topic_prefix = existing_cm_data.get("TOPIC_PREFIX", "events.")
+    topic_suffix = existing_cm_data.get("TOPIC_SUFFIX", ".raw")
+    regions      = existing_cm_data.get("REGIONS", "Boston,NYC,Chicago,Seattle,Austin")
+    topic        = existing_cm_data.get("TOPIC", "")
+    kafka_bs     = existing_cm_data.get("KAFKA_BOOTSTRAP_SERVERS", "")
+
+    # Apply ConfigMap
+    cm_body = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": f"{name}-config",
+            "namespace": ns,
+            "labels": {"app": name},
+        },
+        "data": {
+            "EVENT_RATE_PER_SEC": event_rate,
+            "TOPIC_PREFIX": topic_prefix,
+            "TOPIC_SUFFIX": topic_suffix,
+            "REGIONS": regions,
+            "TEAM_BOOTSTRAP_SERVERS": bootstrap_str,
+            "TOPIC": topic,
+            "KAFKA_BOOTSTRAP_SERVERS": kafka_bs,
+        },
+    }
+    try:
+        core_v1.create_namespaced_config_map(ns, cm_body)
+    except k8s_client.ApiException as e:
+        if e.status == 409:  # already exists — patch
+            core_v1.patch_namespaced_config_map(f"{name}-config", ns, cm_body)
+        else:
+            raise
+
+    # Apply Service (deleted by remove-events — must recreate alongside Deployment)
+    svc_body = {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {
+            "name": name,
+            "namespace": ns,
+            "labels": {"app": name},
+        },
+        "spec": {
+            "type": "ClusterIP",
+            "selector": {"app": name},
+            "ports": [{"port": 8000, "targetPort": 8000, "name": "http"}],
+        },
+    }
+    try:
+        core_v1.create_namespaced_service(ns, svc_body)
+    except k8s_client.ApiException as e:
+        if e.status != 409:  # 409 = already exists, nothing to do
+            raise
+
+    # Apply Deployment
+    image_ref = (
+        f"image-registry.openshift-image-registry.svc:5000"
+        f"/{ns}/{name}:latest"
+    )
+    triggers_annotation = (
+        f'[{{"from":{{"kind":"ImageStreamTag","name":"{name}:latest"}},'
+        f'"fieldPath":"spec.template.spec.containers[?(@.name==\\"generator\\")].image"}}]'
+    )
+    deployment_body = {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": name,
+            "namespace": ns,
+            "labels": {"app": name},
+            "annotations": {"image.openshift.io/triggers": triggers_annotation},
+        },
+        "spec": {
+            "replicas": 1,
+            "selector": {"matchLabels": {"app": name}},
+            "template": {
+                "metadata": {"labels": {"app": name}},
+                "spec": {
+                    "containers": [{
+                        "name": "generator",
+                        "image": image_ref,
+                        "imagePullPolicy": "Always",
+                        "envFrom": [{"configMapRef": {"name": f"{name}-config"}}],
+                        "resources": {
+                            "requests": {"memory": "768Mi", "cpu": "200m"},
+                            "limits":   {"memory": "2Gi",  "cpu": "500m"},
+                        },
+                        "livenessProbe": {
+                            "httpGet": {"path": "/health", "port": 8000},
+                            "initialDelaySeconds": 30,
+                            "periodSeconds": 10,
+                        },
+                        "readinessProbe": {
+                            "httpGet": {"path": "/ready", "port": 8000},
+                            "initialDelaySeconds": 5,
+                            "periodSeconds": 5,
+                        },
+                    }],
+                },
+            },
+        },
+    }
+    try:
+        apps_v1.create_namespaced_deployment(ns, deployment_body)
+        action = "created"
+    except k8s_client.ApiException as e:
+        if e.status == 409:  # already exists — patch + rollout restart
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            apps_v1.patch_namespaced_deployment(
+                name, ns,
+                {"spec": {"template": {"metadata": {"annotations":
+                    {"kubectl.kubernetes.io/restartedAt": now}
+                }}}}
+            )
+            action = "restarted"
+        else:
+            raise
+
+    team_count = len(registry)
+    return (
+        f"Event generator {action}.\n"
+        f"{team_count} team(s): `{bootstrap_str}`\n"
+        f"Pod rolling out in namespace `{ns}`."
+    )
 
 
 def cmd_teardown_all(*args) -> str:
@@ -2240,11 +2440,12 @@ HELP_TEXT = """\
   `run-cleanup`                 Wipe everything except ChatOps and namespaces
 
 *Event generator*
-  `pause-events`      Scale to 0 replicas
-  `resume-events`     Scale back to 1 replica
-  `remove-events`     Delete deployment only — BuildConfig and ImageStream are kept so rebuild-events works
-  `rebuild-events`    Trigger new build + rollout — requires BuildConfig/ImageStream (created by setup.sh);
-                      if missing run `run-pipeline` first
+  `pause-events`      Stop sending events — keeps deployment, undo with resume-events
+  `resume-events`     Resume after pause
+  `remove-events`     Delete deployment (BuildConfig/ImageStream kept — image can still be rebuilt)
+  `deploy-events`     (Re)deploy from live team registry — use when deployment is missing
+  `rebuild-events`    Build fresh image from source — if running, rolls out automatically;
+                      if deployment missing, prompts next steps
 
 *Pipeline*
   `run-pipeline`      Trigger deploy-all-teams pipeline

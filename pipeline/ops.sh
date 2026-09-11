@@ -277,7 +277,10 @@ _do_remove_nifi() {
 
 _do_remove_events() {
   # Deletes the running deployment + configmap + service but keeps ImageStream
-  # and BuildConfig so that rebuild-events works without needing run-pipeline.
+  # and BuildConfig so rebuild-events can trigger a fresh image build.
+  # NOTE: Deployment is deleted here — if rebuild-events is run after this,
+  # the new image lands in the registry but no pod starts (no Deployment to roll out to).
+  # Run deploy-events to redeploy.
   info "Removing event generator..."
   run "oc delete deployment '${EVENT_GENERATOR_NAME}' \
     -n '${INFRA_NAMESPACE}' --ignore-not-found"
@@ -944,8 +947,9 @@ cmd_rebuild_chatops() {
 
 cmd_rebuild_events() {
   # Trigger a new build of the event generator from Git (or local with --local).
-  # BuildConfig and ImageStream are preserved by teardown-all so this works
-  # without needing to run the full pipeline again.
+  # BuildConfig and ImageStream are preserved by teardown-all so a fresh image
+  # build always works. However, if the Deployment does not exist, the new image
+  # lands in the registry but no pod will start — run deploy-events to redeploy.
   local local_build=false
   for arg in "${ARGS[@]:-}"; do
     [[ "$arg" == "--local" ]] && local_build=true
@@ -969,8 +973,44 @@ cmd_rebuild_events() {
       -n '${INFRA_NAMESPACE}'"
   fi
 
-  ok "Build complete — new event generator pod rolling out"
-  info "Check pod status: oc get pod -l app=${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE}"
+  if oc get deployment "${EVENT_GENERATOR_NAME}" -n "${INFRA_NAMESPACE}" &>/dev/null; then
+    ok "Build complete — new event generator pod rolling out"
+    info "Check pod status: oc get pod -l app=${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE}"
+  else
+    ok "Build complete — new image is in the registry"
+    warn "Deployment does not exist. Run 'bash pipeline/ops.sh deploy-events' to redeploy."
+  fi
+}
+
+cmd_deploy_events() {
+  # (Re)deploy the event generator Deployment + ConfigMap using values from config.env.
+  # Works even when the Deployment was previously deleted (remove-events, teardown-all).
+  # Requires ImageStream and BuildConfig to exist — run setup.sh first if missing.
+
+  for resource in imagestream buildconfig; do
+    if ! oc get "${resource}" "${EVENT_GENERATOR_NAME}" -n "${INFRA_NAMESPACE}" &>/dev/null; then
+      err "${resource^} '${EVENT_GENERATOR_NAME}' not found — run 'bash pipeline/setup.sh' first."
+      exit 1
+    fi
+  done
+
+  local eg_dir="${REPO_ROOT}/event-generator/k8s"
+
+  info "Applying ConfigMap..."
+  run "TOPIC='${TOPIC:-}' KAFKA_BOOTSTRAP_SERVERS='${KAFKA_BOOTSTRAP_SERVERS:-}' \
+    envsubst '\${INFRA_NAMESPACE} \${EVENT_GENERATOR_NAME} \${TEAM_BOOTSTRAP_SERVERS} \${EVENT_RATE_PER_SEC} \${TOPIC_PREFIX} \${TOPIC_SUFFIX} \${REGIONS} \${TOPIC} \${KAFKA_BOOTSTRAP_SERVERS}' \
+    < '${eg_dir}/03-configmap.yaml' | oc apply -f -"
+
+  info "Applying Deployment..."
+  run "envsubst '\${INFRA_NAMESPACE} \${EVENT_GENERATOR_NAME}' \
+    < '${eg_dir}/04-deployment.yaml' | oc apply -f -"
+
+  info "Restarting deployment to pick up latest ConfigMap..."
+  run "oc rollout restart 'deployment/${EVENT_GENERATOR_NAME}' -n '${INFRA_NAMESPACE}'"
+  run "oc rollout status  'deployment/${EVENT_GENERATOR_NAME}' -n '${INFRA_NAMESPACE}' --timeout=120s"
+
+  ok "Event generator deployed — pod rolling out in namespace ${INFRA_NAMESPACE}"
+  info "Check pod: oc get pod -l app=${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE}"
 }
 
 cmd_export_config() {
@@ -1252,10 +1292,11 @@ Component operations:
 Event generator:
   pause-events             Scale event generator to 0 replicas
   resume-events            Scale event generator to 1 replica
-  remove-events            Delete deployment only — BuildConfig and ImageStream kept so rebuild-events works
-  rebuild-events           Trigger new build + rollout — requires BuildConfig/ImageStream (created by setup.sh);
-                           if missing run: bash pipeline/setup.sh --run-only
-  rebuild-events --local   Same but builds from local repo root instead of Git (offline clusters)
+  remove-events            Delete deployment (BuildConfig/ImageStream kept — image can still be rebuilt)
+  deploy-events            (Re)deploy from config.env — use when deployment is missing
+  rebuild-events           Build fresh image from source — if running, rolls out automatically;
+                           if deployment missing, run deploy-events after
+  rebuild-events --local   Same but builds from local repo root (offline clusters)
 
 Bulk operations:
   remove-all-teams      Remove all configured teams (Kafka + NiFi, namespaces kept)
@@ -1311,6 +1352,7 @@ case "$COMMAND" in
   pause-events)       cmd_pause_events ;;
   resume-events)      cmd_resume_events ;;
   remove-events)      cmd_remove_events ;;
+  deploy-events)      cmd_deploy_events ;;
   remove-all-teams)   cmd_remove_all_teams ;;
   teardown-all)       cmd_teardown_all ;;
   reset-all)          cmd_reset_all ;;
