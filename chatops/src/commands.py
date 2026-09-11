@@ -432,10 +432,13 @@ def _patch_event_generator_bootstrap() -> str:
         if "bootstrap" in entry
     )
 
-    cms = core_v1.list_namespaced_config_map(
-        settings.infra_namespace,
-        label_selector=f"app={settings.event_generator_name}"
-    ).items
+    try:
+        cms = core_v1.list_namespaced_config_map(
+            settings.infra_namespace,
+            label_selector=f"app={settings.event_generator_name}"
+        ).items
+    except Exception:
+        cms = []
     if not cms:
         return "event-generator ConfigMap not found — skipping patch"
 
@@ -470,6 +473,7 @@ def _patch_console_clusters() -> str:
 
     Best-effort — skips silently if the Console CR is not deployed.
     Called after every add-kafka / remove-kafka to keep the Console in sync.
+    Never raises — a transient API or network error must not fail the caller.
     """
     try:
         custom.get_namespaced_custom_object(
@@ -480,6 +484,8 @@ def _patch_console_clusters() -> str:
         if e.status == 404:
             return "Console CR not deployed — skipping cluster list update"
         return f"Console CR check failed — {e.reason}"
+    except Exception as e:
+        return f"Console CR check failed — {e}"
 
     registry = _get_team_registry()
     kafka_clusters = [
@@ -496,6 +502,8 @@ def _patch_console_clusters() -> str:
         )
     except k8s_client.ApiException as e:
         return f"Console CR patch failed — {e.reason}"
+    except Exception as e:
+        return f"Console CR patch failed — {e}"
 
     if not kafka_clusters:
         return "Console CR updated — no active clusters"
@@ -1518,7 +1526,7 @@ def cmd_add_kafka(name: str, ns: str) -> str:
             "kafka.strimzi.io", "v1beta2", ns, "kafkas", f"kafka-{name}"
         )
         target_generation = kafka_cr["metadata"].get("generation", 1)
-    except k8s_client.ApiException:
+    except Exception:
         target_generation = 1
 
     deadline = time.time() + 240
@@ -1532,7 +1540,7 @@ def cmd_add_kafka(name: str, ns: str) -> str:
             if (observed_gen >= target_generation and
                     any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)):
                 break
-        except k8s_client.ApiException:
+        except Exception:
             pass
         time.sleep(5)
 

@@ -189,6 +189,10 @@ print(','.join(parts))
   run "oc patch configmap '${eg_cm}' -n '${INFRA_NAMESPACE}' \
     --type merge -p '{\"data\":{\"TEAM_BOOTSTRAP_SERVERS\":\"${bootstrap_str}\"}}'"
 
+  if ! oc get deployment "${EVENT_GENERATOR_NAME}" -n "${INFRA_NAMESPACE}" &>/dev/null; then
+    warn "Event-generator Deployment not found — ConfigMap patched but no restart. Run 'deploy-events' to redeploy."
+    return
+  fi
   run "oc rollout restart deployment/'${EVENT_GENERATOR_NAME}' -n '${INFRA_NAMESPACE}'"
   if [[ -z "${bootstrap_str}" ]]; then
     ok "Event-generator cleared and restarted (no active clusters)"
@@ -221,7 +225,8 @@ print(json.dumps(clusters))
 
   run "oc patch consoles.console.streamshub.github.com kafka-console \
     -n '${INFRA_NAMESPACE}' \
-    --type merge -p '{\"spec\":{\"kafkaClusters\":${clusters_json}}}'"
+    --type merge -p '{\"spec\":{\"kafkaClusters\":${clusters_json}}}'" \
+    || { warn "Console CR patch failed — skipping"; return; }
   ok "Console CR updated"
 }
 
