@@ -664,16 +664,18 @@ def _cancel_in_flight_runs() -> str:
     # Cancel PipelineRuns
     try:
         pr_list = custom.list_namespaced_custom_object(
-            "tekton.dev", "v1", "pipelineruns", settings.infra_namespace
+            group="tekton.dev", version="v1",
+            namespace=settings.infra_namespace, plural="pipelineruns",
         )
         for pr in pr_list.get("items", []):
             conditions = pr.get("status", {}).get("conditions", [])
             if any(c.get("reason") in ("Running", "Started") for c in conditions):
                 try:
                     custom.patch_namespaced_custom_object(
-                        "tekton.dev", "v1", "pipelineruns", settings.infra_namespace,
-                        pr["metadata"]["name"],
-                        {"spec": {"status": "StoppedRunFinally"}},
+                        group="tekton.dev", version="v1",
+                        namespace=settings.infra_namespace, plural="pipelineruns",
+                        name=pr["metadata"]["name"],
+                        body={"spec": {"status": "StoppedRunFinally"}},
                     )
                     cancelled += 1
                 except Exception:
@@ -684,16 +686,18 @@ def _cancel_in_flight_runs() -> str:
     # Cancel TaskRuns
     try:
         tr_list = custom.list_namespaced_custom_object(
-            "tekton.dev", "v1", "taskruns", settings.infra_namespace
+            group="tekton.dev", version="v1",
+            namespace=settings.infra_namespace, plural="taskruns",
         )
         for tr in tr_list.get("items", []):
             conditions = tr.get("status", {}).get("conditions", [])
             if any(c.get("reason") == "Running" for c in conditions):
                 try:
                     custom.patch_namespaced_custom_object(
-                        "tekton.dev", "v1", "taskruns", settings.infra_namespace,
-                        tr["metadata"]["name"],
-                        {"spec": {"status": "TaskRunCancelled"}},
+                        group="tekton.dev", version="v1",
+                        namespace=settings.infra_namespace, plural="taskruns",
+                        name=tr["metadata"]["name"],
+                        body={"spec": {"status": "TaskRunCancelled"}},
                     )
                     cancelled += 1
                 except Exception:
@@ -714,11 +718,14 @@ def _wipe_tekton_history() -> str:
 
     # Delete all PipelineRuns
     try:
-        pr_list = custom.list_namespaced_custom_object("tekton.dev", "v1", "pipelineruns", ns)
+        pr_list = custom.list_namespaced_custom_object(
+            group="tekton.dev", version="v1", namespace=ns, plural="pipelineruns"
+        )
         for pr in pr_list.get("items", []):
             try:
                 custom.delete_namespaced_custom_object(
-                    "tekton.dev", "v1", "pipelineruns", ns, pr["metadata"]["name"]
+                    group="tekton.dev", version="v1", namespace=ns,
+                    plural="pipelineruns", name=pr["metadata"]["name"],
                 )
                 deleted += 1
             except Exception:
@@ -728,11 +735,14 @@ def _wipe_tekton_history() -> str:
 
     # Delete all TaskRuns
     try:
-        tr_list = custom.list_namespaced_custom_object("tekton.dev", "v1", "taskruns", ns)
+        tr_list = custom.list_namespaced_custom_object(
+            group="tekton.dev", version="v1", namespace=ns, plural="taskruns"
+        )
         for tr in tr_list.get("items", []):
             try:
                 custom.delete_namespaced_custom_object(
-                    "tekton.dev", "v1", "taskruns", ns, tr["metadata"]["name"]
+                    group="tekton.dev", version="v1", namespace=ns,
+                    plural="taskruns", name=tr["metadata"]["name"],
                 )
                 deleted += 1
             except Exception:
