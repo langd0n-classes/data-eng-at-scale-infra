@@ -103,6 +103,13 @@ rules:
       - consoles
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # RoleBindings — required to delete monitoring RoleBindings (e.g. prometheus-scrape) during teardown
+  # Note: even --ignore-not-found triggers an RBAC check before the 404 lookup
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources:
+      - rolebindings
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
 ---
 # Bind the ClusterRole to our ServiceAccount in infra namespace
 apiVersion: rbac.authorization.k8s.io/v1
