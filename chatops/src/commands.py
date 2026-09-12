@@ -2326,6 +2326,11 @@ def cmd_run_pipeline() -> str:
 
 
 def cmd_run_reset() -> str:
+    # Note: this submits a PipelineRun against the Task definitions already on the
+    # cluster. Unlike `ops.sh run-reset` (which re-applies RBAC + tasks via setup.sh
+    # before triggering), this command does not update task definitions first.
+    # If task YAMLs have changed since the last setup.sh run, re-run
+    # `bash pipeline/setup.sh` once to push the updates, then use run-reset freely.
     return _trigger_pipeline("reset-and-deploy", "reset-all-teams-run")
 
 
@@ -2643,7 +2648,8 @@ HELP_TEXT = """\
 
 *Pipeline*
   `run-pipeline`      Trigger deploy-all-teams pipeline
-  `run-reset`         Trigger reset-and-deploy pipeline
+  `run-reset`         Trigger reset-and-deploy pipeline (uses tasks already on the cluster;
+                      run `bash pipeline/setup.sh` first if task definitions have changed)
   `pipeline-status`   Show last 5 PipelineRuns
   `cleanup-runs`      Delete old PipelineRuns (keep newest 3)
 
