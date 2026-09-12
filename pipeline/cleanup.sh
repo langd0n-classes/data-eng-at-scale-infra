@@ -50,14 +50,14 @@ echo ""
 # 1. PipelineRuns — cancel any in-flight work first
 # ------------------------------------------------------------
 info "Step 1/10 — Deleting PipelineRuns..."
-tkn pipelinerun delete --all --force -n "${INFRA_NAMESPACE}" 2>/dev/null || true
+oc delete pipelinerun --all -n "${INFRA_NAMESPACE}" --ignore-not-found 2>/dev/null || true
 ok "PipelineRuns done"
 
 # ------------------------------------------------------------
 # 2. TaskRuns
 # ------------------------------------------------------------
 info "Step 2/10 — Deleting TaskRuns..."
-tkn taskrun delete --all --force -n "${INFRA_NAMESPACE}" 2>/dev/null || true
+oc delete taskrun --all -n "${INFRA_NAMESPACE}" --ignore-not-found 2>/dev/null || true
 ok "TaskRuns done"
 
 # ------------------------------------------------------------
