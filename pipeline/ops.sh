@@ -38,7 +38,6 @@
 #     remove-all-teams        Remove all configured teams (Kafka + NiFi, no namespace deletion)
 #     teardown-all            Cancel runs → remove events → remove Console → remove all teams
 #     teardown-all --wipe     Same + wipe Tekton run history
-#     reset-all               teardown-all then re-run the reset pipeline
 #     cleanup-runs            Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
 #
 #   ChatOps
@@ -629,13 +628,6 @@ cmd_teardown_all() {
   if [[ "$wipe" == "true" ]]; then
     _do_clean_history
   fi
-}
-
-cmd_reset_all() {
-  confirm "Reset all: teardown all deployed apps then re-run the reset pipeline? Namespaces and Tekton infra are untouched."
-  _do_teardown_body
-  info "Launching reset pipeline..."
-  run "bash '${REPO_ROOT}/pipeline/setup.sh' --reset"
 }
 
 cmd_run_pipeline() {
@@ -1332,7 +1324,6 @@ Bulk operations:
   -- Safe reset (Tekton tasks/pipelines/RBAC and ChatOps survive — all commands still work after) --
   teardown-all          Cancel in-flight runs → remove events + Console + all teams
   teardown-all --wipe   Same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
-  reset-all             teardown-all then re-run the reset-and-deploy pipeline
 
   -- Nuclear options (require bash pipeline/setup.sh to recover) --
   run-cleanup       Wipe everything except namespaces: removes teams, events, Console,
@@ -1383,7 +1374,6 @@ case "$COMMAND" in
   deploy-events)      cmd_deploy_events ;;
   remove-all-teams)   cmd_remove_all_teams ;;
   teardown-all)       cmd_teardown_all ;;
-  reset-all)          cmd_reset_all ;;
   run-pipeline)       cmd_run_pipeline ;;
   run-reset)          cmd_run_reset ;;
   run-cleanup)        cmd_run_cleanup ;;

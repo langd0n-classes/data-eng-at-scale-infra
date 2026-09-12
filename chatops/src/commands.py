@@ -121,7 +121,6 @@ def dispatch(subcmd: str, args: list[str], channel_id: str) -> str:
         case "rebuild-events":   return cmd_rebuild_events()
         case "deploy-events":    return cmd_deploy_events()
         case "teardown-all":     return cmd_teardown_all(*args)
-        case "reset-all":        return cmd_reset_all()
         case "run-pipeline":     return cmd_run_pipeline()
         case "run-reset":        return cmd_run_reset()
         case "run-cleanup":      return cmd_run_cleanup()
@@ -2314,13 +2313,6 @@ def cmd_teardown_all(*args) -> str:
     return "\n".join(lines)
 
 
-def cmd_reset_all() -> str:
-    """Cancel in-flight runs, teardown all, then trigger reset-and-deploy pipeline."""
-    teardown_result = cmd_teardown_all()
-    pipeline_result = cmd_run_reset()
-    return f"{teardown_result}\n{pipeline_result}"
-
-
 def cmd_run_pipeline() -> str:
     return _trigger_pipeline("deploy-all-teams", "deploy-all-teams-run")
 
@@ -2633,7 +2625,6 @@ HELP_TEXT = """\
   *Safe reset — Tekton tasks/pipelines/RBAC survive, all Slack commands still work after:*
   `teardown-all`                Cancel in-flight runs → remove events + Console + all teams
   `teardown-all --wipe`         Same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
-  `reset-all`                   teardown-all + trigger reset-and-deploy pipeline
 
   *Nuclear — removes tasks/pipelines/RBAC/Console; run `bash pipeline/setup.sh` to recover:*
   `run-cleanup`                 Wipe everything except ChatOps and namespaces
