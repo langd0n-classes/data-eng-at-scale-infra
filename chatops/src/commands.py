@@ -123,9 +123,9 @@ def dispatch(subcmd: str, args: list[str], channel_id: str) -> str:
         case "teardown-all":     return cmd_teardown_all(*args)
         case "run-pipeline":     return cmd_run_pipeline()
         case "run-reset":        return cmd_run_reset()
-        case "run-cleanup":      return cmd_run_cleanup()
+        case "destroy":          return cmd_run_cleanup()
         case "pipeline-status":  return cmd_pipeline_status()
-        case "cleanup-runs":     return cmd_cleanup_runs()
+        case "prune-runs":       return cmd_cleanup_runs()
         case "export-config":       return cmd_export_config()
         case "deploy-console":      return cmd_deploy_console()
         case "console-status":      return cmd_console_status()
@@ -1963,7 +1963,7 @@ def cmd_remove_events() -> str:
 def _remove_events_full() -> str:
     """Delete event generator completely including BuildConfig and ImageStream.
 
-    Used by run-cleanup (full infrastructure wipe that requires setup.sh to recover).
+    Used by destroy (full infrastructure wipe that requires setup.sh to recover).
     Use cmd_remove_events() for teardown-all where build infrastructure should survive
     so rebuild-events / run-pipeline can recover without re-running setup.sh.
     """
@@ -2016,7 +2016,7 @@ def _remove_events_full() -> str:
 def _delete_chatops() -> str:
     """Delete the ChatOps deployment and all its resources.
 
-    Called last in run-cleanup so the response_url message is already posted
+    Called last in destroy so the response_url message is already posted
     to Slack before the pod is terminated by Kubernetes.
     """
     ns = settings.infra_namespace
@@ -2627,7 +2627,7 @@ HELP_TEXT = """\
   `teardown-all --wipe`         Same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
 
   *Nuclear — removes tasks/pipelines/RBAC/Console; run `bash pipeline/setup.sh` to recover:*
-  `run-cleanup`                 Wipe everything except ChatOps and namespaces
+  `destroy`                     Wipe everything except namespaces — requires `bash pipeline/setup.sh` to recover
 
 *Event generator*
   `pause-events`      Stop sending events — keeps deployment, undo with resume-events
@@ -2641,8 +2641,8 @@ HELP_TEXT = """\
   `run-pipeline`      Trigger deploy-all-teams pipeline
   `run-reset`         Trigger reset-and-deploy pipeline (uses tasks already on the cluster;
                       run `bash pipeline/setup.sh` first if task definitions have changed)
-  `pipeline-status`   Show last 5 PipelineRuns
-  `cleanup-runs`      Delete old PipelineRuns (keep newest 3)
+  `pipeline-status`   Show last 5 PipelineRuns across all pipelines (deploy + reset)
+  `prune-runs`        Keep newest 3 PipelineRuns + 5 TaskRuns, delete the rest
 
 *Kafka Console*
   `deploy-console`    Deploy or update Kafka Console CR (creates if missing, patches clusters if exists)

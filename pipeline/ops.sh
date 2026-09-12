@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pipeline/ops.sh — Day-to-day classroom operations
 #
-# All commands use plain oc calls — no Tekton involvement (except cleanup-runs).
+# All commands use plain oc calls — no Tekton involvement (except prune-runs).
 # Run from repo root or from pipeline/ — the script finds config.env automatically.
 #
 # Usage:
@@ -38,7 +38,7 @@
 #     remove-all-teams        Remove all configured teams (Kafka + NiFi, no namespace deletion)
 #     teardown-all            Cancel runs → remove events → remove Console → remove all teams
 #     teardown-all --wipe     Same + wipe Tekton run history
-#     cleanup-runs            Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
+#     prune-runs              Keep newest 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
 #
 #   ChatOps
 #     rebuild-chatops          Trigger ChatOps rebuild from Git (cluster must reach GitHub)
@@ -1326,14 +1326,14 @@ Bulk operations:
   teardown-all --wipe   Same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
 
   -- Nuclear options (require bash pipeline/setup.sh to recover) --
-  run-cleanup       Wipe everything except namespaces: removes teams, events, Console,
-                    Tekton tasks/pipelines/RBAC, and ChatOps. Use for full decommission.
-  cleanup-runs      Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
+  destroy           Wipe everything except namespaces: removes teams, events, Console,
+                    Tekton tasks/pipelines/RBAC, and ChatOps. Requires setup.sh to recover.
 
 Pipeline:
   run-pipeline      Trigger deploy-all-teams pipeline (same as setup.sh --run-only)
   run-reset         Trigger reset-and-deploy pipeline (same as setup.sh --reset)
-  pipeline-status   Show last 5 PipelineRuns
+  pipeline-status   Show last 5 PipelineRuns across all pipelines (deploy + reset)
+  prune-runs        Keep newest 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
 
 ChatOps:
   rebuild-chatops           Trigger git-based build (cluster must reach GitHub)
@@ -1376,9 +1376,9 @@ case "$COMMAND" in
   teardown-all)       cmd_teardown_all ;;
   run-pipeline)       cmd_run_pipeline ;;
   run-reset)          cmd_run_reset ;;
-  run-cleanup)        cmd_run_cleanup ;;
+  destroy)            cmd_run_cleanup ;;
   pipeline-status)    cmd_pipeline_status ;;
-  cleanup-runs)       cmd_cleanup_runs ;;
+  prune-runs)         cmd_cleanup_runs ;;
   rebuild-chatops)    cmd_rebuild_chatops ;;
   rebuild-events)     cmd_rebuild_events ;;
   export-config)      cmd_export_config ;;
