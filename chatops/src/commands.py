@@ -1961,6 +1961,108 @@ def cmd_remove_events() -> str:
     return "Event generator removed"
 
 
+def _remove_events_full() -> str:
+    """Delete event generator completely including BuildConfig and ImageStream.
+
+    Used by run-cleanup (full infrastructure wipe that requires setup.sh to recover).
+    Use cmd_remove_events() for teardown-all where build infrastructure should survive
+    so rebuild-events / run-pipeline can recover without re-running setup.sh.
+    """
+    ns = settings.infra_namespace
+    name = settings.event_generator_name
+    label = f"app={name}"
+    deleted = []
+
+    try:
+        apps_v1.delete_namespaced_deployment(name, ns)
+        deleted.append("Deployment")
+    except Exception:
+        pass
+    for list_fn, delete_fn, kind in [
+        (core_v1.list_namespaced_service, core_v1.delete_namespaced_service, "Service"),
+        (core_v1.list_namespaced_config_map, core_v1.delete_namespaced_config_map, "ConfigMap"),
+    ]:
+        try:
+            for obj in list_fn(ns, label_selector=label).items:
+                try:
+                    delete_fn(obj.metadata.name, ns)
+                    deleted.append(kind)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    for group, version, plural in [
+        ("build.openshift.io", "v1", "buildconfigs"),
+        ("image.openshift.io", "v1", "imagestreams"),
+    ]:
+        try:
+            obj_list = custom.list_namespaced_custom_object(
+                group=group, version=version, namespace=ns,
+                plural=plural, label_selector=label,
+            )
+            for obj in obj_list.get("items", []):
+                try:
+                    custom.delete_namespaced_custom_object(
+                        group=group, version=version, namespace=ns,
+                        plural=plural, name=obj["metadata"]["name"],
+                    )
+                    deleted.append(plural)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    return f"Event generator fully removed ({', '.join(deleted) if deleted else 'nothing found'})"
+
+
+def _delete_chatops() -> str:
+    """Delete the ChatOps deployment and all its resources.
+
+    Called last in run-cleanup so the response_url message is already posted
+    to Slack before the pod is terminated by Kubernetes.
+    """
+    ns = settings.infra_namespace
+    name = settings.chatops_name
+    label = f"app={name}"
+    deleted = []
+
+    try:
+        apps_v1.delete_namespaced_deployment(name, ns)
+        deleted.append("Deployment")
+    except Exception:
+        pass
+    try:
+        for svc in core_v1.list_namespaced_service(ns, label_selector=label).items:
+            try:
+                core_v1.delete_namespaced_service(svc.metadata.name, ns)
+                deleted.append("Service")
+            except Exception:
+                pass
+    except Exception:
+        pass
+    for group, version, plural in [
+        ("build.openshift.io", "v1", "buildconfigs"),
+        ("image.openshift.io", "v1", "imagestreams"),
+        ("route.openshift.io", "v1", "routes"),
+    ]:
+        try:
+            obj_list = custom.list_namespaced_custom_object(
+                group=group, version=version, namespace=ns,
+                plural=plural, label_selector=label,
+            )
+            for obj in obj_list.get("items", []):
+                try:
+                    custom.delete_namespaced_custom_object(
+                        group=group, version=version, namespace=ns,
+                        plural=plural, name=obj["metadata"]["name"],
+                    )
+                    deleted.append(plural)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    return f"ChatOps deleted ({', '.join(deleted) if deleted else 'nothing found'})"
+
+
 def cmd_rebuild_events() -> str:
     """Trigger a new BuildConfig build for the event generator.
 
@@ -2228,20 +2330,29 @@ def cmd_run_reset() -> str:
 
 
 def cmd_run_cleanup() -> str:
-    """Full cleanup: cancel runs, wipe Console, events, all teams, Tekton definitions, and RBAC.
+    """Full infrastructure wipe — equivalent to bash pipeline/cleanup.sh DELETE_CHATOPS=true.
 
-    Equivalent to: bash pipeline/cleanup.sh (ChatOps deployment is preserved).
-    Namespaces are kept — run setup.sh or run-pipeline to redeploy from scratch.
+    Deletes everything this repo deployed: Console, event generator (incl. BuildConfig +
+    ImageStream), all teams, Tekton run history, Task/Pipeline definitions, RBAC, and
+    ChatOps itself. Namespaces are kept.
+
+    ChatOps is deleted last so this response is posted to Slack before the pod terminates.
+    Run `bash pipeline/setup.sh` to recover — run-pipeline alone is not enough.
     """
     lines = [
         _cancel_in_flight_runs(),
         _delete_console(),
-        cmd_remove_events(),
+        _remove_events_full(),
         cmd_remove_all_teams(),
         _wipe_tekton_history(),
         _delete_tekton_definitions(),
         _delete_rbac(),
+        _delete_chatops(),
     ]
+    lines.append(
+        "Full cleanup complete. ChatOps has been deleted.\n"
+        "Run `bash pipeline/setup.sh` to recover."
+    )
     return "\n".join(lines)
 
 
