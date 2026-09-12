@@ -1176,21 +1176,28 @@ _do_deploy_console() {
       warn "Subscription failed — ask cluster admin to pre-install Streams for Apache Kafka Console operator."
   fi
 
-  # Step 3: Build kafkaClusters list from active teams in config.env and apply Console CR
+  # Step 3: Build kafkaClusters list from team-registry (live cluster state) and apply Console CR
+  # Use team-registry rather than config.env so we only reference Kafka CRs that actually exist.
+  # The Console operator validates each cluster at reconcile time and rejects the CR with
+  # InvalidConfiguration if any listed Kafka CR is missing.
   local kafka_clusters=""
-  for i in $(seq 1 15); do
-    local tname tns
-    tname=$(eval echo "\${TEAM${i}_NAME:-skip}")
-    tns=$(eval echo "\${TEAM${i}_NAMESPACE:-skip}")
-    [[ "${tname}" == "skip" || "${tns}" == "skip" ]] && continue
+  local reg_data
+  reg_data=$(oc get configmap team-registry -n "${INFRA_NAMESPACE}" \
+    -o go-template='{{range $k,$v := .data}}{{$k}}={{$v}}{{"\n"}}{{end}}' 2>/dev/null || true)
+
+  while IFS='=' read -r team_key remainder; do
+    [[ -z "${team_key}" ]] && continue
+    local team_ns
+    team_ns=$(echo "${remainder}" | cut -d',' -f1 | cut -d'=' -f2)
+    [[ -z "${team_ns}" ]] && continue
     kafka_clusters+="
-    - name: kafka-${tname}
-      namespace: ${tns}
+    - name: kafka-${team_key}
+      namespace: ${team_ns}
       listener: plain"
-  done
+  done <<< "${reg_data}"
 
   if [[ -z "${kafka_clusters}" ]]; then
-    warn "No active teams in config.env — skipping Console CR creation"
+    warn "No active teams in team-registry — deploy teams first before running deploy-console"
     return
   fi
 
