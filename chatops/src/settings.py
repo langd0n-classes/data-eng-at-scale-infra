@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     nifi_image: str = ""               # e.g. quay.io/langdon/nifi-openshift:latest
     external_domain: str = ""          # e.g. apps.your-cluster.example.com
 
+    # Kafka crash-loop alerting (requires slack_bot_token to be set)
+    slack_bot_token: str = ""             # xoxb-... bot token; empty = alerting disabled
+    alert_restart_threshold: int = 4      # restart delta that triggers alert
+    alert_window_minutes: int = 10        # rolling window in minutes
+    alert_poll_interval_seconds: int = 60 # how often to poll pod restart counts
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

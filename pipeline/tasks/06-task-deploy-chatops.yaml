@@ -194,8 +194,9 @@ spec:
           -e "s|\${GIT_BRANCH}|${GIT_BRANCH}|g" \
           "${SOURCE}/02-buildconfig.yaml" | oc apply -f -
 
-        echo "Build resources applied — ConfigChange trigger will start the build."
-        echo "Build progress: oc logs -f bc/${CHATOPS_NAME} -n ${INFRA_NS}"
+        echo "Build resources applied — triggering build from latest code..."
+        oc start-build "${CHATOPS_NAME}" -n "${INFRA_NS}" --wait
+        echo "Build complete."
 
     # Step 4: Apply Deployment + Service + Route; wait for rollout; print URL.
     # 600s timeout: first build (Python deps + source copy) takes 5-10 min.

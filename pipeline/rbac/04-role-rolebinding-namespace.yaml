@@ -4,9 +4,13 @@
 # where you cannot create ClusterRoles or ClusterRoleBindings.
 #
 # Why `pipeline` SA?
-#   OpenShift Pipelines automatically creates a `pipeline` ServiceAccount in every
-#   namespace. Using it means zero SA setup — no custom SA to create or manage.
-#   PipelineRun and TaskRun files do NOT need a serviceAccountName field.
+#   On shared clusters only namespace-scoped permissions are available.
+#   Tekton task pods need `pipelines-scc` to write to workspace volumes — this SCC
+#   is auto-bound to the `pipeline` SA by the OpenShift Pipelines operator and cannot
+#   be granted to a custom SA without cluster-admin access.
+#   This Role gives `pipeline` exactly the permissions this project needs
+#   (Kafka CRs, NiFi routes, PVCs, etc.) without relying on the broad
+#   openshift-pipelines-edit ClusterRoleBinding.
 #
 # Apply once per namespace the pipeline needs to operate in:
 #   - infra namespace (for event generator, imagestream, buildconfig)
@@ -86,6 +90,35 @@ rules:
       - networkpolicies
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # PodDisruptionBudget — required to apply PDB per team after Kafka is ready
+  - apiGroups: ["policy"]
+    resources:
+      - poddisruptionbudgets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Kafka operator CRs (Strimzi) — required to create/manage Kafka clusters
+  - apiGroups: ["kafka.strimzi.io"]
+    resources:
+      - kafkas
+      - kafkanodepools
+      - kafkatopics
+      - kafkausers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Kafka Console CR (StreamsHub) — required by deploy-console task (task 09)
+  - apiGroups: ["console.streamshub.github.com"]
+    resources:
+      - consoles
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # RoleBindings — required to delete monitoring RoleBindings (e.g. prometheus-scrape) during teardown
+  # Note: even --ignore-not-found triggers an RBAC check before the 404 lookup
+  # Namespace admins on NERC already have this permission within their project namespace
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources:
+      - rolebindings
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -100,5 +133,5 @@ roleRef:
   name: pipeline-runner-role
 subjects:
   - kind: ServiceAccount
-    name: pipeline                # default SA created by OpenShift Pipelines in every namespace
-    namespace: ${INFRA_NAMESPACE} # config.env: INFRA_NAMESPACE — where the pipeline runs
+    name: pipeline                 # auto-created by OpenShift Pipelines operator
+    namespace: ${INFRA_NAMESPACE}  # config.env: INFRA_NAMESPACE — where the SA lives

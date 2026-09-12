@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pipeline/ops.sh — Day-to-day classroom operations
 #
-# All commands use plain oc calls — no Tekton involvement (except cleanup-runs).
+# All commands use plain oc calls — no Tekton involvement (except prune-runs).
 # Run from repo root or from pipeline/ — the script finds config.env automatically.
 #
 # Usage:
@@ -21,7 +21,7 @@
 #     reset-team    <name> <ns> <pwd>   Remove then redeploy a team
 #
 #   Component operations
-#     remove-kafka      <name> <ns>      Delete Kafka StatefulSet + Services + PVC
+#     remove-kafka      <name> <ns>      Delete Kafka CR + KafkaNodePool (operator cascades cleanup)
 #     remove-nifi       <name> <ns>      Delete NiFi StatefulSet + Services + PVC + Route + NetworkPolicy
 #     wipe-kafka-data   <name> <ns>      Delete Kafka PVC (scale to 0 first, then back to 1)
 #     force-update-nifi <name> <ns> <pwd> Clear SHA annotation and redeploy NiFi
@@ -35,10 +35,10 @@
 #     remove-events   Delete entire event generator deployment
 #
 #   Bulk operations
-#     remove-all-teams   Remove all configured teams (Kafka + NiFi, no namespace deletion)
-#     teardown-all       Cancel runs → remove events → remove all teams
-#     reset-all          teardown-all then re-run the reset pipeline
-#     cleanup-runs       Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
+#     remove-all-teams        Remove all configured teams (Kafka + NiFi, no namespace deletion)
+#     teardown-all            Cancel runs → remove events → remove Console → remove all teams
+#     teardown-all --wipe     Same + wipe Tekton run history
+#     prune-runs              Keep newest 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
 #
 #   ChatOps
 #     rebuild-chatops          Trigger ChatOps rebuild from Git (cluster must reach GitHub)
@@ -49,7 +49,9 @@
 #     sync-config     Auto-update config.env in-place from cluster registry + passwords
 #
 #   Observability
-#     status <name> <ns>   Show pods, services, PVCs, routes, and recent events
+#     status              <name> <ns>   Show pods, services, PVCs, routes, and recent events
+#     deploy-console                    Deploy Kafka Console to infra namespace (idempotent)
+#     console-status                    Check Kafka Console pod and route URL
 
 set -euo pipefail
 
@@ -96,7 +98,7 @@ fi
 
 _upsert_team_registry() {
   local name="$1" ns="$2"
-  local bootstrap="kafka-${name}.${ns}.svc.cluster.local:9092"
+  local bootstrap="kafka-${name}-kafka-bootstrap.${ns}.svc.cluster.local:9092"
   local value="namespace=${ns},bootstrap=${bootstrap}"
   oc get configmap team-registry -n "${INFRA_NAMESPACE}" &>/dev/null \
     || oc create configmap team-registry -n "${INFRA_NAMESPACE}"
@@ -128,10 +130,37 @@ _remove_team_password() {
     --type merge -p '{\"data\":{\"${name}\":null}}' 2>/dev/null || true"
 }
 
+_wait_kafka_ready() {
+  # Wait for Kafka CR to reach Ready after apply, checking both observedGeneration
+  # and the Ready condition. A plain `oc wait --for=condition=Ready` exits immediately
+  # if the CR was previously Ready — even if the operator hasn't started reconciling
+  # the new generation yet. Reading the generation after apply and waiting for
+  # observedGeneration to catch up avoids this race.
+  local name="$1" ns="$2"
+  local target_gen
+  target_gen=$(oc get kafka "kafka-${name}" -n "${ns}" \
+    -o jsonpath='{.metadata.generation}' 2>/dev/null || echo 1)
+  info "Waiting for Kafka kafka-${name} to be Ready (generation ${target_gen}, max 4 min)..."
+  local deadline=$(( $(date +%s) + 240 ))
+  while (( $(date +%s) < deadline )); do
+    local obs_gen ready
+    obs_gen=$(oc get kafka "kafka-${name}" -n "${ns}" \
+      -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo 0)
+    ready=$(oc get kafka "kafka-${name}" -n "${ns}" \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+    if [[ "${obs_gen}" -ge "${target_gen}" && "${ready}" == "True" ]]; then
+      ok "Kafka kafka-${name} is Ready"
+      return 0
+    fi
+    sleep 5
+  done
+  warn "Kafka not ready after 4 min — EG may not connect to ${name} on first try"
+}
+
 _patch_event_generator() {
   # Rebuild TEAM_BOOTSTRAP_SERVERS from team-registry and patch + restart EG.
-  # Always patches ConfigMap (clears stale entries even when registry is empty).
-  # Skips rollout restart if registry is empty — avoids crash-loop with no Kafka.
+  # Always patches ConfigMap and always restarts — event_generator.py handles
+  # the empty-config case gracefully (waits instead of exiting).
   local bootstrap_str=""
   if oc get configmap team-registry -n "${INFRA_NAMESPACE}" &>/dev/null; then
     bootstrap_str=$(oc get configmap team-registry \
@@ -159,12 +188,45 @@ print(','.join(parts))
   run "oc patch configmap '${eg_cm}' -n '${INFRA_NAMESPACE}' \
     --type merge -p '{\"data\":{\"TEAM_BOOTSTRAP_SERVERS\":\"${bootstrap_str}\"}}'"
 
-  if [[ -z "${bootstrap_str}" ]]; then
-    info "Registry empty — EG ConfigMap cleared, restart skipped"
+  if ! oc get deployment "${EVENT_GENERATOR_NAME}" -n "${INFRA_NAMESPACE}" &>/dev/null; then
+    warn "Event-generator Deployment not found — ConfigMap patched but no restart. Run 'deploy-events' to redeploy."
     return
   fi
   run "oc rollout restart deployment/'${EVENT_GENERATOR_NAME}' -n '${INFRA_NAMESPACE}'"
-  ok "Event-generator patched and restarted"
+  if [[ -z "${bootstrap_str}" ]]; then
+    ok "Event-generator cleared and restarted (no active clusters)"
+  else
+    ok "Event-generator patched and restarted"
+  fi
+}
+
+_patch_console() {
+  # Rebuild kafkaClusters in Console CR from team-registry.
+  # Best-effort — skips silently if Console CR is not deployed.
+  if ! oc get consoles.console.streamshub.github.com kafka-console \
+      -n "${INFRA_NAMESPACE}" &>/dev/null 2>&1; then
+    return
+  fi
+
+  local clusters_json
+  clusters_json=$(oc get configmap team-registry \
+    -n "${INFRA_NAMESPACE}" -o json 2>/dev/null \
+    | python3 -c "
+import sys, json
+data = json.load(sys.stdin).get('data', {})
+clusters = []
+for name, val in sorted(data.items()):
+    entry = dict(kv.split('=', 1) for kv in val.split(',') if '=' in kv)
+    if 'namespace' in entry:
+        clusters.append({'name': f'kafka-{name}', 'namespace': entry['namespace'], 'listener': 'plain'})
+print(json.dumps(clusters))
+" 2>/dev/null || echo "[]")
+
+  run "oc patch consoles.console.streamshub.github.com kafka-console \
+    -n '${INFRA_NAMESPACE}' \
+    --type merge -p '{\"spec\":{\"kafkaClusters\":${clusters_json}}}'" \
+    || { warn "Console CR patch failed — skipping"; return; }
+  ok "Console CR updated"
 }
 
 _do_add_kafka() {
@@ -177,7 +239,7 @@ _do_add_kafka() {
   info "Deploying Kafka for ${name} in ${ns}..."
   run "TEAM_NAME='${name}' TEAM_NAMESPACE='${ns}' STORAGE_CLASS='${STORAGE_CLASS}' \
     envsubst '\${TEAM_NAME} \${TEAM_NAMESPACE} \${STORAGE_CLASS}' \
-    < '${REPO_ROOT}/kafka/per-team/kafka-per-team-template.yaml' | oc apply -f -"
+    < '${REPO_ROOT}/kafka/operator/kafka-cr-template.yaml' | oc apply -f -"
 }
 
 _do_add_nifi() {
@@ -194,9 +256,14 @@ _do_add_nifi() {
 _do_remove_kafka() {
   local name="$1" ns="$2"
   info "Removing Kafka for ${name} in ${ns}..."
-  run "oc delete statefulset,svc,pvc \
-    -l 'app=kafka-${name}' \
-    -n '${ns}' --ignore-not-found"
+  run "oc delete kafka 'kafka-${name}' -n '${ns}' --ignore-not-found"
+  run "oc delete kafkanodepool dual-role -n '${ns}' --ignore-not-found"
+  # Delete Strimzi-created PVCs — named data-{cluster}-{nodepool}-{ordinal}
+  # Must delete these or a re-add will crash with cluster.id mismatch
+  run "oc delete pvc -l 'strimzi.io/cluster=kafka-${name}' -n '${ns}' --ignore-not-found"
+  # Clean up per-team monitoring resources so teardown is fully atomic
+  run "oc delete configmap kafka-metrics-config -n '${ns}' --ignore-not-found"
+  run "oc delete rolebinding prometheus-scrape -n '${ns}' --ignore-not-found"
 }
 
 _do_remove_nifi() {
@@ -213,10 +280,15 @@ _do_remove_nifi() {
 }
 
 _do_remove_events() {
+  # Deletes the running deployment + configmap + service but keeps ImageStream
+  # and BuildConfig so rebuild-events can trigger a fresh image build.
+  # NOTE: Deployment is deleted here — if rebuild-events is run after this,
+  # the new image lands in the registry but no pod starts (no Deployment to roll out to).
+  # Run deploy-events to redeploy.
   info "Removing event generator..."
   run "oc delete deployment '${EVENT_GENERATOR_NAME}' \
     -n '${INFRA_NAMESPACE}' --ignore-not-found"
-  run "oc delete svc,configmap,buildconfig,imagestream \
+  run "oc delete svc,configmap \
     -l 'app=${EVENT_GENERATOR_NAME}' \
     -n '${INFRA_NAMESPACE}' --ignore-not-found"
 }
@@ -242,10 +314,23 @@ _do_teardown_body() {
     -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[0].reason}{"\n"}{end}' \
     2>/dev/null | awk '/\tRunning/{print $1}' || true)
 
+  echo "Deleting affinity-assistant pods..."
+  run "oc delete statefulset -l 'app.kubernetes.io/component=affinity-assistant' \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found"
+  run "oc delete pod -l 'app.kubernetes.io/component=affinity-assistant' \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found --force --grace-period=0"
+
   # Step 2: Remove event generator
   _do_remove_events
 
-  # Step 3: Remove all configured teams
+  # Step 3: Remove Kafka Console — no active teams, nothing left to inspect
+  echo "Removing Kafka Console..."
+  run "oc delete consoles.console.streamshub.github.com kafka-console \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found"
+  run "oc delete route -l 'app.kubernetes.io/name=console' \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found"
+
+  # Step 4: Remove all configured teams
   for i in $(seq 1 15); do
     local ns_var="TEAM${i}_NAMESPACE" name_var="TEAM${i}_NAME"
     local ns="${!ns_var:-skip}" name="${!name_var:-skip}"
@@ -255,7 +340,7 @@ _do_teardown_body() {
     _do_remove_nifi  "${name}" "${ns}"
   done
 
-  # Step 4: Optionally wipe Tekton workspace PVCs (created per PipelineRun)
+  # Step 5: Optionally wipe Tekton workspace PVCs (created per PipelineRun)
   if [[ "${WIPE_PVCS:-false}" == "true" ]]; then
     echo "Deleting workspace PVCs (WIPE_PVCS=true)..."
     run "oc delete pvc \
@@ -269,7 +354,7 @@ _do_teardown_body() {
 }
 
 _do_clean_history() {
-  # Deletes all PipelineRuns, TaskRuns, and workspace PVCs — full clean slate.
+  # Deletes all PipelineRuns, TaskRuns, workspace PVCs, and affinity-assistant pods.
   echo "Deleting all PipelineRuns..."
   run "oc delete pipelinerun --all -n '${INFRA_NAMESPACE}' --ignore-not-found"
 
@@ -278,6 +363,12 @@ _do_clean_history() {
 
   echo "Deleting all workspace PVCs..."
   run "oc delete pvc --all -n '${INFRA_NAMESPACE}' --ignore-not-found"
+
+  echo "Deleting affinity-assistant pods..."
+  run "oc delete statefulset -l 'app.kubernetes.io/component=affinity-assistant' \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found"
+  run "oc delete pod -l 'app.kubernetes.io/component=affinity-assistant' \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found --force --grace-period=0"
 
   ok "Pipeline history and workspace PVCs deleted."
 }
@@ -289,13 +380,11 @@ cmd_add_team() {
   local ns="${2:?Usage: add-team <name> <ns> <pwd>}"
   local pwd="${3:?Usage: add-team <name> <ns> <pwd>}"
   _do_add_kafka "${name}" "${ns}"
-  info "Waiting for kafka-${name}-0 to be Ready (max 2 min)..."
-  oc wait pod "kafka-${name}-0" \
-    --for=condition=Ready --timeout=120s -n "${ns}" 2>/dev/null \
-    || warn "Kafka pod not ready yet — EG may not connect to ${name} on first try"
+  _wait_kafka_ready "${name}" "${ns}"
   _upsert_team_registry "${name}" "${ns}"
   _upsert_team_password "${name}" "${pwd}"
   _patch_event_generator
+  _patch_console
   _do_add_nifi "${name}" "${ns}" "${pwd}"
   ok "Team ${name} deployed in ${ns}"
 }
@@ -304,12 +393,10 @@ cmd_add_kafka() {
   local name="${1:?Usage: add-kafka <name> <ns>}"
   local ns="${2:?Usage: add-kafka <name> <ns>}"
   _do_add_kafka "${name}" "${ns}"
-  info "Waiting for kafka-${name}-0 to be Ready (max 2 min)..."
-  oc wait pod "kafka-${name}-0" \
-    --for=condition=Ready --timeout=120s -n "${ns}" 2>/dev/null \
-    || warn "Kafka pod not ready yet — EG may not connect to ${name} on first try"
+  _wait_kafka_ready "${name}" "${ns}"
   _upsert_team_registry "${name}" "${ns}"
   _patch_event_generator
+  _patch_console
   ok "Kafka deployed for ${name} in ${ns}"
 }
 
@@ -330,6 +417,7 @@ cmd_remove_team() {
   _remove_from_team_registry "${name}"
   _remove_team_password "${name}"
   _patch_event_generator
+  _patch_console
   _do_remove_nifi "${name}" "${ns}"
   ok "Team ${name} removed from ${ns}"
 }
@@ -347,13 +435,11 @@ cmd_reset_team() {
   _do_remove_nifi "${name}" "${ns}"
   # Redeploy phase
   _do_add_kafka "${name}" "${ns}"
-  info "Waiting for kafka-${name}-0 to be Ready (max 2 min)..."
-  oc wait pod "kafka-${name}-0" \
-    --for=condition=Ready --timeout=120s -n "${ns}" 2>/dev/null \
-    || warn "Kafka pod not ready yet — EG may not connect to ${name} on first try"
+  _wait_kafka_ready "${name}" "${ns}"
   _upsert_team_registry "${name}" "${ns}"
   _upsert_team_password "${name}" "${pwd}"
   _patch_event_generator
+  _patch_console
   _do_add_nifi "${name}" "${ns}" "${pwd}"
   ok "Team ${name} reset in ${ns}"
 }
@@ -361,10 +447,11 @@ cmd_reset_team() {
 cmd_remove_kafka() {
   local name="${1:?Usage: remove-kafka <name> <ns>}"
   local ns="${2:?Usage: remove-kafka <name> <ns>}"
-  confirm "Delete Kafka StatefulSet + Services + PVC for ${name} in ${ns}?"
+  confirm "Delete Kafka CR + KafkaNodePool for ${name} in ${ns}? (operator cascades cleanup)"
   _do_remove_kafka "${name}" "${ns}"
   _remove_from_team_registry "${name}"
   _patch_event_generator
+  _patch_console
   ok "Kafka removed for ${name} in ${ns}"
 }
 
@@ -380,22 +467,58 @@ cmd_wipe_kafka_data() {
   local name="${1:?Usage: wipe-kafka-data <name> <ns>}"
   local ns="${2:?Usage: wipe-kafka-data <name> <ns>}"
 
-  if ! oc get statefulset "kafka-${name}" -n "${ns}" &>/dev/null; then
-    err "StatefulSet kafka-${name} not found in ${ns} — Kafka is not deployed for this team."
+  if ! oc get kafka "kafka-${name}" -n "${ns}" &>/dev/null; then
+    err "Kafka CR kafka-${name} not found in ${ns} — Kafka is not deployed for this team."
     exit 1
   fi
 
   confirm "Wipe all Kafka data for ${name} in ${ns}? This PERMANENTLY deletes the PVC."
-  info "Scaling Kafka to 0..."
-  run "oc scale statefulset 'kafka-${name}' --replicas=0 -n '${ns}'"
-  # Wait for pod to terminate before deleting PVC (PVC can't be deleted while mounted)
-  echo "Waiting for pod to terminate..."
-  run "oc wait pod 'kafka-${name}-0' --for=delete --timeout=60s -n '${ns}' 2>/dev/null || true"
-  info "Deleting Kafka PVC..."
-  run "oc delete pvc -l 'app=kafka-${name}' -n '${ns}' --ignore-not-found"
-  info "Scaling Kafka back to 1..."
-  run "oc scale statefulset 'kafka-${name}' --replicas=1 -n '${ns}'"
-  ok "Kafka data wiped for ${name} in ${ns}. Pod is restarting with fresh storage."
+
+  # Phase 1: Delete KafkaNodePool — operator removes the broker pod
+  info "Deleting KafkaNodePool to wipe storage..."
+  run "oc delete kafkanodepool dual-role -n '${ns}' --ignore-not-found"
+
+  # Phase 2: Wait for pod to disappear — must be gone before PVC can be released.
+  # Force-delete after 120s: safe here since data is intentionally being wiped.
+  info "Waiting for broker pod to terminate (max 2 min)..."
+  if ! oc wait pod -l "strimzi.io/cluster=kafka-${name}" \
+      --for=delete --timeout=120s -n "${ns}" 2>/dev/null; then
+    warn "Pod still running after 2 min — force deleting to unblock PVC..."
+    oc delete pod -l "strimzi.io/cluster=kafka-${name}" \
+      -n "${ns}" --force --grace-period=0 2>/dev/null || true
+    sleep 5
+  fi
+
+  # Phase 3: Delete PVC then wait for it to fully disappear.
+  # If deleted while pod was still attached, PVC stays in Terminating and the
+  # recreated KafkaNodePool cannot claim a new PVC with the same name.
+  info "Deleting Strimzi PVCs..."
+  run "oc delete pvc -l 'strimzi.io/cluster=kafka-${name}' -n '${ns}' --ignore-not-found"
+  info "Waiting for PVC to fully terminate..."
+  local pvc_deadline=$(( $(date +%s) + 60 ))
+  while (( $(date +%s) < pvc_deadline )); do
+    local pvc_count
+    pvc_count=$(oc get pvc -l "strimzi.io/cluster=kafka-${name}" \
+      -n "${ns}" --no-headers 2>/dev/null | wc -l)
+    [[ "${pvc_count}" -eq 0 ]] && break
+    sleep 3
+  done
+
+  # Phase 4: Recreate KafkaNodePool with fresh storage
+  info "Recreating KafkaNodePool with fresh storage..."
+  run "TEAM_NAME='${name}' TEAM_NAMESPACE='${ns}' STORAGE_CLASS='${STORAGE_CLASS}' \
+    envsubst '\${TEAM_NAME} \${TEAM_NAMESPACE} \${STORAGE_CLASS}' \
+    < '${REPO_ROOT}/kafka/operator/kafka-cr-template.yaml' \
+    | oc apply -f - --selector='kafka.strimzi.io/kind=KafkaNodePool'"
+
+  # Phase 5: Wait for broker to be Ready again before returning.
+  # KafkaNodePool deletion toggles Kafka CR to NotReady, so oc wait correctly
+  # blocks until the new pod is up — no generation check needed here.
+  info "Waiting for broker to be Ready (max 4 min)..."
+  oc wait kafka "kafka-${name}" \
+    --for=condition=Ready --timeout=240s -n "${ns}" 2>/dev/null \
+    && ok "Kafka data wiped and broker Ready for ${name} in ${ns}." \
+    || warn "Broker not yet Ready — check: bash pipeline/ops.sh status ${name} ${ns}"
 }
 
 cmd_force_update_nifi() {
@@ -442,8 +565,8 @@ cmd_reset_password() {
 cmd_restart_kafka() {
   local name="${1:?Usage: restart-kafka <name> <ns>}"
   local ns="${2:?Usage: restart-kafka <name> <ns>}"
-  run "oc delete pod 'kafka-${name}-0' -n '${ns}'"
-  ok "Kafka pod kafka-${name}-0 deleted — StatefulSet will restart it"
+  run "oc delete pod -l 'strimzi.io/cluster=kafka-${name}' -n '${ns}'"
+  ok "Kafka pod for ${name} deleted — Strimzi operator will restart it"
 }
 
 cmd_restart_nifi() {
@@ -482,33 +605,51 @@ cmd_remove_all_teams() {
     _remove_team_password "${name}"
   done
   _patch_event_generator
+  _patch_console
   ok "All teams removed"
 }
 
 cmd_teardown_all() {
-  local clean=false
+  # teardown-all         — cancel in-flight runs + remove events + all teams
+  # teardown-all --wipe  — same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
+  local wipe=false
   for arg in "${ARGS[@]:-}"; do
-    [[ "$arg" == "--clean" ]] && clean=true
+    [[ "$arg" == "--wipe" ]] && wipe=true
   done
 
-  if [[ "$clean" == "true" ]]; then
-    confirm "Teardown all apps AND delete pipeline history + workspace PVCs? (full clean slate — Tekton tasks/pipelines/RBAC untouched)"
+  if [[ "$wipe" == "true" ]]; then
+    confirm "Cancel in-flight runs, remove all apps, AND wipe Tekton run history + workspace PVCs? Tasks/pipelines/RBAC and namespaces are untouched."
   else
-    confirm "Teardown all deployed apps (events + all teams)? Tekton tasks/pipelines/RBAC and namespaces are untouched."
+    confirm "Cancel in-flight runs and remove all deployed apps (events + all teams)? Tekton tasks/pipelines/RBAC and namespaces are untouched."
   fi
 
   _do_teardown_body
 
-  if [[ "$clean" == "true" ]]; then
+  if [[ "$wipe" == "true" ]]; then
     _do_clean_history
   fi
 }
 
-cmd_reset_all() {
-  confirm "Reset all: teardown all deployed apps then re-run the reset pipeline? Namespaces and Tekton infra are untouched."
-  _do_teardown_body
-  info "Launching reset pipeline..."
+cmd_run_pipeline() {
+  info "Triggering deploy-all-teams pipeline..."
+  run "bash '${REPO_ROOT}/pipeline/setup.sh' --run-only"
+}
+
+cmd_run_reset() {
+  confirm "Trigger reset-and-deploy pipeline? This will wipe all teams and redeploy."
   run "bash '${REPO_ROOT}/pipeline/setup.sh' --reset"
+}
+
+cmd_run_cleanup() {
+  confirm "Wipe all deployed apps, Tekton tasks/pipelines/RBAC, and ChatOps? Namespaces are kept. Run setup.sh to redeploy."
+  FORCE=true DELETE_CHATOPS=true bash "${REPO_ROOT}/pipeline/cleanup.sh"
+}
+
+cmd_pipeline_status() {
+  oc get pipelinerun -n "${INFRA_NAMESPACE}" \
+    --sort-by='.metadata.creationTimestamp' \
+    -o custom-columns='NAME:.metadata.name,STATUS:.status.conditions[0].reason,STARTED:.metadata.creationTimestamp' \
+    2>/dev/null | tail -5 || echo "No PipelineRuns found"
 }
 
 cmd_cleanup_runs() {
@@ -519,7 +660,11 @@ cmd_cleanup_runs() {
   fi
   run "tkn pipelinerun delete --keep=3 -n '${INFRA_NAMESPACE}' --force"
   run "tkn taskrun delete --keep=5 -n '${INFRA_NAMESPACE}' --force"
-  ok "Old PipelineRuns and TaskRuns cleaned up"
+  run "oc delete statefulset -l 'app.kubernetes.io/component=affinity-assistant' \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found"
+  run "oc delete pod -l 'app.kubernetes.io/component=affinity-assistant' \
+    -n '${INFRA_NAMESPACE}' --ignore-not-found --force --grace-period=0"
+  ok "Old PipelineRuns, TaskRuns, and affinity-assistant pods cleaned up"
 }
 
 cmd_status() {
@@ -664,6 +809,18 @@ cmd_status_all() {
     [[ "${pr_icon}" == "[X]" ]] && issues+=("Last pipeline run failed: ${pr_name}")
   fi
 
+  # Console URL
+  local console_host
+  console_host=$(oc get route -n "${INFRA_NAMESPACE}" \
+    -l "app.kubernetes.io/name=console" \
+    -o jsonpath='{.items[0].spec.host}' 2>/dev/null || echo "")
+  echo ""
+  if [[ -n "${console_host}" ]]; then
+    echo "Kafka Console URL: https://${console_host}"
+  else
+    echo "Kafka Console URL: not deployed"
+  fi
+
   # ── Teams ───────────────────────────────────────────────
   echo ""
   echo "Teams"
@@ -801,6 +958,74 @@ cmd_rebuild_chatops() {
   info "Check pod status: oc get pod -l app=${chatops_name} -n ${INFRA_NAMESPACE}"
 }
 
+cmd_rebuild_events() {
+  # Trigger a new build of the event generator from Git (or local with --local).
+  # BuildConfig and ImageStream are preserved by teardown-all so a fresh image
+  # build always works. However, if the Deployment does not exist, the new image
+  # lands in the registry but no pod will start — run deploy-events to redeploy.
+  local local_build=false
+  for arg in "${ARGS[@]:-}"; do
+    [[ "$arg" == "--local" ]] && local_build=true
+  done
+
+  if ! oc get buildconfig "${EVENT_GENERATOR_NAME}" -n "${INFRA_NAMESPACE}" &>/dev/null; then
+    err "BuildConfig '${EVENT_GENERATOR_NAME}' not found — run 'bash pipeline/setup.sh --run-only' first to apply manifests."
+    exit 1
+  fi
+
+  if [[ "$local_build" == "true" ]]; then
+    info "Starting binary build of ${EVENT_GENERATOR_NAME} from local repo root..."
+    run "oc start-build '${EVENT_GENERATOR_NAME}' \
+      --from-dir='${REPO_ROOT}' \
+      --follow \
+      -n '${INFRA_NAMESPACE}'"
+  else
+    info "Starting git-based build of ${EVENT_GENERATOR_NAME}..."
+    run "oc start-build '${EVENT_GENERATOR_NAME}' \
+      --follow \
+      -n '${INFRA_NAMESPACE}'"
+  fi
+
+  if oc get deployment "${EVENT_GENERATOR_NAME}" -n "${INFRA_NAMESPACE}" &>/dev/null; then
+    ok "Build complete — new event generator pod rolling out"
+    info "Check pod status: oc get pod -l app=${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE}"
+  else
+    ok "Build complete — new image is in the registry"
+    warn "Deployment does not exist. Run 'bash pipeline/ops.sh deploy-events' to redeploy."
+  fi
+}
+
+cmd_deploy_events() {
+  # (Re)deploy the event generator Deployment + ConfigMap using values from config.env.
+  # Works even when the Deployment was previously deleted (remove-events, teardown-all).
+  # Requires ImageStream and BuildConfig to exist — run setup.sh first if missing.
+
+  for resource in imagestream buildconfig; do
+    if ! oc get "${resource}" "${EVENT_GENERATOR_NAME}" -n "${INFRA_NAMESPACE}" &>/dev/null; then
+      err "${resource} '${EVENT_GENERATOR_NAME}' not found — run 'bash pipeline/setup.sh' first."
+      exit 1
+    fi
+  done
+
+  local eg_dir="${REPO_ROOT}/event-generator/k8s"
+
+  info "Applying ConfigMap..."
+  run "TOPIC='${TOPIC:-}' KAFKA_BOOTSTRAP_SERVERS='${KAFKA_BOOTSTRAP_SERVERS:-}' \
+    envsubst '\${INFRA_NAMESPACE} \${EVENT_GENERATOR_NAME} \${TEAM_BOOTSTRAP_SERVERS} \${EVENT_RATE_PER_SEC} \${TOPIC_PREFIX} \${TOPIC_SUFFIX} \${REGIONS} \${TOPIC} \${KAFKA_BOOTSTRAP_SERVERS}' \
+    < '${eg_dir}/03-configmap.yaml' | oc apply -f -"
+
+  info "Applying Deployment..."
+  run "envsubst '\${INFRA_NAMESPACE} \${EVENT_GENERATOR_NAME}' \
+    < '${eg_dir}/04-deployment.yaml' | oc apply -f -"
+
+  info "Restarting deployment to pick up latest ConfigMap..."
+  run "oc rollout restart 'deployment/${EVENT_GENERATOR_NAME}' -n '${INFRA_NAMESPACE}'"
+  run "oc rollout status  'deployment/${EVENT_GENERATOR_NAME}' -n '${INFRA_NAMESPACE}' --timeout=120s"
+
+  ok "Event generator deployed — pod rolling out in namespace ${INFRA_NAMESPACE}"
+  info "Check pod: oc get pod -l app=${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE}"
+}
+
 cmd_export_config() {
   if ! oc get configmap team-registry -n "${INFRA_NAMESPACE}" &>/dev/null; then
     warn "team-registry ConfigMap not found. Run setup.sh first."
@@ -932,6 +1157,134 @@ print(f'config.env updated in-place with {len(teams)} team(s)')
   ok "config.env synced from cluster"
 }
 
+_do_deploy_console() {
+  # Step 1: Apply OLM Subscription (skip if operator already installed)
+  # api-resources check works without cluster-admin (no CRD get required)
+  if oc api-resources --api-group=console.streamshub.github.com 2>/dev/null | grep -q console; then
+    info "Console operator already installed — skipping Subscription."
+  else
+    info "Applying OLM Subscription (requires cluster-admin)..."
+    oc apply -f "${REPO_ROOT}/monitoring/console/01-kafka-console-subscription.yaml" 2>/dev/null || \
+      warn "Subscription failed — ask cluster admin to pre-install Streams for Apache Kafka Console operator."
+  fi
+
+  # Step 3: Build kafkaClusters list from team-registry (live cluster state) and apply Console CR
+  # Use team-registry rather than config.env so we only reference Kafka CRs that actually exist.
+  # The Console operator validates each cluster at reconcile time and rejects the CR with
+  # InvalidConfiguration if any listed Kafka CR is missing.
+  local kafka_clusters=""
+  local reg_data
+  reg_data=$(oc get configmap team-registry -n "${INFRA_NAMESPACE}" \
+    -o go-template='{{range $k,$v := .data}}{{$k}}={{$v}}{{"\n"}}{{end}}' 2>/dev/null || true)
+
+  while IFS='=' read -r team_key remainder; do
+    [[ -z "${team_key}" ]] && continue
+    local team_ns
+    team_ns=$(echo "${remainder}" | cut -d',' -f1 | cut -d'=' -f2)
+    [[ -z "${team_ns}" ]] && continue
+    kafka_clusters+="
+    - name: kafka-${team_key}
+      namespace: ${team_ns}
+      listener: plain"
+  done <<< "${reg_data}"
+
+  if [[ -z "${kafka_clusters}" ]]; then
+    warn "No active teams in team-registry — deploy teams first before running deploy-console"
+    return
+  fi
+
+  info "Applying Kafka Console CR for active teams..."
+  local tmpfile
+  tmpfile=$(mktemp /tmp/console-cr-XXXXXX.yaml)
+  cat > "${tmpfile}" <<EOF
+apiVersion: console.streamshub.github.com/v1alpha1
+kind: Console
+metadata:
+  name: kafka-console
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: kafka-console
+spec:
+  hostname: kafka-console-${INFRA_NAMESPACE}.${EXTERNAL_DOMAIN}
+  kafkaClusters:${kafka_clusters}
+EOF
+  run "oc apply -f '${tmpfile}'"
+  rm -f "${tmpfile}"
+
+  # Step 4: Wait for console pod (skip in --dry-run)
+  if [[ "${DRY_RUN:-false}" != "true" ]]; then
+    info "Waiting for Console CR to become Ready (up to 300s)..."
+    local console_ready=false
+    for i in $(seq 1 30); do
+      local status reason
+      status=$(oc get consoles.console.streamshub.github.com kafka-console \
+        -n "${INFRA_NAMESPACE}" \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+      reason=$(oc get consoles.console.streamshub.github.com kafka-console \
+        -n "${INFRA_NAMESPACE}" \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null || echo "")
+
+      if [[ "${status}" == "True" ]]; then
+        ok "Console CR Ready"
+        console_ready=true
+        break
+      fi
+
+      if [[ -n "${reason}" && "${reason}" != "DependentsNotReady" ]]; then
+        err "Console CR failed — reason: ${reason}"
+        err "Check: oc get consoles.console.streamshub.github.com kafka-console -n ${INFRA_NAMESPACE} -o yaml"
+        exit 1
+      fi
+
+      echo "  [${reason:-initializing}] pod starting up — attempt ${i}/30..."
+      sleep 10
+    done
+
+    if [[ "${console_ready}" != "true" ]]; then
+      warn "Console CR not Ready after 300s — pod may still be scheduling due to resource constraints."
+      warn "Check: bash pipeline/ops.sh console-status"
+    fi
+
+    # Step 5: Print URL
+    local host
+    host=$(oc get route -n "${INFRA_NAMESPACE}" \
+      -l "app.kubernetes.io/name=console" \
+      -o jsonpath='{.items[0].spec.host}' 2>/dev/null || echo "")
+    [[ -n "${host}" ]] && ok "Kafka Console URL: https://${host}"
+  fi
+}
+
+# ── Command functions ──────────────────────────────────────────────────────────
+
+cmd_deploy_console() {
+  _do_deploy_console
+  ok "Kafka Console deployed in ${INFRA_NAMESPACE}"
+}
+
+cmd_console_status() {
+  info "Kafka Console status in ${INFRA_NAMESPACE}"
+
+  local cr_status
+  cr_status=$(oc get consoles.console.streamshub.github.com kafka-console \
+    -n "${INFRA_NAMESPACE}" \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+  if [[ "${cr_status}" == "True" ]]; then
+    ok "Console CR Ready"
+  else
+    warn "Console CR not Ready — run: bash pipeline/ops.sh deploy-console"
+  fi
+
+  local host
+  host=$(oc get route -n "${INFRA_NAMESPACE}" \
+    -l "app.kubernetes.io/name=console" \
+    -o jsonpath='{.items[0].spec.host}' 2>/dev/null || echo "")
+  if [[ -n "${host}" ]]; then
+    ok "Console URL: https://${host}"
+  else
+    warn "No console route found yet"
+  fi
+}
+
 cmd_help() {
   cat <<'HELP'
 pipeline/ops.sh — Day-to-day classroom operations
@@ -948,25 +1301,39 @@ Team lifecycle:
   reset-team    <name> <ns> <pwd>   Remove then redeploy a team
 
 Component operations:
-  remove-kafka      <name> <ns>          Delete Kafka StatefulSet + Services + PVC
+  remove-kafka      <name> <ns>          Delete Kafka CR + KafkaNodePool (operator cascades cleanup)
   remove-nifi       <name> <ns>          Delete NiFi StatefulSet + Services + PVC + Route + NetworkPolicy
-  wipe-kafka-data   <name> <ns>          Delete Kafka PVC (scales to 0 first, then back to 1)
+  wipe-kafka-data   <name> <ns>          Delete KafkaNodePool PVC and recreate with fresh storage
   force-update-nifi <name> <ns> <pwd>   Clear SHA annotation and redeploy NiFi
   reset-password    <name> <ns> <pwd>   Reset NiFi login password
-  restart-kafka     <name> <ns>          Delete Kafka pod (StatefulSet restarts it)
+  restart-kafka     <name> <ns>          Delete Kafka pod (Strimzi operator restarts it)
   restart-nifi      <name> <ns>          Delete NiFi pod (StatefulSet restarts it)
 
 Event generator:
-  pause-events    Scale event generator to 0 replicas
-  resume-events   Scale event generator to 1 replica
-  remove-events   Delete entire event generator deployment
+  pause-events             Scale event generator to 0 replicas
+  resume-events            Scale event generator to 1 replica
+  remove-events            Delete deployment (BuildConfig/ImageStream kept — image can still be rebuilt)
+  deploy-events            (Re)deploy from config.env — use when deployment is missing
+  rebuild-events           Build fresh image from source — if running, rolls out automatically;
+                           if deployment missing, run deploy-events after
+  rebuild-events --local   Same but builds from local repo root (offline clusters)
 
 Bulk operations:
   remove-all-teams      Remove all configured teams (Kafka + NiFi, namespaces kept)
-  teardown-all          Cancel runs → remove events → remove all teams
-  teardown-all --clean  Same + delete all PipelineRuns, TaskRuns, and workspace PVCs (full clean slate)
-  reset-all             teardown-all then re-run the reset pipeline
-  cleanup-runs          Keep 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
+
+  -- Safe reset (Tekton tasks/pipelines/RBAC and ChatOps survive — all commands still work after) --
+  teardown-all          Cancel in-flight runs → remove events + Console + all teams
+  teardown-all --wipe   Same + also wipe Tekton run history (PipelineRuns/TaskRuns/workspace PVCs)
+
+  -- Nuclear options (require bash pipeline/setup.sh to recover) --
+  destroy           Wipe everything except namespaces: removes teams, events, Console,
+                    Tekton tasks/pipelines/RBAC, and ChatOps. Requires setup.sh to recover.
+
+Pipeline:
+  run-pipeline      Trigger deploy-all-teams pipeline (same as setup.sh --run-only)
+  run-reset         Trigger reset-and-deploy pipeline (same as setup.sh --reset)
+  pipeline-status   Show last 5 PipelineRuns across all pipelines (deploy + reset)
+  prune-runs        Keep newest 3 PipelineRuns + 5 TaskRuns, delete the rest (requires tkn)
 
 ChatOps:
   rebuild-chatops           Trigger git-based build (cluster must reach GitHub)
@@ -977,8 +1344,10 @@ Config sync:
   sync-config     Auto-update config.env in-place from cluster registry + passwords
 
 Observability:
-  status      <name> <ns>   Show pods, services, PVCs, routes, and events for one team
-  status-all                Show pods, PVCs, routes, and pipeline runs across all namespaces
+  status              <name> <ns>   Show pods, services, PVCs, routes, and events for one team
+  status-all                        Show pods, PVCs, routes, and pipeline runs across all namespaces
+  deploy-console                    Deploy Kafka Console to infra namespace (idempotent)
+  console-status                    Check Kafka Console pod and route URL
 
 Note: namespaces are NEVER deleted by ops.sh.
       For full decommission, use: bash pipeline/cleanup.sh
@@ -1002,16 +1371,23 @@ case "$COMMAND" in
   pause-events)       cmd_pause_events ;;
   resume-events)      cmd_resume_events ;;
   remove-events)      cmd_remove_events ;;
+  deploy-events)      cmd_deploy_events ;;
   remove-all-teams)   cmd_remove_all_teams ;;
   teardown-all)       cmd_teardown_all ;;
-  reset-all)          cmd_reset_all ;;
-  cleanup-runs)       cmd_cleanup_runs ;;
+  run-pipeline)       cmd_run_pipeline ;;
+  run-reset)          cmd_run_reset ;;
+  destroy)            cmd_run_cleanup ;;
+  pipeline-status)    cmd_pipeline_status ;;
+  prune-runs)         cmd_cleanup_runs ;;
   rebuild-chatops)    cmd_rebuild_chatops ;;
+  rebuild-events)     cmd_rebuild_events ;;
   export-config)      cmd_export_config ;;
   sync-config)        cmd_sync_config ;;
-  status)             cmd_status              "${ARGS[@]}" ;;
-  status-all)         cmd_status_all ;;
-  help|--help|-h)     cmd_help ;;
+  status)               cmd_status              "${ARGS[@]}" ;;
+  status-all)           cmd_status_all ;;
+  deploy-console)       cmd_deploy_console ;;
+  console-status)       cmd_console_status ;;
+  help|--help|-h)       cmd_help ;;
   *)
     err "Unknown command: ${COMMAND}"
     echo ""
