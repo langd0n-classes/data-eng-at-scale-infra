@@ -303,7 +303,7 @@ _do_teardown_body() {
       --type merge -p '{\"spec\":{\"status\":\"StoppedRunFinally\"}}'"
   done < <(oc get pipelinerun -n "${INFRA_NAMESPACE}" \
     -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[0].reason}{"\n"}{end}' \
-    2>/dev/null | awk '/\tRunning/{print $1}' || true)
+    2>/dev/null | awk '$2 == "Running" || $2 == "Started" {print $1}' || true)
 
   echo "Cancelling in-flight TaskRuns..."
   while IFS= read -r tr; do
@@ -312,7 +312,7 @@ _do_teardown_body() {
       --type merge -p '{\"spec\":{\"status\":\"TaskRunCancelled\"}}'"
   done < <(oc get taskrun -n "${INFRA_NAMESPACE}" \
     -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[0].reason}{"\n"}{end}' \
-    2>/dev/null | awk '/\tRunning/{print $1}' || true)
+    2>/dev/null | awk '$2 == "Running" || $2 == "Started" {print $1}' || true)
 
   echo "Deleting affinity-assistant pods..."
   run "oc delete statefulset -l 'app.kubernetes.io/component=affinity-assistant' \

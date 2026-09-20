@@ -149,7 +149,7 @@ Admin channel gets all commands. Any other channel only gets `status`.
 | `run-pipeline` | — | Trigger `deploy-all-teams` pipeline (inherits params from last successful run) |
 | `run-reset` | — | Trigger `reset-and-deploy` pipeline |
 | `pipeline-status` | — | Show last 5 PipelineRuns with status |
-| `cleanup-runs` | — | Delete old PipelineRuns, keep newest 3 |
+| `prune-runs` | — | Delete old PipelineRuns, keep newest 3 |
 
 > **First run:** `run-pipeline` and `run-reset` read params from the last successful PipelineRun. They require at least one prior run via `bash pipeline/setup.sh`. They are day-2 operations.
 
