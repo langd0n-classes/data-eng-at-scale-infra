@@ -185,9 +185,13 @@ spec:
           fi
           echo ""
           echo "Deleting kafka-${name} in namespace: $ns"
-          oc delete statefulset,svc,pvc \
-            -l "app=kafka-${name}" \
-            -n "$ns" --ignore-not-found
+          oc delete kafka "kafka-${name}" -n "$ns" --ignore-not-found
+          oc delete kafkanodepool dual-role -n "$ns" --ignore-not-found
+          # Delete Strimzi-created PVCs — must delete or re-add crashes with cluster.id mismatch
+          oc delete pvc -l "strimzi.io/cluster=kafka-${name}" -n "$ns" --ignore-not-found
+          # Clean up per-team monitoring resources applied by deploy-monitoring task
+          oc delete configmap kafka-metrics-config -n "$ns" --ignore-not-found
+          oc delete rolebinding prometheus-scrape -n "$ns" --ignore-not-found
         done
 
         echo ""
@@ -275,7 +279,9 @@ spec:
         # Pin the Deployment by name — avoids hitting another deployment that
         # happens to carry the same app= label in the infra namespace.
         oc delete deployment/"$EG_NAME" -n "$INFRA_NS" --ignore-not-found
-        oc delete svc,configmap,buildconfig,imagestream \
+        # Keep BuildConfig and ImageStream — deploy-event-generator requires them
+        # to exist before it can trigger a build. Only delete runtime resources.
+        oc delete svc,configmap \
           -l app="$EG_NAME" -n "$INFRA_NS" --ignore-not-found
 
         echo ""

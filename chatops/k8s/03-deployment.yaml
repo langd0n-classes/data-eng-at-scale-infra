@@ -44,6 +44,16 @@ spec:
               value: ${EXTERNAL_DOMAIN}
             - name: CHATOPS_NAME
               value: ${CHATOPS_NAME}
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: slack-credentials
+                  key: bot-token
+                  optional: true
+            - name: ALERT_RESTART_THRESHOLD
+              value: "4"
+            - name: ALERT_WINDOW_MINUTES
+              value: "10"
           resources:
             requests:
               memory: 128Mi

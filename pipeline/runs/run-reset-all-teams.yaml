@@ -22,7 +22,7 @@
 #   ${GIT_BRANCH}                — branch to deploy from
 #   ${STORAGE_CLASS}             — PVC storage class for Kafka + NiFi
 #   ${EVENT_GENERATOR_NAME}      — event generator deployment name
-#   serviceAccountName           — hardcoded as "pipeline" (default OpenShift Pipelines SA)
+#   taskRunTemplate.serviceAccountName — pipeline (auto-created by OpenShift Pipelines, has pipelines-scc)
 #   ${TEKTON_WORKSPACE_SIZE}     — shared workspace PVC size
 #   ${TEAM_BOOTSTRAP_SERVERS}    — all Kafka addresses comma-separated
 #   ${TEAM1_NAME} / ${TEAM1_NAMESPACE}   — team 1 (set to "skip" to bypass)
@@ -40,7 +40,8 @@ metadata:
   labels:
     app: tekton-pipeline
 spec:
-  serviceAccountName: pipeline  # default SA created by OpenShift Pipelines in every namespace
+  taskRunTemplate:
+    serviceAccountName: pipeline  # Tekton v1 API field — pipeline SA auto-created by OpenShift Pipelines operator
 
   pipelineRef:
     name: reset-and-deploy

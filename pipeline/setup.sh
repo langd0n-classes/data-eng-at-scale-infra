@@ -107,12 +107,12 @@ if [[ "$SKIP_RBAC" == "false" ]]; then
   info "Step 4 — Applying RBAC (${CLUSTER_TYPE} path)..."
 
   # Apply SA first — it must exist before the ClusterRoleBinding references it
-  run "source '${CONFIG_FILE}' && envsubst '\${INFRA_NAMESPACE} \${TEKTON_SA_NAME}' \
+  run "source '${CONFIG_FILE}' && envsubst '\${INFRA_NAMESPACE}' \
     < '${SCRIPT_DIR}/rbac/01-serviceaccount.yaml' | oc apply -f -"
   ok "ServiceAccount applied"
 
   if [[ "$CLUSTER_TYPE" == "dedicated" ]]; then
-    run "source '${CONFIG_FILE}' && envsubst '\${INFRA_NAMESPACE} \${TEKTON_SA_NAME}' \
+    run "source '${CONFIG_FILE}' && envsubst '\${INFRA_NAMESPACE}' \
       < '${SCRIPT_DIR}/rbac/02-clusterrolebinding.yaml' | oc apply -f -"
     ok "ClusterRoleBinding applied"
   else
@@ -209,7 +209,7 @@ _write_team_registry() {
     tname=$(eval echo "\${TEAM${i}_NAME:-skip}")
     tns=$(eval echo "\${TEAM${i}_NAMESPACE:-skip}")
     [[ "${tname}" == "skip" || "${tns}" == "skip" ]] && continue
-    local bootstrap="kafka-${tname}.${tns}.svc.cluster.local:9092"
+    local bootstrap="kafka-${tname}-kafka-bootstrap.${tns}.svc.cluster.local:9092"
     args+=("--from-literal=${tname}=namespace=${tns},bootstrap=${bootstrap}")
   done
   if [[ ${#args[@]} -eq 0 ]]; then

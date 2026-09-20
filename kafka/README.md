@@ -2,37 +2,44 @@
 
 This directory contains Kubernetes manifests for deploying Apache Kafka in two modes:
 
-1. **Per-Team Isolation** (`per-team/`) - Separate Kafka instance per namespace
+1. **Per-Team Isolation** (`per-team/`) - Separate Kafka instance per namespace, managed by the Kafka operator
 2. **Shared Cluster** (`shared-deployment/`) - Single Kafka cluster with topic-based multitenancy
+
+## Pre-Requisite: Kafka Operator
+
+Per-team Kafka is managed by the Strimzi operator. Install it once per cluster before deploying any team:
+
+1. Go to OperatorHub in the OpenShift console
+2. Search for **Strimzi**
+3. Install with mode: **All namespaces**
+4. OLM installs the CRDs and Cluster Operator automatically — no repo changes needed
 
 ## Per-Team Kafka Deployment
 
-Deploy isolated Kafka instances for complete tenant separation.
+Deploy isolated Kafka instances for complete tenant separation. The operator manages the full
+lifecycle — pod, services, PVC — from a single `Kafka` CR declaration.
 
 ### Features
 
 - KRaft mode (no ZooKeeper dependency)
-- Single-node brokers (suitable for dev/test)
-- PLAINTEXT listeners (in-cluster only)
+- Single-node broker/controller (dual-role KafkaNodePool)
+- PLAINTEXT listener on port 9092 (in-cluster only)
 - Auto-topic creation enabled
 - Aggressive log retention (24 hours, 100MB)
 - Low resource footprint (512MB RAM, 2GB storage)
+- Entity Operator included (TopicOperator + UserOperator)
 
 ### Deployment
 
 ```bash
-cd per-team
+# Via script (recommended)
+./per-team/deploy-team.sh team01 team-01
 
-# Set variables
+# Or manually with envsubst
 export TEAM_NAME=team01
 export TEAM_NAMESPACE=team-01
 export STORAGE_CLASS=standard
-
-# Deploy
-./deploy-team.sh ${TEAM_NAME} ${TEAM_NAMESPACE}
-
-# Or manually
-envsubst < kafka-per-team-template.yaml | kubectl apply -f -
+envsubst < operator/kafka-cr-template.yaml | kubectl apply -f -
 ```
 
 ### Access
@@ -40,36 +47,47 @@ envsubst < kafka-per-team-template.yaml | kubectl apply -f -
 **From within the same namespace:**
 
 ```bash
-kafka-${TEAM_NAME}:9092
+kafka-${TEAM_NAME}-kafka-bootstrap:9092
 ```
 
 **From other namespaces:**
 
 ```bash
-kafka-${TEAM_NAME}.${TEAM_NAMESPACE}.svc.cluster.local:9092
+kafka-${TEAM_NAME}-kafka-bootstrap.${TEAM_NAMESPACE}.svc.cluster.local:9092
+```
+
+### Verify Deployment
+
+```bash
+# Check Kafka CR status
+kubectl get kafka -n ${TEAM_NAMESPACE}
+
+# Check pod and services (operator creates these automatically)
+kubectl get pods,svc -n ${TEAM_NAMESPACE} -l strimzi.io/cluster=kafka-${TEAM_NAME}
+
+# View logs
+kubectl logs -f kafka-${TEAM_NAME}-dual-role-0 -n ${TEAM_NAMESPACE}
 ```
 
 ### Testing
 
 ```bash
-# Check pod status
-kubectl get pods -n ${TEAM_NAMESPACE} -l component=kafka
+# Exec into Kafka pod
+kubectl exec -it kafka-${TEAM_NAME}-dual-role-0 -n ${TEAM_NAMESPACE} -- bash
 
-# View logs
-kubectl logs -f kafka-${TEAM_NAME}-0 -n ${TEAM_NAMESPACE}
+# Inside the pod — list topics
+kafka-topics --bootstrap-server localhost:9092 --list
 
-# Test connectivity
+# Test connectivity from another pod
 kubectl run kafka-test --rm -it --image=confluentinc/cp-kafka:7.5.0 \
-  -n ${TEAM_NAMESPACE} -- bash
-
-# Inside the pod:
-kafka-topics --bootstrap-server kafka-${TEAM_NAME}:9092 --list
+  -n ${TEAM_NAMESPACE} -- \
+  kafka-topics --bootstrap-server kafka-${TEAM_NAME}-kafka-bootstrap:9092 --list
 ```
 
 ### Cleanup
 
 ```bash
-./delete-team.sh ${TEAM_NAME} ${TEAM_NAMESPACE}
+./per-team/delete-team.sh ${TEAM_NAME} ${TEAM_NAMESPACE}
 ```
 
 ## Shared Kafka Cluster
@@ -92,7 +110,7 @@ cd shared-deployment
 # Configure environment
 source ../config.env
 
-# Deploy StatefulSet
+# Deploy shared Kafka StatefulSet
 envsubst < kafka-statefulset.yaml | kubectl apply -f -
 
 # Choose external access method:
@@ -124,101 +142,55 @@ events.team01.raw
 events.team01.processed
 ```
 
-### External Access
-
-For SSL-enabled external access, generate certificates:
-
-```bash
-./generate-certs.sh
-kubectl create secret generic kafka-ssl-certs \
-  --from-file=server.keystore.jks \
-  --from-file=server.truststore.jks \
-  -n ${INFRA_NAMESPACE}
-```
-
-Then deploy with SSL:
-
-```bash
-envsubst < kafka-statefulset.yaml | kubectl apply -f -
-envsubst < kafka-service-ssl.yaml | kubectl apply -f -
-```
-
-## Configuration
-
-### Resource Tuning
-
-Adjust in the StatefulSet template:
-
-```yaml
-resources:
-  requests:
-    memory: "512Mi"   # Minimum memory
-    cpu: "250m"       # Minimum CPU
-  limits:
-    memory: "1Gi"     # Maximum memory
-    cpu: "500m"       # Maximum CPU
-```
-
-### Storage
-
-Modify storage size:
-
-```yaml
-volumeClaimTemplates:
-  - spec:
-      resources:
-        requests:
-          storage: 2Gi  # Adjust as needed
-```
-
-### Retention Policy
-
-Change log retention:
-
-```yaml
-env:
-  - name: KAFKA_LOG_RETENTION_HOURS
-    value: "168"  # 1 week
-  - name: KAFKA_LOG_RETENTION_BYTES
-    value: "1073741824"  # 1GB
-```
-
 ## Troubleshooting
+
+### Kafka CR not becoming Ready
+
+```bash
+# Check operator events on the CR
+kubectl describe kafka kafka-${TEAM_NAME} -n ${TEAM_NAMESPACE}
+
+# Check Strimzi Cluster Operator logs
+kubectl logs deployment/strimzi-cluster-operator -n infra
+
+# Common issues:
+# - Strimzi operator not installed (check OperatorHub)
+# - Storage class not available: kubectl get sc
+# - Insufficient cluster resources
+```
 
 ### Pod won't start
 
 ```bash
+# Find the actual pod name (operator naming: kafka-{name}-dual-role-0)
+kubectl get pods -n ${TEAM_NAMESPACE} -l strimzi.io/cluster=kafka-${TEAM_NAME}
+
 # Check events
-kubectl describe pod kafka-${TEAM_NAME}-0 -n ${TEAM_NAMESPACE}
+kubectl describe pod kafka-${TEAM_NAME}-dual-role-0 -n ${TEAM_NAMESPACE}
 
 # Check PVC
 kubectl get pvc -n ${TEAM_NAMESPACE}
-
-# Common issues:
-# - Storage class not available
-# - Insufficient cluster resources
-# - Permission issues (check SCC on OpenShift)
 ```
 
 ### Can't connect to Kafka
 
 ```bash
-# Verify service exists
-kubectl get svc -n ${TEAM_NAMESPACE}
+# Verify bootstrap service exists (operator creates automatically)
+kubectl get svc kafka-${TEAM_NAME}-kafka-bootstrap -n ${TEAM_NAMESPACE}
 
 # Test DNS resolution
 kubectl run dns-test --rm -it --image=busybox -n ${TEAM_NAMESPACE} \
-  -- nslookup kafka-${TEAM_NAME}
+  -- nslookup kafka-${TEAM_NAME}-kafka-bootstrap
 
-# Check pod is ready
-kubectl get pods -n ${TEAM_NAMESPACE} -l app=kafka-${TEAM_NAME}
+# Check Kafka CR is Ready
+kubectl get kafka kafka-${TEAM_NAME} -n ${TEAM_NAMESPACE}
 ```
 
 ### Topics not created
 
 ```bash
 # Exec into Kafka pod
-kubectl exec -it kafka-${TEAM_NAME}-0 -n ${TEAM_NAMESPACE} -- bash
+kubectl exec -it kafka-${TEAM_NAME}-dual-role-0 -n ${TEAM_NAMESPACE} -- bash
 
 # List topics
 kafka-topics --bootstrap-server localhost:9092 --list
@@ -228,18 +200,8 @@ kafka-topics --bootstrap-server localhost:9092 \
   --create --topic test --partitions 1 --replication-factor 1
 ```
 
-## Performance Tuning
-
-For production workloads, consider:
-
-1. **Multiple brokers** - Set replicas > 1 for HA
-2. **Increased storage** - Size based on retention needs
-3. **Resource allocation** - More memory and CPU
-4. **Network policies** - Restrict access
-5. **Monitoring** - Add Prometheus JMX exporter
-
 ## Further Reading
 
+- [Strimzi Documentation](https://strimzi.io/documentation/)
 - [Apache Kafka Documentation](https://kafka.apache.org/documentation/)
 - [KRaft Mode](https://kafka.apache.org/documentation/#kraft)
-- [Kubernetes StatefulSets](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/)
