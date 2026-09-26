@@ -1,0 +1,59 @@
+# Portable Kafka CR template — kubectl/Kind/k3s variant
+# Companion to kafka-nodepool-template.yaml (KafkaNodePool) in this same directory.
+#
+# Differences from kafka/operator/kafka-cr-template.yaml (the OpenShift variant):
+#   - No entityOperator block: Topic Operator and User Operator are OFF by
+#     default for this portable package (per issue requirements).
+# Kafka version, metadata version, listener, and retention/resource settings
+# are otherwise identical to the OpenShift variant.
+#
+# Variables: TEAM_NAME, TEAM_NAMESPACE
+#
+# Deploy with:
+#   export TEAM_NAME=team01
+#   export TEAM_NAMESPACE=team-01
+#   envsubst < kafka-template.yaml | kubectl apply -f -
+#
+# Bootstrap DNS (Strimzi auto-creates):
+#   kafka-${TEAM_NAME}-kafka-bootstrap.${TEAM_NAMESPACE}.svc.cluster.local:9092
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: kafka-${TEAM_NAME}
+  namespace: ${TEAM_NAMESPACE}
+  annotations:
+    strimzi.io/node-pools: enabled
+    strimzi.io/kraft: enabled
+spec:
+  kafka:
+    version: 4.2.0
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+    metadataVersion: 4.2-IV0
+    config:
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+      auto.create.topics.enable: "true"
+
+      # Aggressive log retention for demo/test environments
+      log.retention.hours: 24
+      log.retention.bytes: 104857600       # 100MB max per partition
+      log.segment.bytes: 52428800          # 50MB segment size
+      log.cleanup.policy: delete
+      log.retention.check.interval.ms: 300000  # Check every 5 minutes
+    livenessProbe:
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readinessProbe:
+      initialDelaySeconds: 20
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3

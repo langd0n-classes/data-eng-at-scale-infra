@@ -1,0 +1,38 @@
+# Portable KafkaNodePool template — kubectl/Kind/k3s variant
+# Companion to kafka-template.yaml (Kafka CR) in this same directory.
+# Kept as a separate file (unlike kafka/operator/kafka-cr-template.yaml, which
+# combines both) so scripts/reset-data.sh can delete and recreate just the
+# node pool without resubmitting the Kafka CR.
+#
+# Variables: TEAM_NAME, TEAM_NAMESPACE, STORAGE_CLASS, VOLUME_SIZE
+#
+# Deploy with:
+#   export TEAM_NAME=team01
+#   export TEAM_NAMESPACE=team-01
+#   export STORAGE_CLASS=standard
+#   export VOLUME_SIZE=2Gi
+#   envsubst < kafka-nodepool-template.yaml | kubectl apply -f -
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaNodePool
+metadata:
+  name: dual-role
+  namespace: ${TEAM_NAMESPACE}
+  labels:
+    strimzi.io/cluster: kafka-${TEAM_NAME}
+spec:
+  replicas: 1
+  roles:
+    - controller
+    - broker
+  storage:
+    type: persistent-claim
+    size: ${VOLUME_SIZE}
+    deleteClaim: false
+    class: ${STORAGE_CLASS}
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 250m
+    limits:
+      memory: 1Gi
+      cpu: 500m

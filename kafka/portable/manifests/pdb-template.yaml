@@ -1,0 +1,13 @@
+# Portable PodDisruptionBudget template — identical to kafka/operator/pdb-template.yaml,
+# duplicated here so this package is self-contained.
+# Variables: TEAM_NAME, TEAM_NAMESPACE
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kafka-${TEAM_NAME}-pdb
+  namespace: ${TEAM_NAMESPACE}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      strimzi.io/name: kafka-${TEAM_NAME}-dual-role
