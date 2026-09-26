@@ -35,14 +35,12 @@ echo "Creating namespace ${OPERATOR_NAMESPACE}..."
 kubectl create namespace "${OPERATOR_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
 echo "Pointing Role/ClusterRoleBinding manifests at ${OPERATOR_NAMESPACE}..."
-# sed -i syntax differs between GNU (Linux) and BSD (macOS) — detect and branch.
-if sed --version >/dev/null 2>&1; then
-  # GNU sed
-  sed -i "s/namespace: .*/namespace: ${OPERATOR_NAMESPACE}/" install/cluster-operator/*RoleBinding*.yaml
-else
-  # BSD sed (macOS) — requires the backup-suffix argument even when empty
-  sed -i '' "s/namespace: .*/namespace: ${OPERATOR_NAMESPACE}/" install/cluster-operator/*RoleBinding*.yaml
-fi
+# Redirect to a temp file instead of sed -i: the -i flag's syntax differs
+# between GNU (Linux) and BSD (macOS) sed, but plain sed writing to stdout is
+# identical everywhere (GNU, BSD, busybox) — no platform detection needed.
+for f in install/cluster-operator/*RoleBinding*.yaml; do
+  sed "s/namespace: .*/namespace: ${OPERATOR_NAMESPACE}/" "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
+done
 
 echo "Switching STRIMZI_NAMESPACE to '*' (watch all namespaces)..."
 perl -0777 -pi -e \
