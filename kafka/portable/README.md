@@ -73,6 +73,17 @@ data-kafka-team01-dual-role-0   Bound   standard
 Re-running the same command is a no-op — `kubectl apply` reports
 `unchanged`, and nothing about the running broker changes.
 
+Verify directly:
+
+```bash
+kubectl get kafka -n team-portable-test
+kubectl get pod -n team-portable-test -l strimzi.io/cluster=kafka-team01
+```
+Note: the Kafka CR itself doesn't carry the `strimzi.io/cluster=` label —
+Strimzi only applies that label to the child resources it creates (pods,
+services), not to the top-level `Kafka` object. Run the two commands
+separately, as above, rather than combining them with `-l` on both.
+
 **4. Test produce/consume, in-cluster (no external exposure)**
 
 ```bash
@@ -162,4 +173,22 @@ team's lifecycle.
 kubectl delete namespace strimzi-system
 kubectl delete crd -l app=strimzi
 kubectl delete clusterrole,clusterrolebinding -l app=strimzi
+
+# The 3 cluster-wide-watch ClusterRoleBindings created directly by
+# install-strimzi.sh (via kubectl create, so they carry no app=strimzi label
+# and aren't caught by the -l selector above):
+kubectl delete clusterrolebinding \
+  strimzi-cluster-operator-namespaced \
+  strimzi-cluster-operator-watched \
+  strimzi-cluster-operator-entity-operator-delegation \
+  --ignore-not-found
+```
+
+## Cleanup: deleting the entire local cluster
+
+If you created a Kind cluster just for this validation, tear the whole thing
+down — no need to clean up namespaces/CRDs individually first:
+
+```bash
+kind delete cluster --name strimzi-portable
 ```
