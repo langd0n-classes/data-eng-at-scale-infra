@@ -137,9 +137,10 @@ existence checks throughout.
 | `TEAM_NAMESPACE` | *(required)* | Kubernetes namespace, e.g. `team-portable-test` |
 | `STORAGE_CLASS` | `standard` | Falls back to `config.env`'s value if set, then this default |
 | `VOLUME_SIZE` | `2Gi` | Falls back to `config.env`'s value if set, then this default |
+| `STRIMZI_OPERATOR_NAMESPACE` | `strimzi-system` | Falls back to `config.env`'s value if set, then this default |
 
 `scripts/deploy.sh` and `scripts/reset-data.sh` source the repo-root
-`config.env` for these two if it exists (same convention as
+`config.env` for the first two if it exists (same convention as
 `kafka/per-team/deploy-team.sh`), but `config.env` is entirely optional here
 — pass `storage_class`/`volume_size` as trailing CLI args to override it at
 runtime instead, e.g. `bash scripts/deploy.sh team01 team-portable-test standard 2Gi`.
@@ -147,7 +148,10 @@ runtime instead, e.g. `bash scripts/deploy.sh team01 team-portable-test standard
 `prerequisites/install-strimzi.sh` requires cluster-admin (or an
 explicitly-granted equivalent): it creates CustomResourceDefinitions and
 ClusterRole/ClusterRoleBinding objects, which are cluster-scoped and not
-covered by a namespace-scoped `edit` role.
+covered by a namespace-scoped `edit` role. Its operator namespace follows the
+same override pattern — default `strimzi-system`, overridable via
+`config.env` or a CLI arg (`bash prerequisites/install-strimzi.sh <namespace>`)
+in case your cluster/org requires a different naming convention.
 
 ## Cleanup: removing the Strimzi operator itself
 

@@ -13,11 +13,23 @@
 # Run once per cluster, before any team's Kafka is deployed via
 # kafka/portable/scripts/deploy.sh. Safe to re-run (idempotent).
 #
-# Usage: install-strimzi.sh
+# operator_namespace defaults to strimzi-system, overridable because a
+# different cluster/org may require its own namespace naming convention for
+# the operator. Falls back to config.env's STRIMZI_OPERATOR_NAMESPACE if set
+# (config.env is optional here, same as scripts/deploy.sh).
+#
+# Usage: install-strimzi.sh [operator_namespace]
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+
 STRIMZI_VERSION="0.51.0"
-OPERATOR_NAMESPACE="strimzi-system"
+CLI_OPERATOR_NAMESPACE="${1:-}"
+if [ -f "${REPO_ROOT}/config.env" ]; then
+  source "${REPO_ROOT}/config.env"
+fi
+OPERATOR_NAMESPACE="${CLI_OPERATOR_NAMESPACE:-${STRIMZI_OPERATOR_NAMESPACE:-strimzi-system}}"
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "${WORKDIR}"' EXIT
 
