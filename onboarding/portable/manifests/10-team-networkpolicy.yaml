@@ -1,0 +1,42 @@
+# onboarding/portable/manifests/10-team-networkpolicy.yaml — Team isolation NetworkPolicy
+#
+# New in the portable path — no existing onboarding manifest defines a
+# general team-isolation NetworkPolicy today (the only existing
+# NetworkPolicy in the repo, nifi/team-networkpolicy-template.yaml, is
+# NiFi-router-specific and unrelated).
+#
+# Full team-to-team isolation, not scoped to any one service: a pod in this
+# team's namespace can be reached by (a) other pods in the same namespace,
+# and (b) pods in the infra namespace (which hosts the shared event
+# generator, Tekton, the in-cluster registry, and the Spark queue
+# controller) — and by nothing else. No team can reach any other team's
+# pods or services, Kafka included but not limited to it.
+#
+# This is ingress-only by design: it's enforced at the destination
+# namespace's policy, so denying inbound traffic here is sufficient — no
+# corresponding egress policy is needed on the initiating side.
+#
+# Usage (single team, manual):
+#   source onboarding/portable/cluster.env && \
+#   export TEAM_ID=01 && \
+#   envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${INFRA_NAMESPACE}' \
+#   < onboarding/portable/manifests/10-team-networkpolicy.yaml | kubectl apply -f -
+#
+# Called by: onboarding/portable/apply-onboarding.sh
+# Required vars: TEAM_NAMESPACE_PREFIX, TEAM_ID, INFRA_NAMESPACE
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: team-isolation
+  namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ${INFRA_NAMESPACE}
