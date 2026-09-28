@@ -155,6 +155,7 @@ data-eng-at-scale-infra/
 ├── nifi/                       NiFi instance templates and per-team deploy scripts
 ├── event-generator/            Synthetic event producer (Python, outbreak simulation)
 ├── ingress/                    Portable-platform ingress controller (kubectl-only, Kind/k3s)
+├── registry/                   Portable-platform in-cluster image registry (kubectl-only, Kind/k3s)
 ├── storage/                    Optional MinIO (S3) and PostgreSQL templates
 └── learning/                   16 step-by-step student guides
 ```

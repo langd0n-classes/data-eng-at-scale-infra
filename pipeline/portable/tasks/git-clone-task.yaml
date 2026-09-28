@@ -1,0 +1,43 @@
+# pipeline/portable/tasks/git-clone-task.yaml
+#
+# Minimal git clone into a workspace, for a team PipelineRun to hand
+# source code to build-push-image-task.yaml. Self-contained (a single
+# `git clone` in a plain alpine/git image) rather than a dependency on
+# Tekton Hub's catalog Task, which is unreachable from this environment
+# and would otherwise be one more external dependency for a classroom
+# during a live class.
+#
+# Defined once in the infra namespace (shared, per this repo's own
+# namespace convention) and referenced from any team namespace's
+# PipelineRun via Tekton's `cluster` resolver, same as build-push-image.
+#
+# Usage: referenced from a PipelineRun/Pipeline, not applied standalone
+# beyond `kubectl apply -f git-clone-task.yaml -n infra`.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: git-clone
+  namespace: infra
+  labels:
+    app: data-eng-infra
+spec:
+  params:
+    - name: URL
+      description: Git repository URL to clone
+      type: string
+    - name: REVISION
+      description: Git revision (branch, tag, or commit) to check out
+      type: string
+      default: main
+  workspaces:
+    - name: output
+      description: Where the cloned source lands
+  steps:
+    - name: clone
+      image: alpine/git:2.47.2
+      script: |
+        #!/bin/sh
+        set -eu
+        rm -rf "$(workspaces.output.path)/.git"
+        git clone --depth=1 --branch "$(params.REVISION)" "$(params.URL)" /tmp/clone
+        cp -r /tmp/clone/. "$(workspaces.output.path)/"

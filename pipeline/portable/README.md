@@ -104,17 +104,45 @@ ingress-nginx-controller -n ingress-nginx`). On a real DNS-backed cluster,
 `--resolve` isn't needed — point `DASHBOARD_HOST` at a real hostname
 instead.
 
+## Image build and registry path
+
+The in-cluster registry itself lives in `registry/portable/` (its own
+top-level component — see that directory's README for the full
+validation walkthrough and a non-obvious fact its design depends on: image
+pulls are done by kubelet on the node, not from inside a pod, so the
+registry is exposed as a NodePort, not a ClusterIP).
+
+`tasks/git-clone-task.yaml` and `tasks/build-push-image-task.yaml`, both
+defined once in the `infra` namespace, are the two Tasks a team's
+`PipelineRun` chains together to build and push its own image. Validated
+end to end with a real `PipelineRun`: cloned this repo, built
+`event-generator`'s image with kaniko, pushed it, and started a real pod
+from the exact same reference — the running pod's `imageID` digest matched
+what was pushed:
+
+```
+INFO Pushing image to localhost:30500/event-generator:test2
+INFO Pushed localhost:30500/event-generator@sha256:755e0c484f3664e0d115ee0d649be607ecfbc276b46a8df02bb478a3b955423c
+```
+```bash
+kubectl get pod event-gen-from-registry -n infra -o jsonpath='{.status.containerStatuses[0].imageID}'
+```
+```
+localhost:30500/event-generator@sha256:755e0c484f3664e0d115ee0d649be607ecfbc276b46a8df02bb478a3b955423c
+```
+
+Both Tasks need `hostNetwork: true` set on the PipelineRun's pod template
+(`spec.taskRunTemplate.podTemplate.hostNetwork: true`), so the build step
+can reach `localhost:${REGISTRY_NODE_PORT}` the same way kubelet does.
+
 ## What's still to come in `pipeline/portable/`
 
-- `manifests/registry.yaml` + `tasks/build-push-image-task.yaml` — the
-  in-cluster image-build/registry path for team `PipelineRun`s (item 7).
 - `tasks/deploy-kafka-task.yaml`, `tasks/deploy-event-generator-task.yaml`,
   `pipelines/deploy-all-teams-pipeline.yaml` — the per-team deploy pipeline
-  itself, chaining build → deploy Kafka → deploy event generator with no
-  NiFi task anywhere in the chain (item 10).
+  itself, chaining build → deploy Kafka → deploy event generator, with no
+  NiFi task anywhere in the chain.
 - `scripts/{deploy,status,teardown}-platform.sh` — the orchestrator tying
-  every prerequisite and per-team step together as one repeatable command
-  (item 11).
+  every prerequisite and per-team step together as one repeatable command.
 
 ## Cleanup (prerequisites so far)
 

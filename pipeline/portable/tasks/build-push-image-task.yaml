@@ -1,0 +1,55 @@
+# pipeline/portable/tasks/build-push-image-task.yaml
+#
+# Builds a container image from a git-cloned source directory and pushes it
+# to the in-cluster registry (registry/portable/), using kaniko — builds
+# without a Docker daemon and without privileged containers, the standard
+# choice for in-cluster Tekton builds. Portable equivalent of the OpenShift
+# path's `oc start-build` (pipeline/tasks/02-task-deploy-event-generator.yaml
+# and pipeline/tasks/06-task-deploy-chatops.yaml), which relies on
+# BuildConfig/ImageStream instead.
+#
+# Defined once in the infra namespace (shared, per this repo's own
+# namespace convention) and referenced from any team namespace's
+# PipelineRun via Tekton's `cluster` resolver — the same cross-namespace
+# pattern the existing OpenShift pipelines already use for the shared
+# git-clone Task.
+#
+# The in-cluster registry is plain HTTP (no TLS), so kaniko's --insecure
+# flag is required — matches this repo's existing plaintext,
+# educational-simplicity posture (see SECURITY.md).
+#
+# Usage: referenced from a PipelineRun/Pipeline, not applied standalone
+# beyond `kubectl apply -f build-push-image-task.yaml -n infra`.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: build-push-image
+  namespace: infra
+  labels:
+    app: data-eng-infra
+spec:
+  params:
+    - name: IMAGE
+      description: Full image reference to push, e.g. registry.infra.svc.cluster.local:5000/event-generator:latest
+      type: string
+    - name: DOCKERFILE
+      description: Path to the Dockerfile within the source workspace
+      type: string
+      default: ./Dockerfile
+    - name: CONTEXT
+      description: Build context directory within the source workspace
+      type: string
+      default: .
+  workspaces:
+    - name: source
+      description: Git-cloned source containing the Dockerfile and build context
+  steps:
+    - name: build-and-push
+      image: gcr.io/kaniko-project/executor:v1.24.0
+      workingDir: $(workspaces.source.path)
+      args:
+        - --dockerfile=$(params.DOCKERFILE)
+        - --context=$(workspaces.source.path)/$(params.CONTEXT)
+        - --destination=$(params.IMAGE)
+        - --insecure
+        - --insecure-pull
