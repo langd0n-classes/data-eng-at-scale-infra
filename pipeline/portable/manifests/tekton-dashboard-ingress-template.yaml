@@ -1,0 +1,35 @@
+# pipeline/portable/manifests/tekton-dashboard-ingress-template.yaml
+#
+# Exposes the read-only Tekton Dashboard through the shared ingress-nginx
+# controller installed by ingress/portable/ — the portable equivalent of an
+# OpenShift Route (item 5), routed through the one ingress-controller
+# LoadBalancer Service required by item 9 (no per-component LoadBalancer).
+#
+# Usage:
+#   envsubst '${DASHBOARD_HOST}' \
+#   < pipeline/portable/manifests/tekton-dashboard-ingress-template.yaml | kubectl apply -f -
+#
+# Required vars: DASHBOARD_HOST — a hostname routed to the ingress-nginx
+# LoadBalancer's external IP (e.g. via /etc/hosts on Kind, or real DNS on a
+# cloud cluster). No TLS here — matches this repo's existing plaintext,
+# educational-simplicity posture (see SECURITY.md).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tekton-dashboard
+  namespace: tekton-pipelines
+  labels:
+    app: tekton-dashboard
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ${DASHBOARD_HOST}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: tekton-dashboard
+                port:
+                  number: 9097
