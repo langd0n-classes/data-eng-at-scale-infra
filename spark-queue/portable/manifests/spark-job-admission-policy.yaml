@@ -1,0 +1,69 @@
+# spark-queue/portable/manifests/spark-job-admission-policy.yaml
+#
+# Enforcement, not just convention — scoped to actual Spark jobs only.
+# A student could skip team-spark-job-template.yaml and submit a raw Job
+# using the Spark image directly, with no `queue: spark` label and no
+# `suspend: true` — that Job would run immediately, bypassing the
+# cluster-wide 4-slot cap entirely (the per-team cap stays safe either way:
+# team-jobs-resourcequota.yaml counts every Job in the namespace regardless
+# of label).
+#
+# `MutatingAdmissionPolicy` (which could silently fix a non-compliant
+# submission) is not available on this cluster — confirmed directly
+# (`kubectl api-resources` has no `mutatingadmissionpolicy`; it's alpha/beta
+# and not enabled by default here, and may not be enabled on every cluster
+# this repo targets either). `ValidatingAdmissionPolicy` is GA and always
+# available, so this rejects a non-compliant submission outright instead —
+# arguably a better fit anyway: it forces the actual template to be used
+# rather than silently rewriting what a student submitted.
+#
+# Matched only to Jobs using the pinned Spark image (matching item 12's own
+# wording, "Spark jobs" specifically, never "jobs" generally) — a team's
+# unrelated Job (any other image) is never touched by this policy at all.
+#
+# Usage:
+#   envsubst '${SPARK_IMAGE}' \
+#   < spark-queue/portable/manifests/spark-job-admission-policy.yaml | kubectl apply -f -
+#
+# Required vars: SPARK_IMAGE — must match exactly what
+# team-spark-job-template.yaml is filled in with (see
+# spark-queue/portable/README.md)
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: spark-job-queue-policy
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["jobs"]
+  matchConditions:
+    - name: only-spark-image-jobs
+      expression: >-
+        object.spec.template.spec.containers.exists(c, c.image == '${SPARK_IMAGE}')
+  validations:
+    - expression: "object.spec.suspend == true"
+      message: >-
+        Spark Jobs must be submitted via spark-queue/portable/manifests/team-spark-job-template.yaml,
+        which sets spec.suspend: true so the queue controller can admit it
+        when a cluster-wide slot is free.
+    - expression: "'queue' in object.metadata.labels && object.metadata.labels['queue'] == 'spark'"
+      message: >-
+        Spark Jobs must carry the 'queue: spark' label — use
+        spark-queue/portable/manifests/team-spark-job-template.yaml.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: spark-job-queue-policy-binding
+spec:
+  policyName: spark-job-queue-policy
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - key: team
+          operator: Exists

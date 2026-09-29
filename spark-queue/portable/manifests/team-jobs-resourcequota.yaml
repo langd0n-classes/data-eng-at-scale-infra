@@ -1,0 +1,33 @@
+# spark-queue/portable/manifests/team-jobs-resourcequota.yaml
+#
+# Enforces "one active Spark job per team" natively — a plain
+# ResourceQuota counting Job objects (batch.Job), regardless of label or
+# image. This is not evadable by skipping the provided Job template:
+# ResourceQuota is a hard admission check the API server itself enforces,
+# counting every Job in the namespace whether it's running, suspended, or
+# just sitting there — a student cannot create a second Job while their
+# first one still exists, full stop.
+#
+# `ttlSecondsAfterFinished` on the student's own Job (set by
+# team-spark-job-template.yaml) auto-deletes a finished Job after a grace
+# period, which is what actually frees this quota slot for their next
+# submission — an abandoned or completed Job doesn't block them forever.
+#
+# Applied once per team namespace, at onboarding time (alongside
+# onboarding/portable/'s own general ResourceQuota — Kubernetes supports
+# multiple ResourceQuota objects per namespace; each resource type's limit
+# is enforced independently).
+#
+# Usage:
+#   envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID}' \
+#   < spark-queue/portable/manifests/team-jobs-resourcequota.yaml | kubectl apply -f -
+#
+# Required vars: TEAM_NAMESPACE_PREFIX, TEAM_ID
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: team-spark-jobs-quota
+  namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+spec:
+  hard:
+    count/jobs.batch: "1"

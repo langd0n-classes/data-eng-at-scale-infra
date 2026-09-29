@@ -1,0 +1,97 @@
+# spark-queue/portable/manifests/queue-controller-deployment.yaml
+#
+# Runs scripts/queue-controller.py as a single Deployment in the infra
+# namespace (shared, per this repo's own namespace convention). RBAC is
+# scoped to exactly what it needs — get/list/watch/patch on Jobs
+# cluster-wide, nothing else, not full cluster-admin.
+#
+# Deliberately no custom-built image for this piece: a plain
+# python:3.12-slim installing the one dependency (kubernetes client) at
+# startup, matching this repo's "educational, simple" posture — one
+# script, no Dockerfile/build/push cycle needed for something this small.
+# The tradeoff (a network dependency at pod start) is acceptable at this
+# scale; the actual event-generator image (real runtime dependencies,
+# rebuilt often) is what genuinely needs the build pipeline in
+# pipeline/portable/.
+#
+# Usage:
+#   kubectl create configmap spark-queue-controller-script \
+#     --from-file=queue-controller.py=spark-queue/portable/scripts/queue-controller.py \
+#     -n infra --dry-run=client -o yaml | kubectl apply -f -
+#   envsubst '${INFRA_NAMESPACE}' \
+#     < spark-queue/portable/manifests/queue-controller-deployment.yaml | kubectl apply -f -
+#
+# Required vars: INFRA_NAMESPACE
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spark-queue-controller
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: spark-queue-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spark-queue-controller-role
+  labels:
+    app: spark-queue-controller
+rules:
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+    verbs: ["get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spark-queue-controller-binding
+  labels:
+    app: spark-queue-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spark-queue-controller-role
+subjects:
+  - kind: ServiceAccount
+    name: spark-queue-controller
+    namespace: ${INFRA_NAMESPACE}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-queue-controller
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: spark-queue-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spark-queue-controller
+  template:
+    metadata:
+      labels:
+        app: spark-queue-controller
+    spec:
+      serviceAccountName: spark-queue-controller
+      containers:
+        - name: controller
+          image: python:3.12-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - "pip install --no-cache-dir kubernetes==31.0.0 && python /app/queue-controller.py"
+          volumeMounts:
+            - name: script
+              mountPath: /app
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 50m
+            limits:
+              memory: 256Mi
+              cpu: 200m
+      volumes:
+        - name: script
+          configMap:
+            name: spark-queue-controller-script
