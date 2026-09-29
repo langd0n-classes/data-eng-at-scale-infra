@@ -211,10 +211,46 @@ structurally valid by Tekton's own admission webhook; live validation used
 proven, and running all 15 Kafka brokers simultaneously wasn't necessary
 to prove that.
 
-## What's still to come in `pipeline/portable/`
+Every `TEAMn_NAME`/`TEAMn_NAMESPACE` defaults to `""`, and each
+`deploy-kafka-teamN` task carries a `when` guard skipping it entirely when
+its own `TEAMn_NAME` is blank or `"skip"` (matching `config.env`'s own
+existing convention for marking a team slot unused) — a class with fewer
+than 15 teams just leaves the unused slots that way rather than needing a
+trimmed-down copy of this file. Confirmed for real: with `config.env`
+configured for 2 real teams and 13 slots left as `"skip"`, only 2
+`deploy-kafka-teamN` pods were created; the other 13 were cleanly skipped,
+not attempted and failed.
 
-- `scripts/{deploy,status,teardown}-platform.sh` — the orchestrator tying
-  every prerequisite and per-team step together as one repeatable command.
+## The orchestrator: one repeatable deployment path
+
+`scripts/deploy-platform.sh` is the single documented command — installs
+every cluster-wide prerequisite (idempotent throughout), onboards teams,
+deploys the registry and Spark queue, applies pipeline RBAC and every
+Tekton resource, and submits the `deploy-all-teams` `PipelineRun`.
+`scripts/status-platform.sh` is a read-only report across every piece.
+`scripts/teardown-platform.sh` removes platform and team resources —
+every team namespace (cascading to its Kafka CRs, PVCs, quota, RBAC,
+NetworkPolicy), the event generator, the Spark queue, and every Tekton
+resource — deliberately leaving the cluster-wide prerequisites (Strimzi,
+Tekton itself, ingress-nginx) installed, the same scoping
+`kafka/portable/README.md` already documents for its own operator cleanup.
+
+Validated end to end, in this order, on the same cluster:
+
+1. `deploy-platform.sh` from an already-partially-deployed state — full
+   idempotent re-apply, then a real `PipelineRun` succeeds
+   (`SUCCEEDED: True, Completed`).
+2. `status-platform.sh` — reports every piece correctly (operator,
+   Tekton, Dashboard, ingress-nginx + its external IP, registry,
+   namespaces, Spark queue, per-team Kafka, event generator, latest
+   PipelineRun).
+3. `teardown-platform.sh` — removes both team namespaces; confirmed their
+   Kafka CRs and PVCs are actually gone
+   (`kubectl get pvc -A | grep team` → nothing); re-running teardown a
+   second time is a clean no-op.
+4. `deploy-platform.sh` again, from that fully torn-down state — a
+   complete fresh deploy succeeds, both teams' Kafka comes up Ready, the
+   event generator deploys and starts producing within seconds.
 
 ## Cleanup (prerequisites so far)
 

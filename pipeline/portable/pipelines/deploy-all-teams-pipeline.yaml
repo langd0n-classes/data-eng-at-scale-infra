@@ -16,6 +16,13 @@
 # Runs entirely in the infra namespace; per-team Tasks act on team
 # namespaces via the pipeline ServiceAccount's cluster-wide RBAC (see
 # pipeline/portable/rbac/).
+#
+# Every TEAMn_NAME/TEAMn_NAMESPACE defaults to "" and each
+# deploy-kafka-teamN task carries a `when` guard skipping it entirely when
+# its own TEAMn_NAME is blank or "skip" — a class with fewer than 15 teams
+# just leaves the unused slots unset (or "skip", matching config.env's own
+# existing convention for marking a team slot unused) rather than needing
+# a trimmed-down copy of this file.
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
@@ -38,64 +45,94 @@ spec:
       type: string
     - name: TEAM1_NAME
       type: string
+      default: ""
     - name: TEAM1_NAMESPACE
       type: string
+      default: ""
     - name: TEAM2_NAME
       type: string
+      default: ""
     - name: TEAM2_NAMESPACE
       type: string
+      default: ""
     - name: TEAM3_NAME
       type: string
+      default: ""
     - name: TEAM3_NAMESPACE
       type: string
+      default: ""
     - name: TEAM4_NAME
       type: string
+      default: ""
     - name: TEAM4_NAMESPACE
       type: string
+      default: ""
     - name: TEAM5_NAME
       type: string
+      default: ""
     - name: TEAM5_NAMESPACE
       type: string
+      default: ""
     - name: TEAM6_NAME
       type: string
+      default: ""
     - name: TEAM6_NAMESPACE
       type: string
+      default: ""
     - name: TEAM7_NAME
       type: string
+      default: ""
     - name: TEAM7_NAMESPACE
       type: string
+      default: ""
     - name: TEAM8_NAME
       type: string
+      default: ""
     - name: TEAM8_NAMESPACE
       type: string
+      default: ""
     - name: TEAM9_NAME
       type: string
+      default: ""
     - name: TEAM9_NAMESPACE
       type: string
+      default: ""
     - name: TEAM10_NAME
       type: string
+      default: ""
     - name: TEAM10_NAMESPACE
       type: string
+      default: ""
     - name: TEAM11_NAME
       type: string
+      default: ""
     - name: TEAM11_NAMESPACE
       type: string
+      default: ""
     - name: TEAM12_NAME
       type: string
+      default: ""
     - name: TEAM12_NAMESPACE
       type: string
+      default: ""
     - name: TEAM13_NAME
       type: string
+      default: ""
     - name: TEAM13_NAMESPACE
       type: string
+      default: ""
     - name: TEAM14_NAME
       type: string
+      default: ""
     - name: TEAM14_NAMESPACE
       type: string
+      default: ""
     - name: TEAM15_NAME
       type: string
+      default: ""
     - name: TEAM15_NAMESPACE
       type: string
+      default: ""
     - name: EVENT_GENERATOR_NAME
       type: string
     - name: EVENT_GENERATOR_IMAGE
@@ -158,6 +195,10 @@ spec:
       taskRef:
         name: deploy-kafka
       runAfter: ["clone"]
+      when:
+        - input: $(params.TEAM1_NAME)
+          operator: notin
+          values: ["", "skip"]
       params:
         - name: TEAM_NAME
           value: $(params.TEAM1_NAME)
@@ -175,6 +216,10 @@ spec:
       taskRef:
         name: deploy-kafka
       runAfter: ["clone"]
+      when:
+        - input: $(params.TEAM2_NAME)
+          operator: notin
+          values: ["", "skip"]
       params:
         - name: TEAM_NAME
           value: $(params.TEAM2_NAME)
@@ -192,6 +237,10 @@ spec:
       taskRef:
         name: deploy-kafka
       runAfter: ["clone"]
+      when:
+        - input: $(params.TEAM3_NAME)
+          operator: notin
+          values: ["", "skip"]
       params:
         - name: TEAM_NAME
           value: $(params.TEAM3_NAME)
@@ -209,6 +258,10 @@ spec:
       taskRef:
         name: deploy-kafka
       runAfter: ["clone"]
+      when:
+        - input: $(params.TEAM4_NAME)
+          operator: notin
+          values: ["", "skip"]
       params:
         - name: TEAM_NAME
           value: $(params.TEAM4_NAME)
@@ -226,6 +279,10 @@ spec:
       taskRef:
         name: deploy-kafka
       runAfter: ["clone"]
+      when:
+        - input: $(params.TEAM5_NAME)
+          operator: notin
+          values: ["", "skip"]
       params:
         - name: TEAM_NAME
           value: $(params.TEAM5_NAME)
@@ -243,6 +300,10 @@ spec:
       taskRef:
         name: deploy-kafka
       runAfter: ["clone"]
+      when:
+        - input: $(params.TEAM6_NAME)
+          operator: notin
+          values: ["", "skip"]
       params:
         - name: TEAM_NAME
           value: $(params.TEAM6_NAME)
@@ -260,6 +321,10 @@ spec:
       taskRef:
         name: deploy-kafka
       runAfter: ["clone"]
+      when:
+        - input: $(params.TEAM7_NAME)
+          operator: notin
+          values: ["", "skip"]
       params:
         - name: TEAM_NAME
           value: $(params.TEAM7_NAME)
@@ -277,6 +342,10 @@ spec:
       taskRef:
         name: deploy-kafka
       runAfter: ["clone"]
+      when:
+        - input: $(params.TEAM8_NAME)
+          operator: notin
+          values: ["", "skip"]
       params:
         - name: TEAM_NAME
           value: $(params.TEAM8_NAME)
@@ -294,6 +363,10 @@ spec:
       taskRef:
         name: deploy-kafka
       runAfter: ["clone"]
+      when:
+        - input: $(params.TEAM9_NAME)
+          operator: notin
+          values: ["", "skip"]
       params:
         - name: TEAM_NAME
           value: $(params.TEAM9_NAME)
@@ -311,6 +384,10 @@ spec:
       taskRef:
         name: deploy-kafka
       runAfter: ["clone"]
+      when:
+        - input: $(params.TEAM10_NAME)
+          operator: notin
+          values: ["", "skip"]
       params:
         - name: TEAM_NAME
           value: $(params.TEAM10_NAME)
@@ -328,6 +405,10 @@ spec:
       taskRef:
         name: deploy-kafka
       runAfter: ["clone"]
+      when:
+        - input: $(params.TEAM11_NAME)
+          operator: notin
+          values: ["", "skip"]
       params:
         - name: TEAM_NAME
           value: $(params.TEAM11_NAME)
@@ -345,6 +426,10 @@ spec:
       taskRef:
         name: deploy-kafka
       runAfter: ["clone"]
+      when:
+        - input: $(params.TEAM12_NAME)
+          operator: notin
+          values: ["", "skip"]
       params:
         - name: TEAM_NAME
           value: $(params.TEAM12_NAME)
@@ -362,6 +447,10 @@ spec:
       taskRef:
         name: deploy-kafka
       runAfter: ["clone"]
+      when:
+        - input: $(params.TEAM13_NAME)
+          operator: notin
+          values: ["", "skip"]
       params:
         - name: TEAM_NAME
           value: $(params.TEAM13_NAME)
@@ -379,6 +468,10 @@ spec:
       taskRef:
         name: deploy-kafka
       runAfter: ["clone"]
+      when:
+        - input: $(params.TEAM14_NAME)
+          operator: notin
+          values: ["", "skip"]
       params:
         - name: TEAM_NAME
           value: $(params.TEAM14_NAME)
@@ -396,6 +489,10 @@ spec:
       taskRef:
         name: deploy-kafka
       runAfter: ["clone"]
+      when:
+        - input: $(params.TEAM15_NAME)
+          operator: notin
+          values: ["", "skip"]
       params:
         - name: TEAM_NAME
           value: $(params.TEAM15_NAME)
