@@ -135,12 +135,84 @@ Both Tasks need `hostNetwork: true` set on the PipelineRun's pod template
 (`spec.taskRunTemplate.podTemplate.hostNetwork: true`), so the build step
 can reach `localhost:${REGISTRY_NODE_PORT}` the same way kubelet does.
 
+## Pipeline RBAC
+
+`rbac/` auto-detects "dedicated" vs. "shared" cluster the same way
+`onboarding/apply-onboarding.sh` already does (`kubectl auth can-i create
+clusterrolebindings`):
+
+```bash
+bash pipeline/portable/rbac/apply-rbac.sh
+```
+```
+serviceaccount/pipeline created
+Cluster type: dedicated (cluster-admin available) — using a ClusterRoleBinding
+clusterrole.rbac.authorization.k8s.io/pipeline-runner-role-portable created
+clusterrolebinding.rbac.authorization.k8s.io/pipeline-runner-binding-portable created
+```
+
+OVHcloud's default kubeconfig also gives full cluster-admin access, so this
+same dedicated-cluster path applies there too — confirmed via OVHcloud's
+own documentation, not assumed. The shared-cluster fallback
+(`role-rolebinding-namespace.yaml` + `clusterrole-namespaces-read.yaml`,
+mirroring `pipeline/rbac/04-role-rolebinding-namespace.yaml`'s NERC
+scenario) exists for if that ever turns out not to hold.
+
+## The full per-team deploy pipeline
+
+`tasks/deploy-kafka-task.yaml` and `tasks/deploy-event-generator-task.yaml`
+kubectl-wrap the already-portable `kafka/portable/scripts/deploy.sh` and
+`event-generator/portable/k8s/` respectively, from a git-cloned copy of
+this repo. `pipelines/deploy-all-teams-pipeline.yaml` chains them all
+together: clone → build the event generator's image → deploy every team's
+Kafka in parallel → deploy the event generator once, after every team's
+Kafka is up — the same shape as
+`pipeline/pipelines/01-pipeline-deploy-all-teams.yaml`, minus any NiFi
+task anywhere in the chain. It hardcodes team1 through team15 the same way
+the existing pipeline already does (Tekton's `matrix` feature can't derive
+one param from another, e.g. building "team-01" out of "team" + "01").
+
+Validated end to end with a real `PipelineRun` for two teams — clone, build
++ push the event-generator image, deploy Kafka for both teams in parallel,
+then deploy the event generator once both are ready:
+
+```
+NAME                   SUCCEEDED   REASON      STARTTIME   COMPLETIONTIME
+deploy-all-teams-run   True        Succeeded   40s         0s
+```
+```bash
+kubectl get kafka -n team-01   # Ready
+kubectl get kafka -n team-02   # Ready
+kubectl logs -n infra -l app=event-generator --tail=3
+```
+```
+[EMIT] Produced 100 events → teams: [team01, team02]
+```
+
+Both teams' Kafka independently confirmed to receive real events (same
+consume-from-topic check as `event-generator/portable/README.md`, repeated
+for `team-02`).
+
+**Idempotency** (re-running the exact same `PipelineRun` a second time):
+
+```bash
+kubectl get kafka kafka-team01 -n team-01 -o jsonpath='{.metadata.resourceVersion}'
+# 42057
+# ... re-run ...
+kubectl get kafka kafka-team01 -n team-01 -o jsonpath='{.metadata.resourceVersion}'
+# 42057 — unchanged
+kubectl get pod -n team-01 -l strimzi.io/cluster=kafka-team01 -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}'
+# 0 — broker never restarted
+```
+
+The full 15-team pipeline definition (18 Tasks, 46 params) was confirmed
+structurally valid by Tekton's own admission webhook; live validation used
+2 teams — each team block is mechanically identical to the two already
+proven, and running all 15 Kafka brokers simultaneously wasn't necessary
+to prove that.
+
 ## What's still to come in `pipeline/portable/`
 
-- `tasks/deploy-kafka-task.yaml`, `tasks/deploy-event-generator-task.yaml`,
-  `pipelines/deploy-all-teams-pipeline.yaml` — the per-team deploy pipeline
-  itself, chaining build → deploy Kafka → deploy event generator, with no
-  NiFi task anywhere in the chain.
 - `scripts/{deploy,status,teardown}-platform.sh` — the orchestrator tying
   every prerequisite and per-team step together as one repeatable command.
 

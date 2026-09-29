@@ -1,0 +1,439 @@
+# pipeline/portable/pipelines/deploy-all-teams-pipeline.yaml
+#
+# kubectl-only equivalent of pipeline/pipelines/01-pipeline-deploy-all-teams.yaml
+# — same shape (clone once, deploy every team's Kafka in parallel, deploy
+# the shared event generator once afterward, since it needs every team's
+# bootstrap address) and the same one-explicit-Task-block-per-team pattern
+# (Tekton's `matrix` feature can't derive one param from another within
+# the same PipelineTask, e.g. building "team-01" out of "team" + "01", so
+# it doesn't fit this shape any more cleanly than the existing pipeline's
+# own hardcoded-per-team blocks already do — that file hardcodes team01
+# through team15 the same way, matching config.env's TEAM1...TEAM15
+# support). The one real difference: no NiFi task anywhere in this chain —
+# nifi/ itself stays fully available and untouched, only the pipeline's
+# dependency on deploying it is removed here.
+#
+# Runs entirely in the infra namespace; per-team Tasks act on team
+# namespaces via the pipeline ServiceAccount's cluster-wide RBAC (see
+# pipeline/portable/rbac/).
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: deploy-all-teams
+  namespace: infra
+  labels:
+    app: data-eng-infra
+spec:
+  params:
+    - name: GIT_URL
+      type: string
+    - name: GIT_REVISION
+      type: string
+      default: main
+    - name: INFRA_NAMESPACE
+      type: string
+    - name: STORAGE_CLASS
+      type: string
+    - name: VOLUME_SIZE
+      type: string
+    - name: TEAM1_NAME
+      type: string
+    - name: TEAM1_NAMESPACE
+      type: string
+    - name: TEAM2_NAME
+      type: string
+    - name: TEAM2_NAMESPACE
+      type: string
+    - name: TEAM3_NAME
+      type: string
+    - name: TEAM3_NAMESPACE
+      type: string
+    - name: TEAM4_NAME
+      type: string
+    - name: TEAM4_NAMESPACE
+      type: string
+    - name: TEAM5_NAME
+      type: string
+    - name: TEAM5_NAMESPACE
+      type: string
+    - name: TEAM6_NAME
+      type: string
+    - name: TEAM6_NAMESPACE
+      type: string
+    - name: TEAM7_NAME
+      type: string
+    - name: TEAM7_NAMESPACE
+      type: string
+    - name: TEAM8_NAME
+      type: string
+    - name: TEAM8_NAMESPACE
+      type: string
+    - name: TEAM9_NAME
+      type: string
+    - name: TEAM9_NAMESPACE
+      type: string
+    - name: TEAM10_NAME
+      type: string
+    - name: TEAM10_NAMESPACE
+      type: string
+    - name: TEAM11_NAME
+      type: string
+    - name: TEAM11_NAMESPACE
+      type: string
+    - name: TEAM12_NAME
+      type: string
+    - name: TEAM12_NAMESPACE
+      type: string
+    - name: TEAM13_NAME
+      type: string
+    - name: TEAM13_NAMESPACE
+      type: string
+    - name: TEAM14_NAME
+      type: string
+    - name: TEAM14_NAMESPACE
+      type: string
+    - name: TEAM15_NAME
+      type: string
+    - name: TEAM15_NAMESPACE
+      type: string
+    - name: EVENT_GENERATOR_NAME
+      type: string
+    - name: EVENT_GENERATOR_IMAGE
+      description: Full image reference to build and push, and later deploy from
+      type: string
+    - name: EVENT_GENERATOR_DOCKERFILE
+      type: string
+      default: ./Dockerfile
+    - name: EVENT_GENERATOR_CONTEXT
+      type: string
+      default: event-generator
+    - name: EVENT_RATE_PER_SEC
+      type: string
+    - name: TOPIC_PREFIX
+      type: string
+    - name: TOPIC_SUFFIX
+      type: string
+    - name: TOPIC
+      type: string
+      default: ""
+    - name: REGIONS
+      type: string
+    - name: TEAM_BOOTSTRAP_SERVERS
+      description: team_id=bootstrap_server,team_id=bootstrap_server,...
+      type: string
+    - name: KAFKA_BOOTSTRAP_SERVERS
+      type: string
+      default: ""
+  workspaces:
+    - name: source
+  tasks:
+    - name: clone
+      taskRef:
+        name: git-clone
+      params:
+        - name: URL
+          value: $(params.GIT_URL)
+        - name: REVISION
+          value: $(params.GIT_REVISION)
+      workspaces:
+        - name: output
+          workspace: source
+
+    - name: build-event-generator-image
+      taskRef:
+        name: build-push-image
+      runAfter: ["clone"]
+      params:
+        - name: IMAGE
+          value: $(params.EVENT_GENERATOR_IMAGE)
+        - name: DOCKERFILE
+          value: $(params.EVENT_GENERATOR_DOCKERFILE)
+        - name: CONTEXT
+          value: $(params.EVENT_GENERATOR_CONTEXT)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-kafka-team1
+      taskRef:
+        name: deploy-kafka
+      runAfter: ["clone"]
+      params:
+        - name: TEAM_NAME
+          value: $(params.TEAM1_NAME)
+        - name: TEAM_NAMESPACE
+          value: $(params.TEAM1_NAMESPACE)
+        - name: STORAGE_CLASS
+          value: $(params.STORAGE_CLASS)
+        - name: VOLUME_SIZE
+          value: $(params.VOLUME_SIZE)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-kafka-team2
+      taskRef:
+        name: deploy-kafka
+      runAfter: ["clone"]
+      params:
+        - name: TEAM_NAME
+          value: $(params.TEAM2_NAME)
+        - name: TEAM_NAMESPACE
+          value: $(params.TEAM2_NAMESPACE)
+        - name: STORAGE_CLASS
+          value: $(params.STORAGE_CLASS)
+        - name: VOLUME_SIZE
+          value: $(params.VOLUME_SIZE)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-kafka-team3
+      taskRef:
+        name: deploy-kafka
+      runAfter: ["clone"]
+      params:
+        - name: TEAM_NAME
+          value: $(params.TEAM3_NAME)
+        - name: TEAM_NAMESPACE
+          value: $(params.TEAM3_NAMESPACE)
+        - name: STORAGE_CLASS
+          value: $(params.STORAGE_CLASS)
+        - name: VOLUME_SIZE
+          value: $(params.VOLUME_SIZE)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-kafka-team4
+      taskRef:
+        name: deploy-kafka
+      runAfter: ["clone"]
+      params:
+        - name: TEAM_NAME
+          value: $(params.TEAM4_NAME)
+        - name: TEAM_NAMESPACE
+          value: $(params.TEAM4_NAMESPACE)
+        - name: STORAGE_CLASS
+          value: $(params.STORAGE_CLASS)
+        - name: VOLUME_SIZE
+          value: $(params.VOLUME_SIZE)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-kafka-team5
+      taskRef:
+        name: deploy-kafka
+      runAfter: ["clone"]
+      params:
+        - name: TEAM_NAME
+          value: $(params.TEAM5_NAME)
+        - name: TEAM_NAMESPACE
+          value: $(params.TEAM5_NAMESPACE)
+        - name: STORAGE_CLASS
+          value: $(params.STORAGE_CLASS)
+        - name: VOLUME_SIZE
+          value: $(params.VOLUME_SIZE)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-kafka-team6
+      taskRef:
+        name: deploy-kafka
+      runAfter: ["clone"]
+      params:
+        - name: TEAM_NAME
+          value: $(params.TEAM6_NAME)
+        - name: TEAM_NAMESPACE
+          value: $(params.TEAM6_NAMESPACE)
+        - name: STORAGE_CLASS
+          value: $(params.STORAGE_CLASS)
+        - name: VOLUME_SIZE
+          value: $(params.VOLUME_SIZE)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-kafka-team7
+      taskRef:
+        name: deploy-kafka
+      runAfter: ["clone"]
+      params:
+        - name: TEAM_NAME
+          value: $(params.TEAM7_NAME)
+        - name: TEAM_NAMESPACE
+          value: $(params.TEAM7_NAMESPACE)
+        - name: STORAGE_CLASS
+          value: $(params.STORAGE_CLASS)
+        - name: VOLUME_SIZE
+          value: $(params.VOLUME_SIZE)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-kafka-team8
+      taskRef:
+        name: deploy-kafka
+      runAfter: ["clone"]
+      params:
+        - name: TEAM_NAME
+          value: $(params.TEAM8_NAME)
+        - name: TEAM_NAMESPACE
+          value: $(params.TEAM8_NAMESPACE)
+        - name: STORAGE_CLASS
+          value: $(params.STORAGE_CLASS)
+        - name: VOLUME_SIZE
+          value: $(params.VOLUME_SIZE)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-kafka-team9
+      taskRef:
+        name: deploy-kafka
+      runAfter: ["clone"]
+      params:
+        - name: TEAM_NAME
+          value: $(params.TEAM9_NAME)
+        - name: TEAM_NAMESPACE
+          value: $(params.TEAM9_NAMESPACE)
+        - name: STORAGE_CLASS
+          value: $(params.STORAGE_CLASS)
+        - name: VOLUME_SIZE
+          value: $(params.VOLUME_SIZE)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-kafka-team10
+      taskRef:
+        name: deploy-kafka
+      runAfter: ["clone"]
+      params:
+        - name: TEAM_NAME
+          value: $(params.TEAM10_NAME)
+        - name: TEAM_NAMESPACE
+          value: $(params.TEAM10_NAMESPACE)
+        - name: STORAGE_CLASS
+          value: $(params.STORAGE_CLASS)
+        - name: VOLUME_SIZE
+          value: $(params.VOLUME_SIZE)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-kafka-team11
+      taskRef:
+        name: deploy-kafka
+      runAfter: ["clone"]
+      params:
+        - name: TEAM_NAME
+          value: $(params.TEAM11_NAME)
+        - name: TEAM_NAMESPACE
+          value: $(params.TEAM11_NAMESPACE)
+        - name: STORAGE_CLASS
+          value: $(params.STORAGE_CLASS)
+        - name: VOLUME_SIZE
+          value: $(params.VOLUME_SIZE)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-kafka-team12
+      taskRef:
+        name: deploy-kafka
+      runAfter: ["clone"]
+      params:
+        - name: TEAM_NAME
+          value: $(params.TEAM12_NAME)
+        - name: TEAM_NAMESPACE
+          value: $(params.TEAM12_NAMESPACE)
+        - name: STORAGE_CLASS
+          value: $(params.STORAGE_CLASS)
+        - name: VOLUME_SIZE
+          value: $(params.VOLUME_SIZE)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-kafka-team13
+      taskRef:
+        name: deploy-kafka
+      runAfter: ["clone"]
+      params:
+        - name: TEAM_NAME
+          value: $(params.TEAM13_NAME)
+        - name: TEAM_NAMESPACE
+          value: $(params.TEAM13_NAMESPACE)
+        - name: STORAGE_CLASS
+          value: $(params.STORAGE_CLASS)
+        - name: VOLUME_SIZE
+          value: $(params.VOLUME_SIZE)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-kafka-team14
+      taskRef:
+        name: deploy-kafka
+      runAfter: ["clone"]
+      params:
+        - name: TEAM_NAME
+          value: $(params.TEAM14_NAME)
+        - name: TEAM_NAMESPACE
+          value: $(params.TEAM14_NAMESPACE)
+        - name: STORAGE_CLASS
+          value: $(params.STORAGE_CLASS)
+        - name: VOLUME_SIZE
+          value: $(params.VOLUME_SIZE)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-kafka-team15
+      taskRef:
+        name: deploy-kafka
+      runAfter: ["clone"]
+      params:
+        - name: TEAM_NAME
+          value: $(params.TEAM15_NAME)
+        - name: TEAM_NAMESPACE
+          value: $(params.TEAM15_NAMESPACE)
+        - name: STORAGE_CLASS
+          value: $(params.STORAGE_CLASS)
+        - name: VOLUME_SIZE
+          value: $(params.VOLUME_SIZE)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-event-generator
+      taskRef:
+        name: deploy-event-generator
+      runAfter: ["build-event-generator-image", "deploy-kafka-team1", "deploy-kafka-team2", "deploy-kafka-team3", "deploy-kafka-team4", "deploy-kafka-team5", "deploy-kafka-team6", "deploy-kafka-team7", "deploy-kafka-team8", "deploy-kafka-team9", "deploy-kafka-team10", "deploy-kafka-team11", "deploy-kafka-team12", "deploy-kafka-team13", "deploy-kafka-team14", "deploy-kafka-team15"]
+      params:
+        - name: INFRA_NAMESPACE
+          value: $(params.INFRA_NAMESPACE)
+        - name: EVENT_GENERATOR_NAME
+          value: $(params.EVENT_GENERATOR_NAME)
+        - name: EVENT_GENERATOR_IMAGE
+          value: $(params.EVENT_GENERATOR_IMAGE)
+        - name: EVENT_RATE_PER_SEC
+          value: $(params.EVENT_RATE_PER_SEC)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
+        - name: TOPIC
+          value: $(params.TOPIC)
+        - name: REGIONS
+          value: $(params.REGIONS)
+        - name: TEAM_BOOTSTRAP_SERVERS
+          value: $(params.TEAM_BOOTSTRAP_SERVERS)
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: $(params.KAFKA_BOOTSTRAP_SERVERS)
+      workspaces:
+        - name: source
+          workspace: source

@@ -1,0 +1,84 @@
+# pipeline/portable/tasks/deploy-event-generator-task.yaml
+#
+# kubectl-applies event-generator/portable/k8s/{configmap,deployment}.yaml
+# from a git-cloned copy of this repo. Runs once (shared, not per-team),
+# after every team's Kafka is up, since TEAM_BOOTSTRAP_SERVERS needs every
+# team's bootstrap address — same ordering the OpenShift pipeline already
+# uses.
+#
+# Defined once in the infra namespace (shared, per this repo's own
+# namespace convention) and referenced from the deploy-all-teams pipeline
+# via Tekton's `cluster` resolver.
+#
+# Usage:
+#   source config.env && envsubst '${KUBECTL_CLI_IMAGE}' \
+#   < pipeline/portable/tasks/deploy-event-generator-task.yaml | kubectl apply -f - -n infra
+#
+# Required vars: KUBECTL_CLI_IMAGE
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-event-generator
+  namespace: infra
+  labels:
+    app: data-eng-infra
+spec:
+  params:
+    - name: INFRA_NAMESPACE
+      type: string
+    - name: EVENT_GENERATOR_NAME
+      type: string
+    - name: EVENT_GENERATOR_IMAGE
+      description: Full image reference the build-push-image Task pushed to
+      type: string
+    - name: EVENT_RATE_PER_SEC
+      type: string
+    - name: TOPIC_PREFIX
+      type: string
+    - name: TOPIC_SUFFIX
+      type: string
+    - name: TOPIC
+      type: string
+      default: ""
+    - name: REGIONS
+      type: string
+    - name: TEAM_BOOTSTRAP_SERVERS
+      description: team_id=bootstrap_server,team_id=bootstrap_server,...
+      type: string
+    - name: KAFKA_BOOTSTRAP_SERVERS
+      type: string
+      default: ""
+  workspaces:
+    - name: source
+      description: Git-cloned copy of this repo
+  steps:
+    - name: deploy-event-generator
+      image: ${KUBECTL_CLI_IMAGE}
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: INFRA_NAMESPACE
+          value: $(params.INFRA_NAMESPACE)
+        - name: EVENT_GENERATOR_NAME
+          value: $(params.EVENT_GENERATOR_NAME)
+        - name: EVENT_GENERATOR_IMAGE
+          value: $(params.EVENT_GENERATOR_IMAGE)
+        - name: EVENT_RATE_PER_SEC
+          value: $(params.EVENT_RATE_PER_SEC)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
+        - name: TOPIC
+          value: $(params.TOPIC)
+        - name: REGIONS
+          value: $(params.REGIONS)
+        - name: TEAM_BOOTSTRAP_SERVERS
+          value: $(params.TEAM_BOOTSTRAP_SERVERS)
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: $(params.KAFKA_BOOTSTRAP_SERVERS)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        envsubst < event-generator/portable/k8s/configmap.yaml | kubectl apply -f -
+        envsubst < event-generator/portable/k8s/deployment.yaml | kubectl apply -f -
+        kubectl rollout status deployment/${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE} --timeout=120s
