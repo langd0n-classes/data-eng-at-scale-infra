@@ -63,14 +63,14 @@ if ! kubectl get service ingress-nginx-controller -n ingress-nginx \
 fi
 
 echo ""
-info "Step 2 — In-cluster registry..."
+info "Step 2 — Onboarding (namespaces, quota, ServiceAccount, RBAC, NetworkPolicy)..."
+bash "${REPO_ROOT}/onboarding/portable/apply-onboarding.sh"
+
+echo ""
+info "Step 3 — In-cluster registry..."
 envsubst '${INFRA_NAMESPACE} ${STORAGE_CLASS} ${REGISTRY_VOLUME_SIZE} ${REGISTRY_NODE_PORT}' \
   < "${REPO_ROOT}/registry/portable/manifests/registry.yaml" | kubectl apply -f -
 kubectl rollout status deployment/registry -n "${INFRA_NAMESPACE}" --timeout=120s
-
-echo ""
-info "Step 3 — Onboarding (namespaces, quota, ServiceAccount, RBAC, NetworkPolicy)..."
-bash "${REPO_ROOT}/onboarding/portable/apply-onboarding.sh"
 
 echo ""
 info "Step 4 — Spark per-team ResourceQuota..."
