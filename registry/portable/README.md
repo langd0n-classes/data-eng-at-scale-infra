@@ -39,6 +39,16 @@ PipelineRun, see `pipeline/portable/`) so that *it* can also reach
 `localhost:<nodePort>` for the push, the same way kubelet does for the
 pull — pods don't share the node's loopback by default.
 
+## Before you start: update config.env
+
+```bash
+cp config.env.example config.env
+```
+Then edit `config.env` and set: `INFRA_NAMESPACE`, `STORAGE_CLASS` (`standard`
+on Kind), `REGISTRY_VOLUME_SIZE` (default `5Gi`), `REGISTRY_NODE_PORT`
+(default `30500` — this exact value ends up in every image reference
+everywhere else in the platform, see the section above for why).
+
 ## Validation walkthrough
 
 Validated on: Kubernetes (Kind) v1.34.11, `registry:2` (Docker
@@ -47,7 +57,7 @@ Distribution).
 **1. Deploy the registry**
 
 ```bash
-source config.env  # REGISTRY_VOLUME_SIZE, REGISTRY_NODE_PORT, STORAGE_CLASS
+source config.env
 envsubst '${INFRA_NAMESPACE} ${STORAGE_CLASS} ${REGISTRY_VOLUME_SIZE} ${REGISTRY_NODE_PORT}' \
   < registry/portable/manifests/registry.yaml | kubectl apply -f -
 kubectl rollout status deployment/registry -n infra --timeout=120s

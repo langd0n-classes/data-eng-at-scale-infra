@@ -12,8 +12,15 @@ primary onboarding method for the classroom.
 Postgres), NiFi, and the event generator's own deployment — none of it is
 needed to onboard namespaces on their own, and none of it is touched by
 this package. See `kafka/portable/`, `pipeline/portable/`,
-`event-generator/portable/`, `ingress/portable/`, and `spark/portable/` for
-those pieces.
+`event-generator/portable/`, `ingress/portable/`, and `spark-queue/portable/`
+for those pieces.
+
+**Note on config.env:** this package uses `onboarding/cluster.env` only
+(see below) — not the repo-root `config.env` that every other `portable/`
+component reads from. The two are deliberately kept separate (same split
+the OpenShift path already uses): `cluster.env` holds one-time cluster
+setup values, `config.env` holds everything the Tekton pipeline needs at
+runtime.
 
 ## Compatibility
 

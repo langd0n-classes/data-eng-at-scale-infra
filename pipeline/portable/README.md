@@ -67,7 +67,11 @@ tekton-dashboard   ClusterIP   10.96.139.146   <none>        9097/TCP   4s
 **3. Expose it through the shared ingress-nginx LoadBalancer**
 
 Requires `ingress/portable/` already installed (ingress-nginx +
-cloud-provider-kind).
+cloud-provider-kind). `DASHBOARD_HOST` is a `config.env` variable
+(`cp config.env.example config.env` then edit it if you haven't already) —
+`tekton.local` below is a standalone example value; for the full platform
+deploy, `source config.env` instead and use whatever you set
+`DASHBOARD_HOST` to there.
 
 ```bash
 DASHBOARD_HOST=tekton.local envsubst '${DASHBOARD_HOST}' \
@@ -139,7 +143,9 @@ can reach `localhost:${REGISTRY_NODE_PORT}` the same way kubelet does.
 
 `rbac/` auto-detects "dedicated" vs. "shared" cluster the same way
 `onboarding/apply-onboarding.sh` already does (`kubectl auth can-i create
-clusterrolebindings`):
+clusterrolebindings`). `apply-rbac.sh` auto-sources `config.env` itself and
+hard-requires `INFRA_NAMESPACE` to be set there — `cp config.env.example
+config.env` and edit it first if you haven't already:
 
 ```bash
 bash pipeline/portable/rbac/apply-rbac.sh
@@ -220,6 +226,29 @@ trimmed-down copy of this file. Confirmed for real: with `config.env`
 configured for 2 real teams and 13 slots left as `"skip"`, only 2
 `deploy-kafka-teamN` pods were created; the other 13 were cleanly skipped,
 not attempted and failed.
+
+## Before you start: update config.env
+
+The orchestrator below checks every one of these is set in `config.env`
+and exits immediately, naming whichever is missing:
+
+```bash
+cp config.env.example config.env
+```
+Then edit `config.env` and set: `INFRA_NAMESPACE`, `STORAGE_CLASS`
+(`standard` on Kind), `VOLUME_SIZE`, `REGISTRY_VOLUME_SIZE`,
+`REGISTRY_NODE_PORT`, `KUBECTL_CLI_IMAGE`, `GIT_REPO_URL` + `GIT_BRANCH`
+(point these at `feature/portable-fall-platform` specifically — none of
+this exists on `main` yet, so cloning `main` leaves every Task with
+nothing to run), `EVENT_GENERATOR_NAME`, `EVENT_GENERATOR_IMAGE`,
+`EVENT_RATE_PER_SEC`, `TOPIC_PREFIX`/`TOPIC_SUFFIX`, `REGIONS`,
+`TEAM_BOOTSTRAP_SERVERS`, `SPARK_IMAGE`, and `DASHBOARD_HOST`. Also set the
+`TEAMn_NAME`/`TEAMn_NAMESPACE` pairs for however many teams you actually
+want deployed, leaving every other slot as `"skip"` (see "Every
+`TEAMn_NAME`..." above).
+
+Separately, `onboarding/cluster.env`'s `NUM_TEAMS` must match how many
+teams you're actually onboarding — see `onboarding/portable/README.md`.
 
 ## The orchestrator: one repeatable deployment path
 

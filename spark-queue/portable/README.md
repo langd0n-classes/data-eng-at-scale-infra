@@ -55,6 +55,19 @@ confirmed directly via `kubectl api-resources`, not assumed. Rejecting is
 arguably the better fit anyway: it forces the actual template to be used
 rather than silently rewriting what a student submitted.)
 
+## Before you start: update config.env
+
+```bash
+cp config.env.example config.env
+```
+Then edit `config.env` and set: `INFRA_NAMESPACE` (where the queue
+controller runs), `SPARK_IMAGE` (default `apache/spark:3.5.3` — must match
+exactly what `team-spark-job-template.yaml` is filled in with, since the
+admission policy matches on this image reference), and
+`TEAM_NAMESPACE_PREFIX` (default `team`, must match `onboarding/cluster.env`'s
+value). `TEAM_ID` below is **not** a `config.env` variable — it's set
+per-command, once for each team namespace you're applying the quota to.
+
 ## Validation walkthrough
 
 Validated on: Kubernetes (Kind) v1.34.11.
@@ -62,6 +75,7 @@ Validated on: Kubernetes (Kind) v1.34.11.
 **1. Deploy the pieces**
 
 ```bash
+source config.env
 for id in 01 02; do
   TEAM_ID=$id envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID}' \
     < spark-queue/portable/manifests/team-jobs-resourcequota.yaml | kubectl apply -f -

@@ -15,6 +15,10 @@ this platform's scope).
 work (NiFi, ChatOps, storage, Kafka Console all keep their existing Routes
 on the OpenShift path, untouched).
 
+**Note on config.env:** neither install script here reads any `config.env`
+variable at all — confirmed directly, not assumed. Nothing to update
+before running this component.
+
 ## Compatibility
 
 Plain `kubectl`, ingress-nginx's own upstream manifests, no OpenShift-only

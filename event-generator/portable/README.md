@@ -19,6 +19,21 @@ Plain `kubectl`, a pre-built image pulled from an in-cluster registry
 on any conformant Kubernetes cluster: Kind, k3s, EKS, GKE, AKS, a
 bare-metal cluster, etc.
 
+## Before you start: update config.env
+
+```bash
+cp config.env.example config.env
+```
+Then edit `config.env` and set: `INFRA_NAMESPACE`, `EVENT_GENERATOR_NAME`,
+`EVENT_GENERATOR_IMAGE` (must be the exact reference the build Task in
+`pipeline/portable/` pushed to — see `registry/portable/README.md`),
+`EVENT_RATE_PER_SEC`, `TOPIC_PREFIX`/`TOPIC_SUFFIX`, `REGIONS`, and
+`TEAM_BOOTSTRAP_SERVERS` (one `team_id=bootstrap_server` entry per team
+you've deployed Kafka for — see `kafka/portable/README.md`). Leave `TOPIC`
+and `KAFKA_BOOTSTRAP_SERVERS` commented out/empty — those are for
+single-cluster mode only, not the multi-team mode used throughout this
+validation.
+
 ## Validation walkthrough
 
 Validated on: Kubernetes (Kind) v1.34.11, using the image built and pushed
@@ -26,6 +41,10 @@ in `pipeline/portable/` (`localhost:30500/event-generator:test2`) and Kafka
 for `team01` deployed via `kafka/portable/`.
 
 **1. Deploy the ConfigMap and Deployment**
+
+The `export` lines below are a standalone, copy-pasteable version of the
+same values you just set in `config.env` — for a real deploy, run
+`source config.env` instead of retyping them:
 
 ```bash
 export INFRA_NAMESPACE=infra
