@@ -15,12 +15,22 @@ this package. See `kafka/portable/`, `pipeline/portable/`,
 `event-generator/portable/`, `ingress/portable/`, and `spark-queue/portable/`
 for those pieces.
 
-**Note on config.env:** this package uses `onboarding/cluster.env` only
-(see below) — not the repo-root `config.env` that every other `portable/`
-component reads from. The two are deliberately kept separate (same split
-the OpenShift path already uses): `cluster.env` holds one-time cluster
-setup values, `config.env` holds everything the Tekton pipeline needs at
-runtime.
+**Note on config.env:** this package uses `onboarding/cluster.env` only —
+not the repo-root `config.env` that every other `portable/` component reads
+from. The two are deliberately kept separate (same split the OpenShift path
+already uses): `cluster.env` holds one-time cluster setup values, `config.env`
+holds everything the Tekton pipeline needs at runtime.
+
+```bash
+cp onboarding/cluster.env.example onboarding/cluster.env
+```
+Only two values in `onboarding/cluster.env` typically need changing for
+local Kind validation — everything else already has a working default:
+
+| Variable | OpenShift (CRC/NERC) | Kind |
+|---|---|---|
+| `STORAGE_CLASS` | `crc-csi-hostpath-provisioner` or `standard` (NERC) | `standard` (Kind's default) |
+| `NUM_TEAMS` | however many teams the class needs | as few as needed to validate (2 is enough to test cross-team isolation) |
 
 ## Compatibility
 
@@ -76,9 +86,10 @@ whisker     True        False         False
 
 **2. Onboard two team namespaces + infra**
 
+(Assumes `onboarding/cluster.env` is already set up — see "Note on
+config.env" near the top of this file.)
+
 ```bash
-cp onboarding/cluster.env.example onboarding/cluster.env
-# edit onboarding/cluster.env: STORAGE_CLASS=standard, NUM_TEAMS=2
 bash onboarding/portable/apply-onboarding.sh --dry-run   # verify first
 bash onboarding/portable/apply-onboarding.sh
 ```
@@ -150,13 +161,9 @@ kubectl delete pod test-infra -n infra --ignore-not-found
 ## Variables
 
 Same `onboarding/cluster.env` as the OpenShift path (see
-`onboarding/cluster.env.example`) — no separate portable env file. Only two
-things typically change for local Kind validation:
-
-| Variable | OpenShift (CRC/NERC) | Kind |
-|---|---|---|
-| `STORAGE_CLASS` | `crc-csi-hostpath-provisioner` or `standard` (NERC) | `standard` (Kind's default) |
-| `NUM_TEAMS` | however many teams the class needs | as few as needed to validate (2 is enough to test cross-team isolation) |
+`onboarding/cluster.env.example`) — no separate portable env file. See the
+"Note on config.env" near the top of this file for which two values
+typically change for local Kind validation.
 
 ## Group membership without `oc adm groups`
 
