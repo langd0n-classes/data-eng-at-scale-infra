@@ -1,9 +1,10 @@
 # Kafka Deployment Options
 
-This directory contains Kubernetes manifests for deploying Apache Kafka in two modes:
+This directory contains Kubernetes manifests for deploying Apache Kafka in three modes:
 
 1. **Per-Team Isolation** (`per-team/`) - Separate Kafka instance per namespace, managed by the Kafka operator
 2. **Shared Cluster** (`shared-deployment/`) - Single Kafka cluster with topic-based multitenancy
+3. **Portable / Kind-k3s** (`portable/`) - `kubectl`-only variant of per-team isolation, for validating the Strimzi setup on a no-cost local Kubernetes cluster (no OpenShift required). See [portable/README.md](portable/README.md).
 
 ## Pre-Requisite: Kafka Operator
 
