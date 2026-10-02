@@ -38,7 +38,7 @@ echo "Installing Strimzi ${STRIMZI_VERSION} (cluster-wide)"
 echo "=========================================="
 
 echo "Downloading Strimzi ${STRIMZI_VERSION} release bundle..."
-curl -sL -o "${WORKDIR}/strimzi.tar.gz" \
+curl -fsSL -o "${WORKDIR}/strimzi.tar.gz" \
   "https://github.com/strimzi/strimzi-kafka-operator/releases/download/${STRIMZI_VERSION}/strimzi-${STRIMZI_VERSION}.tar.gz"
 tar xzf "${WORKDIR}/strimzi.tar.gz" -C "${WORKDIR}"
 cd "${WORKDIR}/strimzi-${STRIMZI_VERSION}"
@@ -61,6 +61,16 @@ perl -0777 -pi -e \
 
 echo "Verifying STRIMZI_NAMESPACE patch:"
 grep -A2 STRIMZI_NAMESPACE install/cluster-operator/060-Deployment-strimzi-cluster-operator.yaml
+# If the release bundle's YAML layout changes, the perl substitution above
+# matches nothing and the operator would silently watch only its own
+# namespace. Stop instead.
+if ! grep -A1 -- '- name: STRIMZI_NAMESPACE' \
+  install/cluster-operator/060-Deployment-strimzi-cluster-operator.yaml \
+  | grep -q 'value: "\*"'; then
+  echo "ERROR: could not set STRIMZI_NAMESPACE to \"*\" in the Strimzi ${STRIMZI_VERSION} bundle." >&2
+  echo "The operator would watch only ${OPERATOR_NAMESPACE}. Update the patch for this release." >&2
+  exit 1
+fi
 
 echo "Creating cluster-wide ClusterRoleBindings..."
 kubectl create clusterrolebinding strimzi-cluster-operator-namespaced \

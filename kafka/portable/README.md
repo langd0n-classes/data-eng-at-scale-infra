@@ -20,8 +20,16 @@ BuildConfigs, SCCs, Templates). It runs on **any** conformant Kubernetes
 cluster with a dynamic StorageClass: Kind, k3s, EKS, GKE, AKS, a bare-metal
 cluster, etc.
 
-Requirements: Kubernetes 1.30+ (Strimzi 0.51.0's minimum), `kubectl`,
-`envsubst`, and a dynamic StorageClass.
+Requirements: Kubernetes 1.30+ (Strimzi 0.51.0's minimum) and a dynamic
+StorageClass.
+
+These scripts are for cluster administrators, not students. The machine
+that runs them needs:
+
+- `kubectl`, pointed at the target cluster;
+- `envsubst`, from GNU gettext (on macOS: `brew install gettext`), for
+  `scripts/deploy.sh` and `scripts/reset-data.sh`; and
+- `curl`, `tar`, and `perl`, for `prerequisites/install-strimzi.sh`.
 
 ## Validation walkthrough
 
@@ -135,6 +143,9 @@ kubectl delete pod kafka-test -n team-portable-test --ignore-not-found
 kubectl get kafka,kafkanodepool,pdb,pvc -n team-portable-test
 # (empty)
 ```
+
+`remove.sh` asks for confirmation; pass `--yes` (or `-y`) before the team name
+to skip the prompt in scripted cleanup.
 
 All four `scripts/` commands are safe to re-run — `deploy.sh` is idempotent
 by construction (`kubectl apply`), the others use `--ignore-not-found` /
