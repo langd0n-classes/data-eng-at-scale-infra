@@ -4,11 +4,18 @@
 # Mirrors kafka/per-team/delete-team.sh, plus PodDisruptionBudget deletion
 # (which delete-team.sh currently omits).
 #
-# Usage: remove.sh <team_name> <team_namespace>
+# Usage: remove.sh [--yes] <team_name> <team_namespace>
+#   --yes, -y   skip the confirmation prompt (for scripted cleanup)
 set -euo pipefail
 
+ASSUME_YES=""
+if [ "${1:-}" = "--yes" ] || [ "${1:-}" = "-y" ]; then
+  ASSUME_YES=1
+  shift
+fi
+
 if [ $# -ne 2 ]; then
-  echo "Usage: $0 <team_name> <team_namespace>"
+  echo "Usage: $0 [--yes] <team_name> <team_namespace>"
   echo "Example: $0 team01 team-portable-test"
   exit 1
 fi
@@ -43,7 +50,11 @@ echo "  - KafkaNodePool CR: dual-role"
 echo "  - PodDisruptionBudget: kafka-${TEAM_NAME}-pdb"
 echo "  - (operator cascades: pods, services, PVC)"
 echo ""
-read -p "Are you sure you want to continue? (yes/no): " confirm
+if [ -n "${ASSUME_YES}" ]; then
+  confirm="yes"
+else
+  read -r -p "Are you sure you want to continue? (yes/no): " confirm
+fi
 
 if [ "${confirm}" != "yes" ]; then
   echo "Deletion cancelled."

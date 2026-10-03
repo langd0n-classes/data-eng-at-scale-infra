@@ -9,11 +9,10 @@
 #   4. Delete PVCs by label, then wait up to 60s for them to fully disappear —
 #      recreating the node pool before PVCs are gone would reuse the same PVC
 #      name and could retain the old cluster ID.
-#   5. Recreate the KafkaNodePool with fresh storage, then poll the Kafka CR's
-#      Ready condition. Deleting the node pool forces Ready=False first, so
-#      polling for Ready=True here correctly blocks until the new broker is
-#      actually up — no generation check needed (see cmd_wipe_kafka_data's own
-#      comment on this).
+#   5. Recreate the KafkaNodePool with fresh storage, then wait for the new
+#      broker pod and the Kafka CR to both report Ready. The CR alone is not
+#      enough: on Kind, its Ready condition stayed True from before the reset
+#      for several minutes while no broker existed.
 #
 # Usage: reset-data.sh <team_name> <team_namespace> [storage_class] [volume_size]
 set -euo pipefail
@@ -71,7 +70,9 @@ if [ -n "$(kubectl get pod -n "${TEAM_NAMESPACE}" -l "${LABEL}" --no-headers 2>/
 fi
 
 echo "Phase 3: Deleting PVCs..."
-kubectl delete pvc -n "${TEAM_NAMESPACE}" -l "${LABEL}" --ignore-not-found
+# --wait=false: a PVC held by a finalizer would otherwise block here forever,
+# before the 60s timeout below can report it.
+kubectl delete pvc -n "${TEAM_NAMESPACE}" -l "${LABEL}" --ignore-not-found --wait=false
 pvc_deadline=$(( $(date +%s) + 60 ))
 while (( $(date +%s) < pvc_deadline )); do
   if [ -z "$(kubectl get pvc -n "${TEAM_NAMESPACE}" -l "${LABEL}" --no-headers 2>/dev/null)" ]; then
@@ -79,18 +80,32 @@ while (( $(date +%s) < pvc_deadline )); do
   fi
   sleep 3
 done
+if [ -n "$(kubectl get pvc -n "${TEAM_NAMESPACE}" -l "${LABEL}" --no-headers 2>/dev/null)" ]; then
+  echo "ERROR: PVCs for kafka-${TEAM_NAME} still exist after 60s." >&2
+  echo "Recreating the node pool now could reuse the old volume and cluster ID." >&2
+  echo "Wait for the PVCs to finish deleting, then run this script again." >&2
+  exit 1
+fi
 
 echo "Phase 4: Recreating KafkaNodePool with fresh storage..."
 export TEAM_NAME TEAM_NAMESPACE STORAGE_CLASS VOLUME_SIZE
 envsubst < "${MANIFEST_DIR}/kafka-nodepool-template.yaml" | kubectl apply -f -
 
-echo "Phase 5: Waiting up to 240s for Kafka to report Ready again..."
-ready_deadline=$(( $(date +%s) + 240 ))
+echo "Phase 5: Waiting up to 600s for the new broker pod to be Ready..."
+# Poll the broker pod, not only the Kafka CR: the CR's Ready condition can
+# still read True from before the reset while no broker exists. 600s covers
+# Strimzi's 300s operation timeout when a reconciliation is still retrying
+# the deleted broker.
+POD="kafka-${TEAM_NAME}-dual-role-0"
+ready_deadline=$(( $(date +%s) + 600 ))
 ready=""
 while (( $(date +%s) < ready_deadline )); do
-  ready=$(kubectl get kafka "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" \
+  pod_ready=$(kubectl get pod "${POD}" -n "${TEAM_NAMESPACE}" \
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
-  if [ "${ready}" = "True" ]; then
+  kafka_ready=$(kubectl get kafka "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+  if [ "${pod_ready}" = "True" ] && [ "${kafka_ready}" = "True" ]; then
+    ready="True"
     break
   fi
   sleep 5
@@ -100,5 +115,7 @@ echo ""
 if [ "${ready}" = "True" ]; then
   echo "Kafka data wiped and broker Ready for ${TEAM_NAME} in ${TEAM_NAMESPACE}."
 else
-  echo "Kafka data wiped for ${TEAM_NAME} in ${TEAM_NAMESPACE}. Broker still initialising — check status shortly."
+  echo "Kafka data wiped for ${TEAM_NAME} in ${TEAM_NAMESPACE}, but the broker is not Ready after 600s." >&2
+  echo "Check: kubectl get kafka,pod -n ${TEAM_NAMESPACE} -l ${LABEL}" >&2
+  exit 1
 fi
