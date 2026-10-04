@@ -42,12 +42,15 @@ pull — pods don't share the node's loopback by default.
 ## Before you start: update config.env
 
 ```bash
+# one-time: create your own config.env from the template
 cp config.env.example config.env
 ```
-Then edit `config.env` and set: `INFRA_NAMESPACE`, `STORAGE_CLASS` (`standard`
-on Kind), `REGISTRY_VOLUME_SIZE` (default `5Gi`), `REGISTRY_NODE_PORT`
-(default `30500` — this exact value ends up in every image reference
-everywhere else in the platform, see the section above for why).
+Then edit `config.env` and set: `INFRA_NAMESPACE`, `STORAGE_CLASS`
+(`standard` on Kind), and `REGISTRY_VOLUME_SIZE` (default `5Gi`) — plus:
+
+| Variable | Example value | Notes |
+|---|---|---|
+| `REGISTRY_NODE_PORT` | `30500` | This exact value ends up in every image reference everywhere else in the platform — see the section above for why |
 
 ## Validation walkthrough
 
@@ -58,9 +61,11 @@ Distribution).
 
 ```bash
 source config.env
+# fill in the template with your config.env values and apply it
 envsubst '${INFRA_NAMESPACE} ${STORAGE_CLASS} ${REGISTRY_VOLUME_SIZE} ${REGISTRY_NODE_PORT}' \
   < registry/portable/manifests/registry.yaml | kubectl apply -f -
-kubectl rollout status deployment/registry -n infra --timeout=120s
+kubectl rollout status deployment/registry -n infra --timeout=120s   # wait until it's actually up
+kubectl get service registry -n infra   # confirm it's a NodePort on REGISTRY_NODE_PORT
 ```
 ```
 deployment "registry" successfully rolled out
@@ -80,9 +85,10 @@ INFO Pushing image to localhost:30500/event-generator:test2
 INFO Pushed localhost:30500/event-generator@sha256:755e0c484f3664e0d115ee0d649be607ecfbc276b46a8df02bb478a3b955423c
 ```
 ```bash
+# start a pod pulling the exact image reference that was just pushed
 kubectl run event-gen-from-registry -n infra --image=localhost:30500/event-generator:test2 --restart=Never --command -- sleep 60
-kubectl get pod event-gen-from-registry -n infra
-kubectl get pod event-gen-from-registry -n infra -o jsonpath='{.status.containerStatuses[0].imageID}'
+kubectl get pod event-gen-from-registry -n infra   # confirm it's Running
+kubectl get pod event-gen-from-registry -n infra -o jsonpath='{.status.containerStatuses[0].imageID}'   # the digest it actually pulled
 ```
 ```
 NAME                      READY   STATUS    RESTARTS   AGE

@@ -58,15 +58,19 @@ rather than silently rewriting what a student submitted.)
 ## Before you start: update config.env
 
 ```bash
+# one-time: create your own config.env from the template
 cp config.env.example config.env
 ```
-Then edit `config.env` and set: `INFRA_NAMESPACE` (where the queue
-controller runs), `SPARK_IMAGE` (default `apache/spark:3.5.3` — must match
-exactly what `team-spark-job-template.yaml` is filled in with, since the
-admission policy matches on this image reference), and
-`TEAM_NAMESPACE_PREFIX` (default `team`, must match `onboarding/cluster.env`'s
-value). `TEAM_ID` below is **not** a `config.env` variable — it's set
-per-command, once for each team namespace you're applying the quota to.
+Then edit `config.env` and set:
+
+| Variable | Example value | Notes |
+|---|---|---|
+| `INFRA_NAMESPACE` | `infra` | Where the queue controller runs |
+| `SPARK_IMAGE` | `apache/spark:3.5.3` | Must match exactly what `team-spark-job-template.yaml` is filled in with, since the admission policy matches on this image reference |
+| `TEAM_NAMESPACE_PREFIX` | `team` | Must match `onboarding/cluster.env`'s value |
+
+`TEAM_ID` below is **not** a `config.env` variable — it's set per-command,
+once for each team namespace you're applying the quota to.
 
 ## Validation walkthrough
 
@@ -76,16 +80,21 @@ Validated on: Kubernetes (Kind) v1.34.11.
 
 ```bash
 source config.env
+
+# per-team ResourceQuota — one per onboarded team namespace
 for id in 01 02; do
   TEAM_ID=$id envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID}' \
     < spark-queue/portable/manifests/team-jobs-resourcequota.yaml | kubectl apply -f -
 done
 
+# the controller script, as a ConfigMap the Deployment below mounts
 kubectl create configmap spark-queue-controller-script \
   --from-file=queue-controller.py=spark-queue/portable/scripts/queue-controller.py \
   -n infra --dry-run=client -o yaml | kubectl apply -f -
+# the controller itself (RBAC + Deployment)
 envsubst '${INFRA_NAMESPACE}' < spark-queue/portable/manifests/queue-controller-deployment.yaml | kubectl apply -f -
 
+# the enforcement policy
 envsubst '${SPARK_IMAGE}' < spark-queue/portable/manifests/spark-job-admission-policy.yaml | kubectl apply -f -
 ```
 ```
@@ -195,7 +204,21 @@ kubectl get job job-5 -n spark-test-5 -o jsonpath='{.spec.suspend}'
 **6. The issue's own literal wording — 5 job attempts across 2 team namespaces**
 
 ```bash
-# 3 attempts to team-01, 2 to team-02
+source config.env
+
+# 3 submission attempts to team-01 (only the first should succeed)
+for n in a b c; do
+  SPARK_JOB_NAME=team01-job-$n TEAM_NAMESPACE_PREFIX=team TEAM_ID=01 SPARK_COMMAND="sleep 30" \
+  envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${SPARK_JOB_NAME} ${SPARK_IMAGE} ${SPARK_COMMAND}' \
+  < spark-queue/portable/manifests/team-spark-job-template.yaml | kubectl apply -f -
+done
+
+# 2 submission attempts to team-02 (only the first should succeed)
+for n in a b; do
+  SPARK_JOB_NAME=team02-job-$n TEAM_NAMESPACE_PREFIX=team TEAM_ID=02 SPARK_COMMAND="sleep 30" \
+  envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${SPARK_JOB_NAME} ${SPARK_IMAGE} ${SPARK_COMMAND}' \
+  < spark-queue/portable/manifests/team-spark-job-template.yaml | kubectl apply -f -
+done
 ```
 ```
 job.batch/team01-job-a created

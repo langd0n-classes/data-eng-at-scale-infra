@@ -22,6 +22,7 @@ already uses): `cluster.env` holds one-time cluster setup values, `config.env`
 holds everything the Tekton pipeline needs at runtime.
 
 ```bash
+# one-time: create your own cluster.env from the template
 cp onboarding/cluster.env.example onboarding/cluster.env
 ```
 Only two values in `onboarding/cluster.env` typically need changing for
@@ -58,6 +59,7 @@ enforce NetworkPolicy. Calico's default IP pool (`192.168.0.0/16`) must
 match the cluster's pod subnet, so it's set explicitly:
 
 ```bash
+# create the Kind cluster with its default CNI disabled
 kind create cluster --name portable-fall-platform --image kindest/node:v1.34.11 --config - <<'EOF'
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
@@ -68,11 +70,17 @@ nodes:
   - role: control-plane
 EOF
 
+# install the Calico operator
 kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/tigera-operator.yaml
+# wait for its CRDs to exist before using them
 kubectl wait --for=condition=Established crd/installations.operator.tigera.io --timeout=60s
+# apply Calico's actual configuration (IP pool, etc.)
 curl -sL https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/custom-resources.yaml | kubectl create -f -
+# wait for the node and all Calico pods to come up
 kubectl wait --for=condition=Ready node --all --timeout=180s
 kubectl wait --for=condition=Ready pods --all -n calico-system --timeout=180s
+# confirm every Calico component is actually healthy, not just "a pod exists"
+kubectl get tigerastatus
 ```
 ```
 NAME        AVAILABLE   PROGRESSING   DEGRADED
@@ -84,14 +92,16 @@ tiers       True        False         False
 whisker     True        False         False
 ```
 
-**2. Onboard two team namespaces + infra**
+**2. Onboard your team namespaces + infra**
 
 (Assumes `onboarding/cluster.env` is already set up — see "Note on
-config.env" near the top of this file.)
+config.env" near the top of this file. The example below uses
+`NUM_TEAMS=2`; set it to however many teams you actually want and the same
+two commands create that many `team-NN` namespaces instead.)
 
 ```bash
-bash onboarding/portable/apply-onboarding.sh --dry-run   # verify first
-bash onboarding/portable/apply-onboarding.sh
+bash onboarding/portable/apply-onboarding.sh --dry-run   # preview commands, no changes
+bash onboarding/portable/apply-onboarding.sh             # actually create everything
 ```
 ```
 Namespaces created:
@@ -118,10 +128,13 @@ networkpolicy.networking.k8s.io/team-isolation
 **3. Test cross-team isolation, for real**
 
 ```bash
+# a small web service in each team namespace, to test reachability against
 kubectl run web-01 --image=nginx:alpine -n team-01 --labels=app=web --port=80 --restart=Never
 kubectl expose pod web-01 -n team-01 --port=80 --name=web-01
 kubectl run web-02 --image=nginx:alpine -n team-02 --labels=app=web --port=80 --restart=Never
 kubectl expose pod web-02 -n team-02 --port=80 --name=web-02
+
+# one client pod per namespace, to run the actual reachability tests from
 kubectl run test-01 --image=busybox:stable -n team-01 --restart=Never --command -- sleep 3600
 kubectl run test-02 --image=busybox:stable -n team-02 --restart=Never --command -- sleep 3600
 kubectl run test-infra --image=busybox:stable -n infra --restart=Never --command -- sleep 3600

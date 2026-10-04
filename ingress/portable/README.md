@@ -29,8 +29,8 @@ etc.
 **On Kind specifically**, a `type: LoadBalancer` Service never gets an
 external IP on its own — Kind has no cloud provider. This package installs
 `cloud-provider-kind` to simulate one locally. That piece is Kind-only /
-local-only and is **not** part of the eventual OVH-cloud path — a real cloud
-already provides its own LoadBalancer implementation, so
+local-only and is **not** part of any real-cloud deployment path — a real
+cloud already provides its own LoadBalancer implementation, so
 `install-cloud-provider-kind.sh` would simply not be run there.
 
 ## Validation walkthrough
