@@ -19,6 +19,14 @@ Plain `kubectl` + one `ValidatingAdmissionPolicy` (GA in Kubernetes since
 1.30, no webhook server to run or manage). Runs on any conformant
 Kubernetes cluster: Kind, k3s, EKS, GKE, AKS, a bare-metal cluster, etc.
 
+## Prerequisites
+
+- **Team namespaces onboarded** — `onboarding/portable/README.md` (needed
+  both for the per-team `ResourceQuota` below, and because the queue
+  controller itself deploys into the `infra` namespace, which onboarding
+  creates)
+- **`config.env` created and filled in** — see below
+
 ## How the two limits are actually enforced
 
 **"One active job per team"** — a plain namespace-scoped `ResourceQuota`

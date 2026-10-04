@@ -17,6 +17,13 @@ same open-source project Docker Hub, Quay, and GHCR are all built on top
 of. Runs on any conformant Kubernetes cluster: Kind, k3s, EKS, GKE, AKS, a
 bare-metal cluster, etc.
 
+## Prerequisites
+
+- **Team namespaces onboarded** — `onboarding/portable/README.md` (needed
+  because this Deployment targets the `infra` namespace, which onboarding
+  creates — this doesn't work on a cluster that hasn't been onboarded yet)
+- **`config.env` created and filled in** — see below
+
 ## A non-obvious fact this design depends on
 
 Image **pushes** happen from inside a pod (a Tekton Task's build step),

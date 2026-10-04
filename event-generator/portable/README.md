@@ -19,6 +19,18 @@ Plain `kubectl`, a pre-built image pulled from an in-cluster registry
 on any conformant Kubernetes cluster: Kind, k3s, EKS, GKE, AKS, a
 bare-metal cluster, etc.
 
+## Prerequisites
+
+- **Team namespaces onboarded** — `onboarding/portable/README.md` (needed
+  because this Deployment targets the `infra` namespace, which onboarding
+  creates)
+- **Kafka deployed for each team** — `kafka/portable/README.md` (needed
+  for `TEAM_BOOTSTRAP_SERVERS` below — there's nothing to produce events
+  to otherwise)
+- **An image already pushed to the registry** — see "Prerequisite: an
+  image in the registry" below for the two ways to get there
+- **`config.env` created and filled in** — see below
+
 ## Before you start: update config.env
 
 ```bash
