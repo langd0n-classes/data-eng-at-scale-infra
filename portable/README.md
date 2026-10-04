@@ -13,6 +13,19 @@ Covered elsewhere: `onboarding/portable/README.md`, `kafka/portable/README.md`,
 
 ## Before you start
 
+A cluster must already exist and be the current `kubectl` context —
+`install-prerequisites.sh` doesn't create one.
+
+### On Kind
+
+The cluster must be created with a NetworkPolicy-enforcing CNI (Calico)
+already installed, not just Kind's own default — see
+`onboarding/portable/README.md`'s walkthrough step 1 for the exact
+commands. Skipping that doesn't make anything fail outright, it just
+means onboarding's own team isolation silently isn't enforced.
+
+### Then, on any cluster
+
 ```bash
 cp config.env.example config.env
 cp onboarding/cluster.env.example onboarding/cluster.env
