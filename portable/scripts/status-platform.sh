@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pipeline/portable/scripts/status-platform.sh
+# portable/scripts/status-platform.sh
 #
 # Read-only status report for the whole portable platform: every
 # cluster-wide prerequisite, the registry, onboarding, the Spark queue,
@@ -11,7 +11,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 if [[ -f "${REPO_ROOT}/config.env" ]]; then
   # shellcheck disable=SC1090
