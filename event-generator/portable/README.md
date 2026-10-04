@@ -22,17 +22,53 @@ bare-metal cluster, etc.
 ## Before you start: update config.env
 
 ```bash
+# one-time: create your own config.env from the template
 cp config.env.example config.env
 ```
 Then edit `config.env` and set: `INFRA_NAMESPACE`, `EVENT_GENERATOR_NAME`,
-`EVENT_GENERATOR_IMAGE` (must be the exact reference the build Task in
-`pipeline/portable/` pushed to — see `registry/portable/README.md`),
-`EVENT_RATE_PER_SEC`, `TOPIC_PREFIX`/`TOPIC_SUFFIX`, `REGIONS`, and
-`TEAM_BOOTSTRAP_SERVERS` (one `team_id=bootstrap_server` entry per team
-you've deployed Kafka for — see `kafka/portable/README.md`). Leave `TOPIC`
-and `KAFKA_BOOTSTRAP_SERVERS` commented out/empty — those are for
-single-cluster mode only, not the multi-team mode used throughout this
-validation.
+`EVENT_RATE_PER_SEC`, `TOPIC_PREFIX`, `TOPIC_SUFFIX`, and `REGIONS` — plus
+these, which need a specific value, not just any value:
+
+| Variable | Notes |
+|---|---|
+| `EVENT_GENERATOR_IMAGE` | Must already exist in the registry under this exact reference — either pushed by the full pipeline (`pipeline/portable/`), or by `build-and-push.sh` below |
+| `TEAM_BOOTSTRAP_SERVERS` | One `team_id=bootstrap_server` entry per team you've deployed Kafka for — see `kafka/portable/README.md` |
+| `TOPIC`, `KAFKA_BOOTSTRAP_SERVERS` | Leave commented out/empty — single-cluster mode only, not the multi-team mode used throughout this validation |
+
+## Prerequisite: an image in the registry
+
+This Deployment only ever *runs* an already-built image — it never builds
+one itself. `EVENT_GENERATOR_IMAGE` must already be pushed to the registry
+(`registry/portable/`) before step 1 below will work, either via the full
+pipeline (`pipeline/portable/`), or standalone:
+
+```bash
+source config.env
+bash event-generator/portable/build-and-push.sh git                    # pick one: from the pushed git branch
+# OR
+bash event-generator/portable/build-and-push.sh local event-generator  # pick one: from your local checkout
+```
+```
+INFO Pushing image to localhost:30500/event-generator:latest
+INFO Pushed localhost:30500/event-generator@sha256:1a3c5d60e157070bee46b7b9f07413b6834bc2379f49e643f3a5d8b21dc04e44
+```
+
+Runs kaniko as a plain Pod — no Docker daemon needed, works the same on a
+real cluster as on Kind. Both modes build from a small, short-lived 1Gi PVC
+(`git`: shallow+sparse clone; `local`: `kubectl cp`), never the whole repo,
+and the script deletes it when done.
+
+**Idempotent:** the script hashes only `src/` + `Dockerfile` (not docs) and
+compares it to a `source-hash` annotation already on the Deployment.
+Unchanged — it skips the build entirely. Changed — it builds, pushes,
+stamps the new hash, and runs `kubectl rollout restart` so the change
+actually goes live (plain `kubectl apply` alone won't — the image tag never
+changes, so nothing tells Kubernetes to restart the pod). This needs
+`imagePullPolicy: Always` on the Deployment (already set).
+
+The real pipeline (`pipeline/portable/`) does the identical check via
+`tasks/check-source-changed-task.yaml`, so a pipeline run that didn't touch
+the event generator skips rebuilding/redeploying it too.
 
 ## Validation walkthrough
 
@@ -56,8 +92,8 @@ export TEAM_BOOTSTRAP_SERVERS="team01=kafka-team01-kafka-bootstrap.team-01.svc.c
 export KAFKA_BOOTSTRAP_SERVERS=""
 export EVENT_GENERATOR_IMAGE="localhost:30500/event-generator:test2"
 
-envsubst < event-generator/portable/k8s/configmap.yaml | kubectl apply -f -
-envsubst < event-generator/portable/k8s/deployment.yaml | kubectl apply -f -
+envsubst < event-generator/portable/k8s/configmap.yaml | kubectl apply -f -   # team bootstrap servers, topic names, etc.
+envsubst < event-generator/portable/k8s/deployment.yaml | kubectl apply -f -  # the actual Deployment + Service
 ```
 ```
 configmap/event-generator-config created
@@ -81,7 +117,9 @@ Serving on http://0.0.0.0:8000
 **3. Confirm the team's Kafka actually receives real events**
 
 ```bash
+# a disposable pod with Kafka's own CLI tools built in
 kubectl run kafka-consumer-test -n team-01 --image=confluentinc/cp-kafka:7.5.0 --restart=Never --command -- sleep 300
+# read directly from the team's own topic
 kubectl exec kafka-consumer-test -n team-01 -- kafka-console-consumer \
   --bootstrap-server kafka-team01-kafka-bootstrap.team-01.svc.cluster.local:9092 \
   --topic events.team01.raw --from-beginning --max-messages 3 --timeout-ms 20000
@@ -100,6 +138,7 @@ kubectl delete pod kafka-consumer-test -n team-01 --ignore-not-found
 ## Cleanup
 
 ```bash
-kubectl delete -f event-generator/portable/k8s/deployment.yaml --ignore-not-found
-kubectl delete -f event-generator/portable/k8s/configmap.yaml --ignore-not-found
+source config.env
+envsubst < event-generator/portable/k8s/deployment.yaml | kubectl delete -f - --ignore-not-found
+envsubst < event-generator/portable/k8s/configmap.yaml | kubectl delete -f - --ignore-not-found
 ```

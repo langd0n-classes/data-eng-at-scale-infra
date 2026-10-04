@@ -37,7 +37,12 @@ spec:
       containers:
         - name: generator
           image: ${EVENT_GENERATOR_IMAGE}
-          imagePullPolicy: IfNotPresent
+          # Always, not IfNotPresent: the image tag is always :latest, so the
+          # node would otherwise reuse whatever it last pulled under that
+          # exact name/tag and silently skip newer pushes to the same tag —
+          # confirmed directly: a rebuilt+repushed image was not re-pulled
+          # after a rollout restart until this was changed to Always.
+          imagePullPolicy: Always
           envFrom:
             - configMapRef:
                 name: ${EVENT_GENERATOR_NAME}-config
