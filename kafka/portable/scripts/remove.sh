@@ -74,7 +74,22 @@ echo "  Deleting PodDisruptionBudget..."
 kubectl delete pdb "kafka-${TEAM_NAME}-pdb" -n "${TEAM_NAMESPACE}" --ignore-not-found
 
 echo "  Deleting Strimzi PVCs..."
-kubectl delete pvc -l "strimzi.io/cluster=kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" --ignore-not-found
+# --wait=false: a PVC held by a finalizer would otherwise block here forever,
+# before the 60s check below can report it (same issue --wait=true's default
+# hangs on in reset-data.sh's Phase 3).
+kubectl delete pvc -l "strimzi.io/cluster=kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" --ignore-not-found --wait=false
+pvc_deadline=$(( $(date +%s) + 60 ))
+while (( $(date +%s) < pvc_deadline )); do
+  if [ -z "$(kubectl get pvc -n "${TEAM_NAMESPACE}" -l "strimzi.io/cluster=kafka-${TEAM_NAME}" --no-headers 2>/dev/null)" ]; then
+    break
+  fi
+  sleep 3
+done
+if [ -n "$(kubectl get pvc -n "${TEAM_NAMESPACE}" -l "strimzi.io/cluster=kafka-${TEAM_NAME}" --no-headers 2>/dev/null)" ]; then
+  echo "ERROR: PVCs for kafka-${TEAM_NAME} still exist after 60s." >&2
+  echo "Check: kubectl get pvc -n ${TEAM_NAMESPACE} -l strimzi.io/cluster=kafka-${TEAM_NAME}" >&2
+  exit 1
+fi
 
 echo ""
 echo "=========================================="
