@@ -176,10 +176,31 @@ spec:
         - name: output
           workspace: source
 
+    - name: check-event-generator-changed
+      taskRef:
+        name: check-source-changed
+      runAfter: ["clone"]
+      params:
+        - name: DEPLOYMENT_NAME
+          value: $(params.EVENT_GENERATOR_NAME)
+        - name: NAMESPACE
+          value: $(params.INFRA_NAMESPACE)
+        - name: CONTEXT
+          value: $(params.EVENT_GENERATOR_CONTEXT)
+        - name: CONFIG_VALUES
+          value: "$(params.EVENT_RATE_PER_SEC)|$(params.TOPIC_PREFIX)|$(params.TOPIC_SUFFIX)|$(params.TOPIC)|$(params.REGIONS)|$(params.TEAM_BOOTSTRAP_SERVERS)|$(params.KAFKA_BOOTSTRAP_SERVERS)"
+      workspaces:
+        - name: source
+          workspace: source
+
     - name: build-event-generator-image
       taskRef:
         name: build-push-image
-      runAfter: ["clone"]
+      runAfter: ["check-event-generator-changed"]
+      when:
+        - input: $(tasks.check-event-generator-changed.results.changed)
+          operator: in
+          values: ["true"]
       params:
         - name: IMAGE
           value: $(params.EVENT_GENERATOR_IMAGE)
@@ -510,6 +531,10 @@ spec:
       taskRef:
         name: deploy-event-generator
       runAfter: ["build-event-generator-image", "deploy-kafka-team1", "deploy-kafka-team2", "deploy-kafka-team3", "deploy-kafka-team4", "deploy-kafka-team5", "deploy-kafka-team6", "deploy-kafka-team7", "deploy-kafka-team8", "deploy-kafka-team9", "deploy-kafka-team10", "deploy-kafka-team11", "deploy-kafka-team12", "deploy-kafka-team13", "deploy-kafka-team14", "deploy-kafka-team15"]
+      when:
+        - input: $(tasks.check-event-generator-changed.results.changed)
+          operator: in
+          values: ["true"]
       params:
         - name: INFRA_NAMESPACE
           value: $(params.INFRA_NAMESPACE)
@@ -517,6 +542,8 @@ spec:
           value: $(params.EVENT_GENERATOR_NAME)
         - name: EVENT_GENERATOR_IMAGE
           value: $(params.EVENT_GENERATOR_IMAGE)
+        - name: SOURCE_HASH
+          value: $(tasks.check-event-generator-changed.results.hash)
         - name: EVENT_RATE_PER_SEC
           value: $(params.EVENT_RATE_PER_SEC)
         - name: TOPIC_PREFIX

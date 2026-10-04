@@ -6,6 +6,15 @@
 # team's bootstrap address — same ordering the OpenShift pipeline already
 # uses.
 #
+# Only ever runs when check-source-changed-task.yaml's `changed` result is
+# "true" (see the pipeline's `when` guard) — so whenever this Task does
+# run, it always stamps the new SOURCE_HASH on the Deployment and forces a
+# rollout restart. This is required: the image tag is always the same
+# string (`:latest`), so `kubectl apply` alone sees no text difference and
+# never restarts the pod on its own, even though the registry content
+# changed — confirmed directly during event-generator/portable's own
+# standalone testing.
+#
 # Defined once in the infra namespace (shared, per this repo's own
 # namespace convention) and referenced from the deploy-all-teams pipeline
 # via Tekton's `cluster` resolver.
@@ -30,6 +39,9 @@ spec:
       type: string
     - name: EVENT_GENERATOR_IMAGE
       description: Full image reference the build-push-image Task pushed to
+      type: string
+    - name: SOURCE_HASH
+      description: check-source-changed Task's computed hash, stamped on the Deployment
       type: string
     - name: EVENT_RATE_PER_SEC
       type: string
@@ -62,6 +74,8 @@ spec:
           value: $(params.EVENT_GENERATOR_NAME)
         - name: EVENT_GENERATOR_IMAGE
           value: $(params.EVENT_GENERATOR_IMAGE)
+        - name: SOURCE_HASH
+          value: $(params.SOURCE_HASH)
         - name: EVENT_RATE_PER_SEC
           value: $(params.EVENT_RATE_PER_SEC)
         - name: TOPIC_PREFIX
@@ -81,4 +95,6 @@ spec:
         set -euo pipefail
         envsubst < event-generator/portable/k8s/configmap.yaml | kubectl apply -f -
         envsubst < event-generator/portable/k8s/deployment.yaml | kubectl apply -f -
+        kubectl annotate deployment/${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE} "source-hash=${SOURCE_HASH}" --overwrite
+        kubectl rollout restart deployment/${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE}
         kubectl rollout status deployment/${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE} --timeout=120s

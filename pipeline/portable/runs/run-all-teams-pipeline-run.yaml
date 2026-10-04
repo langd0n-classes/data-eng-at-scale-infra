@@ -1,0 +1,121 @@
+# pipeline/portable/runs/run-all-teams-pipeline-run.yaml
+#
+# PipelineRun template for deploy-all-teams-pipeline.yaml — the portable
+# equivalent of pipeline/runs/run-all-teams.yaml. All 15 team slots are
+# always present; leave a team's TEAMn_NAME blank or "skip" in config.env
+# to bypass it (the pipeline's own `when` guards handle the rest).
+#
+# Usage:
+#   source config.env && envsubst < pipeline/portable/runs/run-all-teams-pipeline-run.yaml | kubectl create -f -
+#
+# `generateName` means every run gets its own unique name automatically —
+# no manual suffix-bumping between runs needed.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: deploy-all-teams-
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: data-eng-infra
+spec:
+  pipelineRef:
+    name: deploy-all-teams
+  taskRunTemplate:
+    serviceAccountName: pipeline
+    podTemplate:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+  params:
+    - name: GIT_URL
+      value: "${GIT_REPO_URL}"
+    - name: GIT_REVISION
+      value: "${GIT_BRANCH}"
+    - name: INFRA_NAMESPACE
+      value: "${INFRA_NAMESPACE}"
+    - name: STORAGE_CLASS
+      value: "${STORAGE_CLASS}"
+    - name: VOLUME_SIZE
+      value: "${VOLUME_SIZE}"
+    - name: TEAM1_NAME
+      value: "${TEAM1_NAME}"
+    - name: TEAM1_NAMESPACE
+      value: "${TEAM1_NAMESPACE}"
+    - name: TEAM2_NAME
+      value: "${TEAM2_NAME}"
+    - name: TEAM2_NAMESPACE
+      value: "${TEAM2_NAMESPACE}"
+    - name: TEAM3_NAME
+      value: "${TEAM3_NAME}"
+    - name: TEAM3_NAMESPACE
+      value: "${TEAM3_NAMESPACE}"
+    - name: TEAM4_NAME
+      value: "${TEAM4_NAME}"
+    - name: TEAM4_NAMESPACE
+      value: "${TEAM4_NAMESPACE}"
+    - name: TEAM5_NAME
+      value: "${TEAM5_NAME}"
+    - name: TEAM5_NAMESPACE
+      value: "${TEAM5_NAMESPACE}"
+    - name: TEAM6_NAME
+      value: "${TEAM6_NAME}"
+    - name: TEAM6_NAMESPACE
+      value: "${TEAM6_NAMESPACE}"
+    - name: TEAM7_NAME
+      value: "${TEAM7_NAME}"
+    - name: TEAM7_NAMESPACE
+      value: "${TEAM7_NAMESPACE}"
+    - name: TEAM8_NAME
+      value: "${TEAM8_NAME}"
+    - name: TEAM8_NAMESPACE
+      value: "${TEAM8_NAMESPACE}"
+    - name: TEAM9_NAME
+      value: "${TEAM9_NAME}"
+    - name: TEAM9_NAMESPACE
+      value: "${TEAM9_NAMESPACE}"
+    - name: TEAM10_NAME
+      value: "${TEAM10_NAME}"
+    - name: TEAM10_NAMESPACE
+      value: "${TEAM10_NAMESPACE}"
+    - name: TEAM11_NAME
+      value: "${TEAM11_NAME}"
+    - name: TEAM11_NAMESPACE
+      value: "${TEAM11_NAMESPACE}"
+    - name: TEAM12_NAME
+      value: "${TEAM12_NAME}"
+    - name: TEAM12_NAMESPACE
+      value: "${TEAM12_NAMESPACE}"
+    - name: TEAM13_NAME
+      value: "${TEAM13_NAME}"
+    - name: TEAM13_NAMESPACE
+      value: "${TEAM13_NAMESPACE}"
+    - name: TEAM14_NAME
+      value: "${TEAM14_NAME}"
+    - name: TEAM14_NAMESPACE
+      value: "${TEAM14_NAMESPACE}"
+    - name: TEAM15_NAME
+      value: "${TEAM15_NAME}"
+    - name: TEAM15_NAMESPACE
+      value: "${TEAM15_NAMESPACE}"
+    - name: EVENT_GENERATOR_NAME
+      value: "${EVENT_GENERATOR_NAME}"
+    - name: EVENT_GENERATOR_IMAGE
+      value: "${EVENT_GENERATOR_IMAGE}"
+    - name: EVENT_RATE_PER_SEC
+      value: "${EVENT_RATE_PER_SEC}"
+    - name: TOPIC_PREFIX
+      value: "${TOPIC_PREFIX}"
+    - name: TOPIC_SUFFIX
+      value: "${TOPIC_SUFFIX}"
+    - name: REGIONS
+      value: "${REGIONS}"
+    - name: TEAM_BOOTSTRAP_SERVERS
+      value: "${TEAM_BOOTSTRAP_SERVERS}"
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          storageClassName: ${STORAGE_CLASS}
+          resources:
+            requests:
+              storage: ${TEKTON_WORKSPACE_SIZE}
