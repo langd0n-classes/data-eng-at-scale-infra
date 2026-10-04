@@ -6,14 +6,18 @@
 # to bypass it (the pipeline's own `when` guards handle the rest).
 #
 # Usage:
-#   source config.env && envsubst < pipeline/portable/runs/run-all-teams-pipeline-run.yaml | kubectl create -f -
+#   source config.env
+#   export RUN_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+#   envsubst < pipeline/portable/runs/run-all-teams-pipeline-run.yaml | kubectl create -f -
 #
-# `generateName` means every run gets its own unique name automatically —
-# no manual suffix-bumping between runs needed.
+# RUN_TIMESTAMP, not Tekton's own generateName random suffix, matches
+# pipeline/setup.sh's own PipelineRun naming exactly (date +%Y%m%d-%H%M%S)
+# — sortable by name, and a human can tell when a run was submitted just
+# by reading its name, not just by checking its creationTimestamp.
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: deploy-all-teams-
+  name: deploy-all-teams-run-${RUN_TIMESTAMP}
   namespace: ${INFRA_NAMESPACE}
   labels:
     app: data-eng-infra

@@ -65,6 +65,7 @@ kubectl apply -f "${REPO_ROOT}/pipeline/portable/pipelines/deploy-all-teams-pipe
 
 echo ""
 info "Step 3 — Submitting the deploy-all-teams PipelineRun..."
+export RUN_TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 envsubst < "${REPO_ROOT}/pipeline/portable/runs/run-all-teams-pipeline-run.yaml" | kubectl create -f -
 
 echo ""

@@ -55,6 +55,7 @@ team, or retry after a partial failure.
 
 ```bash
 source config.env
+export RUN_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 envsubst < pipeline/portable/runs/run-all-teams-pipeline-run.yaml | kubectl create -f -
 ```
 
@@ -150,5 +151,5 @@ kafka-team03   True   4.2.0   4.2-IV0
 event-generator   1/1   1   1   43s
 
 ── Latest PipelineRun ──
-deploy-all-teams-zrj4g   True   Completed   20s   1s
+deploy-all-teams-run-20261004-180506   True   Completed   20s   1s
 ```

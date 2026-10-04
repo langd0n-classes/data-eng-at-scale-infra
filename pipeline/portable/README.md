@@ -262,13 +262,17 @@ the definition; nothing runs until a `PipelineRun` actually submits it.
 `runs/run-all-teams-pipeline-run.yaml` always carries all 15 team slots —
 leave a team's `TEAMn_NAME` blank or `"skip"` in `config.env` to bypass it
 (same `envsubst`-templated pattern as `pipeline/runs/run-all-teams.yaml`
-on the OpenShift path):
+on the OpenShift path). `RUN_TIMESTAMP` names the run the same way
+`pipeline/setup.sh` already does (`date +%Y%m%d-%H%M%S`, not Tekton's own
+random `generateName` suffix) — sortable by name, and readable at a
+glance, not just from `creationTimestamp`:
 
 ```bash
+export RUN_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 envsubst < pipeline/portable/runs/run-all-teams-pipeline-run.yaml | kubectl create -f -
 ```
 ```
-pipelinerun.tekton.dev/deploy-all-teams-cbdcn created
+pipelinerun.tekton.dev/deploy-all-teams-run-20261004-180506 created
 ```
 
 **4. Confirm it succeeded:**
@@ -277,8 +281,8 @@ pipelinerun.tekton.dev/deploy-all-teams-cbdcn created
 kubectl get pipelinerun -n infra
 ```
 ```
-NAME                   SUCCEEDED   REASON      STARTTIME   COMPLETIONTIME
-deploy-all-teams-run   True        Succeeded   40s         0s
+NAME                                    SUCCEEDED   REASON      STARTTIME   COMPLETIONTIME
+deploy-all-teams-run-20261004-180506   True        Succeeded   40s         0s
 ```
 
 **5. Confirm both teams actually work:**
