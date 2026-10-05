@@ -17,7 +17,7 @@
 # cluster-wide slot forever. Together these are what "abandoned jobs
 # release their slots" means in practice.
 #
-# Replace `${SPARK_COMMAND}` with your actual spark-submit invocation (or
+# Replace SPARK_COMMAND with your actual spark-submit invocation (or
 # whatever your job actually runs) before applying.
 #
 # Usage:
