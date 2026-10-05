@@ -8,11 +8,19 @@ Infra-maintainer-built. Students only ever fill in and submit
 `manifests/team-spark-job-template.yaml` — they never touch the
 ResourceQuota, the admission policy, or the queue controller.
 
-> **A Job is only accepted if it has both `spec.suspend: true` and the
-> label `queue: spark`.** The template already sets both — a student
-> writing their own Job YAML from scratch must include them too, or it
-> gets rejected. Tell students this explicitly if they ever ask why a
-> custom Job of theirs was denied.
+> **A Job using the `SPARK_IMAGE` configured in `config.env` is only
+> accepted if it also has `spec.suspend: true` and the label
+> `queue: spark`.** All three are required together — the template
+> already sets them. A student writing their own Job YAML from scratch
+> must include all three too, or it gets rejected (missing `suspend`/the
+> label) or never runs (image mismatch, silently excluded from the
+> queue). Tell students this explicitly if they ever ask why a custom Job
+> of theirs was denied or never started.
+
+A student submitting any other (non-Spark) Job doesn't need any of the
+three — but the per-team `ResourceQuota` below still caps them at one Job
+object at a time regardless, so they can't submit it while a Spark job is
+still sitting in their namespace, queued or not.
 
 ## Compatibility
 
@@ -39,15 +47,23 @@ finishes.
 **Four active across the cluster** — a namespace-scoped `ResourceQuota`
 can't express a cluster-wide limit. A small Python controller
 (`scripts/queue-controller.py`) polls every 5 seconds, counts Jobs
-labeled `queue: spark` that are running or pending, and admits queued
-ones (flips `spec.suspend` to `false`) oldest-first, up to 4 at a time.
+labeled `queue: spark` that also use the configured `SPARK_IMAGE`
+repository, and admits queued ones (flips `spec.suspend` to `false`)
+oldest-first, up to 4 at a time. The image check matters on its own: the
+label alone doesn't prove a Job is actually a Spark job, so without it any
+Job could carry `queue: spark` and consume one of the 4 slots this queue
+exists specifically to cap for Spark jobs. A Job with the label but a
+different image is logged and simply ignored — never counted, never
+admitted by this controller.
 
 **Enforcement, not convention** — a student could skip the template and
 submit a raw Job with no `queue: spark` label and no `suspend: true`,
 bypassing the cluster-wide cap (the per-team `ResourceQuota` still
-catches it either way). A `ValidatingAdmissionPolicy`, matched only to
-Jobs using the pinned Spark image, rejects any such Job outright unless
-it already has `suspend: true` and the `queue: spark` label.
+catches it either way). A `ValidatingAdmissionPolicy`, matched to any Job
+using `SPARK_IMAGE`'s repository (any tag, not just the exact one
+configured — a version bump shouldn't silently exempt a Job from the
+queue), rejects any such Job outright unless it already has
+`suspend: true` and the `queue: spark` label.
 
 ## Before you start: update config.env
 
@@ -85,11 +101,16 @@ done
 kubectl create configmap spark-queue-controller-script \
   --from-file=queue-controller.py=spark-queue/portable/scripts/queue-controller.py \
   -n infra --dry-run=client -o yaml | kubectl apply -f -
-# the controller itself (RBAC + Deployment)
-envsubst '${INFRA_NAMESPACE}' < spark-queue/portable/manifests/queue-controller-deployment.yaml | kubectl apply -f -
+# the controller itself (RBAC + Deployment) — also reads SPARK_IMAGE_REPO
+# so it only counts Jobs that actually use the configured Spark image, not
+# anything that merely carries the queue=spark label
+export SPARK_IMAGE_REPO="${SPARK_IMAGE%:*}"
+envsubst '${INFRA_NAMESPACE} ${SPARK_IMAGE_REPO}' < spark-queue/portable/manifests/queue-controller-deployment.yaml | kubectl apply -f -
 
-# the enforcement policy
-envsubst '${SPARK_IMAGE}' < spark-queue/portable/manifests/spark-job-admission-policy.yaml | kubectl apply -f -
+# the enforcement policy — matches on SPARK_IMAGE's repository (tag
+# stripped), so any tag of the configured image is caught, not just the
+# exact one
+envsubst '${SPARK_IMAGE_REPO}' < spark-queue/portable/manifests/spark-job-admission-policy.yaml | kubectl apply -f -
 ```
 ```
 deployment.apps/spark-queue-controller condition met
@@ -232,6 +253,7 @@ every other attempt.
 | `SPARK_JOB_NAME`, `SPARK_COMMAND` | *(required)* | Set per submission by the student |
 | `MAX_ACTIVE_JOBS` (controller env) | `4` | Cluster-wide cap |
 | `POLL_INTERVAL_SECONDS` (controller env) | `5` | Reconcile loop interval |
+| `SPARK_IMAGE_REPO` (controller env) | *(required)* | `SPARK_IMAGE` with its tag stripped — same value the admission policy matches on; a labeled Job using any other image is ignored |
 
 ## Cleanup
 

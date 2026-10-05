@@ -49,11 +49,18 @@ Dashboard's Ingress). Idempotent — safe to re-run.
 
 > Students submit Spark jobs using
 > `spark-queue/portable/manifests/team-spark-job-template.yaml` — it
-> already sets the two fields the admission policy requires
-> (`spec.suspend: true` and the `queue: spark` label). A student writing
-> their own Job YAML must include both, or the API server rejects it
-> outright. See `spark-queue/portable/README.md` for the full enforcement
-> model.
+> already sets the three things required together for a Spark job to be
+> accepted and actually run: an image matching `SPARK_IMAGE` from
+> `config.env`, `spec.suspend: true`, and the `queue: spark` label. A
+> student writing their own Job YAML must include all three, or the
+> job either gets rejected outright (missing `suspend`/the label) or
+> never runs (image mismatch, silently excluded from the queue). See
+> `spark-queue/portable/README.md` for the full enforcement model.
+
+A student submitting any other (non-Spark) Job doesn't need any of the
+three — but the per-team `ResourceQuota` still caps them at one Job object
+at a time regardless, so they can't submit it while a Spark job is still
+sitting in their namespace, queued or not.
 
 ```bash
 bash portable/scripts/install-prerequisites.sh
