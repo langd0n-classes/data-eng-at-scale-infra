@@ -95,8 +95,10 @@ info "Step 5 — Spark queue controller + admission policy..."
 kubectl create configmap spark-queue-controller-script \
   --from-file=queue-controller.py="${REPO_ROOT}/spark-queue/portable/scripts/queue-controller.py" \
   -n "${INFRA_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
-envsubst '${INFRA_NAMESPACE}' < "${REPO_ROOT}/spark-queue/portable/manifests/queue-controller-deployment.yaml" | kubectl apply -f -
-envsubst '${SPARK_IMAGE}' < "${REPO_ROOT}/spark-queue/portable/manifests/spark-job-admission-policy.yaml" | kubectl apply -f -
+SPARK_IMAGE_REPO="${SPARK_IMAGE%:*}"
+export SPARK_IMAGE_REPO
+envsubst '${INFRA_NAMESPACE} ${SPARK_IMAGE_REPO}' < "${REPO_ROOT}/spark-queue/portable/manifests/queue-controller-deployment.yaml" | kubectl apply -f -
+envsubst '${SPARK_IMAGE_REPO}' < "${REPO_ROOT}/spark-queue/portable/manifests/spark-job-admission-policy.yaml" | kubectl apply -f -
 
 echo ""
 info "Step 6 — Tekton Dashboard Ingress..."

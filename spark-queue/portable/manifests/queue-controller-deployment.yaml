@@ -18,10 +18,13 @@
 #   kubectl create configmap spark-queue-controller-script \
 #     --from-file=queue-controller.py=spark-queue/portable/scripts/queue-controller.py \
 #     -n infra --dry-run=client -o yaml | kubectl apply -f -
-#   envsubst '${INFRA_NAMESPACE}' \
+#   SPARK_IMAGE_REPO="${SPARK_IMAGE%:*}" envsubst '${INFRA_NAMESPACE} ${SPARK_IMAGE_REPO}' \
 #     < spark-queue/portable/manifests/queue-controller-deployment.yaml | kubectl apply -f -
 #
-# Required vars: INFRA_NAMESPACE
+# Required vars: INFRA_NAMESPACE, SPARK_IMAGE_REPO (SPARK_IMAGE with its
+# tag stripped — same value the admission policy itself matches on, so the
+# controller only counts Jobs that are actually Spark jobs, not anything
+# that merely carries the queue=spark label)
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -81,6 +84,9 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - "pip install --no-cache-dir kubernetes==31.0.0 && python /app/queue-controller.py"
+          env:
+            - name: SPARK_IMAGE_REPO
+              value: "${SPARK_IMAGE_REPO}"
           volumeMounts:
             - name: script
               mountPath: /app
