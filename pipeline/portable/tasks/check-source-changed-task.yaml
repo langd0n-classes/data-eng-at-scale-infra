@@ -55,16 +55,33 @@ spec:
   steps:
     - name: check
       image: ${KUBECTL_CLI_IMAGE}
+      workingDir: $(workspaces.source.path)
+      # Params passed as env vars, not substituted directly into the script
+      # text — Tekton's $(params.X) is a literal text replacement done
+      # before bash ever parses the script, so a value containing a
+      # backtick, $(), or an unescaped quote could break out of string
+      # context or inject a command. CONFIG_VALUES in particular is built
+      # from config.env values (TEAM_BOOTSTRAP_SERVERS, REGIONS, ...) that
+      # this Task doesn't control the exact contents of.
+      env:
+        - name: CONTEXT
+          value: $(params.CONTEXT)
+        - name: CONFIG_VALUES
+          value: $(params.CONFIG_VALUES)
+        - name: DEPLOYMENT_NAME
+          value: $(params.DEPLOYMENT_NAME)
+        - name: NAMESPACE
+          value: $(params.NAMESPACE)
       script: |
         #!/bin/bash
         set -euo pipefail
-        CODE_HASH="$(cd "$(workspaces.source.path)/$(params.CONTEXT)" && find src Dockerfile -type f | sort | xargs sha256sum | sha256sum | awk '{print $1}')"
-        NEW_HASH="$(printf '%s' "${CODE_HASH}$(params.CONFIG_VALUES)" | sha256sum | awk '{print $1}')"
-        PREV_HASH="$(kubectl get deployment "$(params.DEPLOYMENT_NAME)" -n "$(params.NAMESPACE)" -o jsonpath='{.metadata.annotations.source-hash}' 2>/dev/null || true)"
+        CODE_HASH="$(cd "${CONTEXT}" && find src Dockerfile -type f | sort | xargs sha256sum | sha256sum | awk '{print $1}')"
+        NEW_HASH="$(printf '%s' "${CODE_HASH}${CONFIG_VALUES}" | sha256sum | awk '{print $1}')"
+        PREV_HASH="$(kubectl get deployment "${DEPLOYMENT_NAME}" -n "${NAMESPACE}" -o jsonpath='{.metadata.annotations.source-hash}' 2>/dev/null || true)"
 
         echo -n "${NEW_HASH}" > "$(results.hash.path)"
 
-        if kubectl get deployment "$(params.DEPLOYMENT_NAME)" -n "$(params.NAMESPACE)" >/dev/null 2>&1 \
+        if kubectl get deployment "${DEPLOYMENT_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1 \
            && [[ -n "${PREV_HASH}" && "${PREV_HASH}" == "${NEW_HASH}" ]]; then
           echo "Source unchanged (${NEW_HASH:0:12}...) — skipping build+deploy."
           echo -n "false" > "$(results.changed.path)"
