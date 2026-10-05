@@ -1,67 +1,47 @@
 # Portable Spark Job Queue (Kind / k3s)
 
-A `kubectl`-only job queue for the portable Fall 2026 platform: at most
-four Spark jobs active across the whole cluster, at most one active per
-team, with an abandoned or finished job releasing its slot automatically.
+A `kubectl`-only job queue: at most four Spark jobs active across the
+cluster, at most one active per team. A finished or abandoned job
+releases its slot automatically.
 
-This is a brand-new top-level component — Spark has no existing footprint
-anywhere in this repo (only a label in the root README's architecture
-diagram, referring to something entirely downstream of this infra).
-
-This is infra-maintainer-built, the same way every other component in this
-repo is: students only ever fill in and submit
+Infra-maintainer-built. Students only ever fill in and submit
 `manifests/team-spark-job-template.yaml` — they never touch the
 ResourceQuota, the admission policy, or the queue controller.
 
 ## Compatibility
 
-Plain `kubectl` + one `ValidatingAdmissionPolicy` (GA in Kubernetes since
-1.30, no webhook server to run or manage). Runs on any conformant
-Kubernetes cluster: Kind, k3s, EKS, GKE, AKS, a bare-metal cluster, etc.
+Plain `kubectl` + one `ValidatingAdmissionPolicy` (GA since Kubernetes
+1.30, no webhook server to run). Runs on any conformant Kubernetes
+cluster: Kind, k3s, EKS, GKE, AKS, bare-metal, etc.
 
 ## Prerequisites
 
 - **Team namespaces onboarded** — `onboarding/portable/README.md` (needed
-  both for the per-team `ResourceQuota` below, and because the queue
-  controller itself deploys into the `infra` namespace, which onboarding
-  creates)
+  for the per-team `ResourceQuota` below, and because the queue controller
+  deploys into the `infra` namespace onboarding creates)
 - **`config.env` created and filled in** — see below
 
-## How the two limits are actually enforced
+## How the two limits are enforced
 
-**"One active job per team"** — a plain namespace-scoped `ResourceQuota`
-(`count/jobs.batch: "1"`), applied once per team namespace at onboarding
-time. This is a hard admission check the API server itself enforces,
-counting every Job in that namespace regardless of label or image — a
-student cannot create a second Job while their first one still exists,
-whether it's running or just sitting there. `ttlSecondsAfterFinished` on
-the student's own Job (set by the template) is what frees this slot
-automatically once the Job finishes.
+**One active job per team** — a namespace-scoped `ResourceQuota`
+(`count/jobs.batch: "1"`), applied per team namespace at onboarding time.
+The API server enforces this directly: a student can't create a second
+Job while their first still exists, running or not.
+`ttlSecondsAfterFinished` on the Job template frees the slot once it
+finishes.
 
-**"Four active across the cluster"** — the one thing a namespace-scoped
-`ResourceQuota` can't express (it's namespace-scoped only). A small Python
-controller (`scripts/queue-controller.py`, ~70 lines, reusing the
-`kubernetes` client pattern already used in `chatops/src/commands.py`)
-polls every 5 seconds, counts Jobs labeled `queue: spark` across every
-namespace that are running and not yet finished, and admits queued ones
-(flips `spec.suspend` from `true` to `false`) oldest-submission-first, up
-to 4 at a time.
+**Four active across the cluster** — a namespace-scoped `ResourceQuota`
+can't express a cluster-wide limit. A small Python controller
+(`scripts/queue-controller.py`) polls every 5 seconds, counts Jobs
+labeled `queue: spark` that are running or pending, and admits queued
+ones (flips `spec.suspend` to `false`) oldest-first, up to 4 at a time.
 
-**Enforcement, not just convention** — a student could skip the template
-and submit a raw Job using the Spark image directly, with no
-`queue: spark` label and no `suspend: true`, which would run immediately
-and bypass the cluster-wide cap (the per-team cap stays safe either way,
-since `ResourceQuota` counts everything regardless). A
-`ValidatingAdmissionPolicy` closes this: matched only to Jobs using the
-pinned Spark image (item 12's own wording says "Spark jobs" specifically,
-never "jobs" generally — a plain Job using any other image is never
-touched by this at all), it **rejects** a Job outright if it doesn't
-already have `suspend: true` and the `queue: spark` label.
-(`MutatingAdmissionPolicy` — which could silently fix a non-compliant
-submission instead of rejecting it — isn't available on this cluster:
-confirmed directly via `kubectl api-resources`, not assumed. Rejecting is
-arguably the better fit anyway: it forces the actual template to be used
-rather than silently rewriting what a student submitted.)
+**Enforcement, not convention** — a student could skip the template and
+submit a raw Job with no `queue: spark` label and no `suspend: true`,
+bypassing the cluster-wide cap (the per-team `ResourceQuota` still
+catches it either way). A `ValidatingAdmissionPolicy`, matched only to
+Jobs using the pinned Spark image, rejects any such Job outright unless
+it already has `suspend: true` and the `queue: spark` label.
 
 ## Before you start: update config.env
 
@@ -74,10 +54,10 @@ Then edit `config.env` and set:
 | Variable | Example value | Notes |
 |---|---|---|
 | `INFRA_NAMESPACE` | `infra` | Where the queue controller runs |
-| `SPARK_IMAGE` | `apache/spark:3.5.3` | Must match exactly what `team-spark-job-template.yaml` is filled in with, since the admission policy matches on this image reference |
+| `SPARK_IMAGE` | `apache/spark:3.5.3` | Must match exactly what `team-spark-job-template.yaml` is filled in with — the admission policy matches on this image reference |
 | `TEAM_NAMESPACE_PREFIX` | `team` | Must match `onboarding/cluster.env`'s value |
 
-`TEAM_ID` below is **not** a `config.env` variable — it's set per-command,
+`TEAM_ID` below is **not** a `config.env` variable — it's set per command,
 once for each team namespace you're applying the quota to.
 
 ## Validation walkthrough
@@ -112,7 +92,7 @@ validatingadmissionpolicy.admissionregistration.k8s.io/spark-job-queue-policy cr
 validatingadmissionpolicybinding.admissionregistration.k8s.io/spark-job-queue-policy-binding created
 ```
 
-**2. Evasion test — a raw Spark-image Job, bypassing the template**
+**2. A raw Spark-image Job, bypassing the template, is rejected**
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -138,7 +118,7 @@ submitted via spark-queue/portable/manifests/team-spark-job-template.yaml, which
 spec.suspend: true so the queue controller can admit it when a cluster-wide slot is free.
 ```
 
-**3. A non-Spark Job in the same namespace is completely unaffected**
+**3. A non-Spark Job in the same namespace is unaffected**
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -164,11 +144,11 @@ unrelated-job   Complete   1/1           4s         5s
 unrelated job runs fine
 ```
 
-**4. The cluster-wide 4-slot cap, genuinely exercised (5 namespaces)**
+**4. The cluster-wide 4-slot cap (5 test namespaces)**
 
-Two team namespaces (each capped at 1) can never reach 4 concurrently on
-their own, so this uses 5 lightweight test namespaces to actually force
-queueing — a compliant Job (via the template) submitted to each:
+Two team namespaces (each capped at 1) can't reach 4 concurrently on
+their own, so this uses 5 lightweight test namespaces instead — a
+compliant Job (via the template) submitted to each:
 
 ```bash
 kubectl get job -A -l queue=spark -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,SUSPEND:.spec.suspend
@@ -190,9 +170,7 @@ INFO admitting spark-test-3/job-3 (suspend -> false)
 INFO admitting spark-test-4/job-4 (suspend -> false)
 INFO active=4 waiting=1 free_slots=0
 ```
-Jobs 1–4 admitted immediately; job-5 genuinely held (`suspend: true`),
-waiting — proving the cap actually binds, not just that it doesn't get in
-the way.
+Jobs 1–4 are admitted immediately; job-5 stays suspended, queued.
 
 **5. Cancellation releases a slot and starts queued work**
 
@@ -209,7 +187,7 @@ kubectl get job job-5 -n spark-test-5 -o jsonpath='{.spec.suspend}'
 # false
 ```
 
-**6. The issue's own literal wording — 5 job attempts across 2 team namespaces**
+**6. 5 submission attempts across 2 team namespaces**
 
 ```bash
 source config.env
@@ -235,9 +213,8 @@ Error: jobs.batch "team01-job-c" is forbidden: exceeded quota: team-spark-jobs-q
 job.batch/team02-job-a created
 Error: jobs.batch "team02-job-b" is forbidden: exceeded quota: team-spark-jobs-quota ...
 ```
-Exactly 2 Jobs end up created (1 per namespace) — well within "never
-exceed 4 active or 1 active per namespace," and the rejections themselves
-are the per-team cap actually enforcing, not merely coincidental.
+Exactly 2 Jobs are created (1 per namespace) — the per-team cap rejects
+every other attempt.
 
 ## Variables
 
