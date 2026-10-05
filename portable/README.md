@@ -107,11 +107,14 @@ resubmit a run without redoing onboarding.
 bash portable/scripts/teardown-pipeline.sh
 ```
 
-**6. `teardown-prerequisites.sh`** — undoes step 1: team namespaces
-(cascading everything inside), the registry, the Spark queue, the
-Dashboard Ingress, and the cluster-wide prerequisites themselves. Rarely
-needed — mainly for a real shared cloud cluster, where deleting the whole
-cluster isn't an option the way it is on Kind.
+**6. `teardown-prerequisites.sh`** — undoes step 1, in full symmetry with
+onboarding's own namespace creation: every team namespace *and* the infra
+namespace itself (cascading everything inside each — the registry, the
+Spark queue controller included), plus the Spark queue's cluster-scoped
+objects (admission policy, RBAC — a namespace delete can't reach those),
+the Dashboard Ingress, and the cluster-wide prerequisites themselves.
+Rarely needed — mainly for a real shared cloud cluster, where deleting the
+whole cluster isn't an option the way it is on Kind.
 
 ```bash
 bash portable/scripts/teardown-prerequisites.sh

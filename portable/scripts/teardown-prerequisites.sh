@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # portable/scripts/teardown-prerequisites.sh
 #
-# Undoes install-prerequisites.sh: every team namespace (cascading to its
-# Kafka CRs/PVCs/quota/RBAC/NetworkPolicy — if you only want to wipe the
-# Kafka/event-generator state and keep onboarding, use
-# teardown-pipeline.sh instead), the Spark queue controller + admission
-# policy, the in-cluster registry, the Tekton Dashboard Ingress, and the
-# cluster-wide prerequisites themselves (Strimzi, Tekton Pipelines, the
-# Tekton Dashboard, ingress-nginx).
+# Undoes install-prerequisites.sh, in full symmetry with
+# onboarding/portable/apply-onboarding.sh's own namespace creation: every
+# team namespace AND the infra namespace itself (if you only want to wipe
+# the Kafka/event-generator state and keep onboarding, use
+# teardown-pipeline.sh instead). Deleting infra cascades the registry, the
+# Spark queue controller, and infra's own quota/limitrange/RBAC — all of
+# it lives inside that namespace. What a namespace delete can't reach
+# (cluster-scoped objects: the admission policy, its ClusterRole/
+# ClusterRoleBinding) is removed explicitly. Also removes the Tekton
+# Dashboard Ingress and the cluster-wide prerequisites themselves (Strimzi,
+# Tekton Pipelines, the Tekton Dashboard, ingress-nginx).
 #
 # Versions in the cluster-wide section must match
 # install-prerequisites.sh's own pinned versions exactly (each
@@ -42,12 +46,12 @@ echo " Tearing down prerequisites"
 echo "============================================================"
 
 echo ""
-info "Removing team namespaces (cascades: Kafka CRs, PVCs, quota, RBAC, NetworkPolicy)..."
+info "Removing onboarded namespaces (team-*, ${INFRA_NAMESPACE}) — cascades Kafka CRs/PVCs, the registry, the Spark queue controller, quota, RBAC, NetworkPolicy..."
 # --timeout bounds the wait (kubectl's own default is "wait forever" for a stuck
 # finalizer — confirmed directly: --wait=true and --timeout=0s are kubectl delete's
 # own defaults) — a stuck Calico-related delete hung exactly this way earlier in
 # this same validation, with no error, just silence, until manually killed
-for ns in $(kubectl get namespace -l team --no-headers -o custom-columns=:.metadata.name 2>/dev/null); do
+for ns in $(kubectl get namespace -l team --no-headers -o custom-columns=:.metadata.name 2>/dev/null) "${INFRA_NAMESPACE}"; do
   if kubectl delete namespace "${ns}" --ignore-not-found --timeout=60s; then
     ok "${ns}"
   else
@@ -56,30 +60,15 @@ for ns in $(kubectl get namespace -l team --no-headers -o custom-columns=:.metad
 done
 
 echo ""
-info "Removing the Spark queue controller and admission policy..."
+info "Removing the Spark queue's cluster-scoped objects (admission policy, RBAC — not namespaced, so a namespace delete can't reach them)..."
 kubectl delete validatingadmissionpolicybinding spark-job-queue-policy-binding --ignore-not-found
 kubectl delete validatingadmissionpolicy spark-job-queue-policy --ignore-not-found
-kubectl delete deployment spark-queue-controller -n "${INFRA_NAMESPACE}" --ignore-not-found
 kubectl delete clusterrolebinding spark-queue-controller-binding --ignore-not-found
 kubectl delete clusterrole spark-queue-controller-role --ignore-not-found
-kubectl delete serviceaccount spark-queue-controller -n "${INFRA_NAMESPACE}" --ignore-not-found
-kubectl delete configmap spark-queue-controller-script -n "${INFRA_NAMESPACE}" --ignore-not-found
-
-echo ""
-info "Removing the in-cluster registry (and its PVC)..."
-kubectl delete deployment registry -n "${INFRA_NAMESPACE}" --ignore-not-found
-kubectl delete service registry -n "${INFRA_NAMESPACE}" --ignore-not-found
-kubectl delete pvc registry-data -n "${INFRA_NAMESPACE}" --ignore-not-found
 
 echo ""
 info "Removing the Tekton Dashboard Ingress..."
 kubectl delete ingress tekton-dashboard -n tekton-pipelines --ignore-not-found
-
-echo ""
-info "Removing the infra namespace's own resources (quota, limitrange, RBAC)..."
-kubectl delete resourcequota infra-quota -n "${INFRA_NAMESPACE}" --ignore-not-found
-kubectl delete limitrange infra-limits -n "${INFRA_NAMESPACE}" --ignore-not-found
-kubectl delete rolebinding infra-admins-edit -n "${INFRA_NAMESPACE}" --ignore-not-found
 
 echo ""
 info "Removing ingress-nginx (controller-v1.15.1)..."
