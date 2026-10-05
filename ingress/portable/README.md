@@ -56,9 +56,23 @@ ingress-nginx-controller   0/1     1            0           0s
 NAME                       TYPE           CLUSTER-IP    EXTERNAL-IP   PORT(S)
 ingress-nginx-controller   LoadBalancer   10.96.72.33   <pending>     80:31177/TCP,443:32471/TCP
 
-EXTERNAL-IP will stay <pending> on Kind until install-cloud-provider-kind.sh
-is installed AND running.
+No external IP yet — polling for up to 90s...
+
+Still no external IP after 90s.
+This is Kind — it needs cloud-provider-kind running, which you must
+start yourself (needs root, can't be done non-interactively):
+  sudo bash ingress/portable/prerequisites/install-cloud-provider-kind.sh
 ```
+The script actually polls for up to 90s (checking every 5s) before
+reporting anything, rather than a single check — a real cloud's own
+LoadBalancer can take a similar amount of time to provision, so a bare
+check could falsely report "stuck" on an otherwise-fine cluster. The
+message itself also only shows the Kind-specific instructions on Kind
+(detected from `kubectl config current-context`'s own `kind-*` prefix) —
+on a real cloud cluster it instead says this is likely just normal
+provisioning delay, or, if it never resolves, that the cluster may have
+no LoadBalancer implementation installed at all (e.g. bare-metal with no
+MetalLB).
 
 **2. Install and start cloud-provider-kind (Kind-only, requires root)**
 

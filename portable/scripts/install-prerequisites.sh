@@ -60,45 +60,9 @@ bash "${REPO_ROOT}/kafka/portable/prerequisites/install-strimzi.sh"
 bash "${REPO_ROOT}/pipeline/portable/prerequisites/install-tekton.sh"
 bash "${REPO_ROOT}/pipeline/portable/prerequisites/install-tekton-dashboard.sh"
 bash "${REPO_ROOT}/ingress/portable/prerequisites/install-ingress-nginx.sh"
-
-has_external_ip() {
-  kubectl get service ingress-nginx-controller -n ingress-nginx \
-    -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null | grep -q .
-}
-
-if ! has_external_ip; then
-  # Poll for up to 90s before deciding it's actually stuck, not just slow —
-  # a real cloud's LoadBalancer provisioning commonly takes under a
-  # minute, and k3s's own built-in one resolves almost immediately; 90s
-  # gives real, normal cases room without hanging indefinitely on one that
-  # genuinely never will (see the no-LB-controller-at-all case below).
-  lb_deadline=$(( $(date +%s) + 90 ))
-  while (( $(date +%s) < lb_deadline )) && ! has_external_ip; do
-    sleep 5
-  done
-fi
-
-if ! has_external_ip; then
-  warn "ingress-nginx still has no external IP after 90s."
-  # cloud-provider-kind is only ever relevant on Kind specifically — unlike
-  # the Dashboard-link check below (which can't tell Kind from k3s from a
-  # real cloud by design, since none of them reliably implies "no real
-  # DNS"), Kind's context name IS a reliable, accurate signal for this one
-  # decision: it's Kind's own hardcoded convention, not a guess.
-  if [[ "$(kubectl config current-context 2>/dev/null)" == kind-* ]]; then
-    warn "This is Kind — it needs cloud-provider-kind running, which you"
-    warn "must start yourself (needs root, can't be done non-interactively):"
-    warn "  sudo bash ${REPO_ROOT}/ingress/portable/prerequisites/install-cloud-provider-kind.sh"
-  else
-    warn "A real cloud's own LoadBalancer provisioning can occasionally take"
-    warn "longer than this — check again shortly with: kubectl get service"
-    warn "ingress-nginx-controller -n ingress-nginx. If it never resolves,"
-    warn "this cluster likely has no LoadBalancer implementation at all"
-    warn "(e.g. a bare-metal cluster with no MetalLB or similar installed)."
-  fi
-  warn "Not required for Kafka/event-generator deployment — only for the"
-  warn "Tekton Dashboard's external reachability. Continuing."
-fi
+# install-ingress-nginx.sh itself already polls for the external IP and
+# reports accurately (Kind vs. a real cloud) when it's still missing —
+# nothing more to check here.
 
 echo ""
 info "Step 2 — Onboarding (namespaces, quota, ServiceAccount, RBAC, NetworkPolicy)..."
