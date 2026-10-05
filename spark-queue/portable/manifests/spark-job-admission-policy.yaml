@@ -17,12 +17,24 @@
 # arguably a better fit anyway: it forces the actual template to be used
 # rather than silently rewriting what a student submitted.
 #
-# Matched only to Jobs using the pinned Spark image (matching item 12's own
-# wording, "Spark jobs" specifically, never "jobs" generally) — a team's
-# unrelated Job (any other image) is never touched by this policy at all.
+# Matched only to Jobs using the configured Spark image's repository
+# (matching item 12's own wording, "Spark jobs" specifically, never "jobs"
+# generally) — a team's unrelated Job (any other image) is never touched
+# by this policy at all.
+#
+# Matches on the repository (SPARK_IMAGE with its tag stripped), not the
+# exact tag — confirmed directly as a real gap otherwise: a Job using even
+# a slightly different tag (e.g. a patch version bump) of the same image
+# silently bypassed the whole queue entirely instead of being rejected,
+# since an exact-string match means any deviation makes the policy's
+# matchConditions simply never trigger. Matching on the repository still
+# means only the repo you actually configured is ever affected — switching
+# SPARK_IMAGE to a different distribution entirely (bitnami/spark, a
+# custom image pushed to the in-cluster registry, etc.) just works, no
+# policy change needed.
 #
 # Usage:
-#   envsubst '${SPARK_IMAGE}' \
+#   SPARK_IMAGE_REPO="${SPARK_IMAGE%:*}" envsubst '${SPARK_IMAGE_REPO}' \
 #   < spark-queue/portable/manifests/spark-job-admission-policy.yaml | kubectl apply -f -
 #
 # Required vars: SPARK_IMAGE — must match exactly what
@@ -43,7 +55,7 @@ spec:
   matchConditions:
     - name: only-spark-image-jobs
       expression: >-
-        object.spec.template.spec.containers.exists(c, c.image == '${SPARK_IMAGE}')
+        object.spec.template.spec.containers.exists(c, c.image.startsWith('${SPARK_IMAGE_REPO}:'))
   validations:
     - expression: "object.spec.suspend == true"
       message: >-
