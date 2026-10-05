@@ -47,6 +47,14 @@ NetworkPolicy, per-team Spark quota), and shared infra services (the
 in-cluster registry, the Spark queue controller + admission policy, the
 Dashboard's Ingress). Idempotent — safe to re-run.
 
+> Students submit Spark jobs using
+> `spark-queue/portable/manifests/team-spark-job-template.yaml` — it
+> already sets the two fields the admission policy requires
+> (`spec.suspend: true` and the `queue: spark` label). A student writing
+> their own Job YAML must include both, or the API server rejects it
+> outright. See `spark-queue/portable/README.md` for the full enforcement
+> model.
+
 ```bash
 bash portable/scripts/install-prerequisites.sh
 ```

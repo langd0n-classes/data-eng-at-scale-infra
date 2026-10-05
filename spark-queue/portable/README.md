@@ -8,6 +8,12 @@ Infra-maintainer-built. Students only ever fill in and submit
 `manifests/team-spark-job-template.yaml` — they never touch the
 ResourceQuota, the admission policy, or the queue controller.
 
+> **A Job is only accepted if it has both `spec.suspend: true` and the
+> label `queue: spark`.** The template already sets both — a student
+> writing their own Job YAML from scratch must include them too, or it
+> gets rejected. Tell students this explicitly if they ever ask why a
+> custom Job of theirs was denied.
+
 ## Compatibility
 
 Plain `kubectl` + one `ValidatingAdmissionPolicy` (GA since Kubernetes
