@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY src/event_generator.py .
 
-# Health check endpoint port
+# Health check endpoint port (also used for readiness/liveness probes)
 EXPOSE 8000
 
 # Run the generator
