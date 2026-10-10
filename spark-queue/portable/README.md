@@ -8,14 +8,17 @@ Infra-maintainer-built. Students only ever fill in and submit
 `manifests/team-spark-job-template.yaml` — they never touch the
 ResourceQuota, the admission policy, or the queue controller.
 
-> **A Job using the `SPARK_IMAGE` configured in `config.env` is only
-> accepted if it also has `spec.suspend: true` and the label
-> `queue: spark`.** All three are required together — the template
-> already sets them. A student writing their own Job YAML from scratch
-> must include all three too, or it gets rejected (missing `suspend`/the
-> label) or never runs (image mismatch, silently excluded from the
-> queue). Tell students this explicitly if they ever ask why a custom Job
-> of theirs was denied or never started.
+> **A Job using the configured Spark image (any registry prefix, tag, or
+> digest), or carrying the `queue: spark` label, is only accepted if it
+> also has `spec.suspend: true` and `spec.activeDeadlineSeconds` set.**
+> All three are required together — the template already sets them. A
+> student writing their own Job YAML from scratch must include all three
+> too, or it's rejected outright — including a plain, unlabeled Job using
+> the official Spark image directly. Only the queue controller's own
+> ServiceAccount may change `spec.suspend` or the `queue` label once a Job
+> exists — any other attempt to flip `suspend` directly or strip the
+> label is rejected the same way. Tell students this explicitly if they
+> ever ask why a custom Job of theirs was denied.
 
 A student submitting any other (non-Spark) Job doesn't need any of the
 three — but the per-team `ResourceQuota` below still caps them at one Job
@@ -47,23 +50,36 @@ finishes.
 **Four active across the cluster** — a namespace-scoped `ResourceQuota`
 can't express a cluster-wide limit. A small Python controller
 (`scripts/queue-controller.py`) polls every 5 seconds, counts Jobs
-labeled `queue: spark` that also use the configured `SPARK_IMAGE`
-repository, and admits queued ones (flips `spec.suspend` to `false`)
-oldest-first, up to 4 at a time. The image check matters on its own: the
-label alone doesn't prove a Job is actually a Spark job, so without it any
-Job could carry `queue: spark` and consume one of the 4 slots this queue
-exists specifically to cap for Spark jobs. A Job with the label but a
-different image is logged and simply ignored — never counted, never
-admitted by this controller.
+labeled `queue: spark`, and admits queued ones (flips `spec.suspend` to
+`false`) oldest-first, up to 4 at a time. A Job that's been admitted for
+more than `STUCK_GRACE_SECONDS` (default 300s) with no pod ever reaching
+`Running`/`Succeeded` — a bad image tag stuck in `ImagePullBackOff`, or a
+pod stuck `Pending` because the team's `ResourceQuota` is full — is
+excluded from the count so its slot frees up for a waiting Job;
+`spec.activeDeadlineSeconds` is what actually terminates it.
 
-**Enforcement, not convention** — a student could skip the template and
-submit a raw Job with no `queue: spark` label and no `suspend: true`,
-bypassing the cluster-wide cap (the per-team `ResourceQuota` still
-catches it either way). A `ValidatingAdmissionPolicy`, matched to any Job
-using `SPARK_IMAGE`'s repository (any tag, not just the exact one
-configured — a version bump shouldn't silently exempt a Job from the
-queue), rejects any such Job outright unless it already has
-`suspend: true` and the `queue: spark` label.
+**Enforcement, not convention** — a `ValidatingAdmissionPolicy` matches
+any Job using the configured Spark image (checked against the `repo:tag`
+and `repo@digest` forms, under any registry prefix — not just an exact
+string match, so a version bump or a different registry doesn't
+silently exempt a Job) or carrying the `queue: spark` label, and rejects
+it outright unless it already has `suspend: true`, the `queue: spark`
+label, and `spec.activeDeadlineSeconds` set. A team's own image built
+from Spark under a different name is covered by the label instead, since
+that can't be detected from the image string — the per-team
+`ResourceQuota` is the backstop for the one case neither check can catch:
+a custom-named derivative with no label at all.
+
+**Bare Pods and `spark-submit --master k8s://` are blocked outright** —
+neither one ever creates a Job, so neither the policy above nor the
+controller (which only watches Jobs) would otherwise see them. A second
+`ValidatingAdmissionPolicy` denies any Pod using the Spark image with no
+`ownerReferences` at all — a student's own hand-written Pod has none,
+and so does `--deploy-mode cluster`'s externally-spawned driver Pod
+(Spark's own client creates it directly; nothing sets an owner back to
+anything), so cluster-mode submission isn't supported. A Job's own child
+Pod, and the executor Pods a client-mode driver spawns, both have a real
+owner and are unaffected.
 
 ## Before you start: update config.env
 
@@ -98,22 +114,22 @@ for id in 01 02; do
 done
 
 # the controller itself (RBAC + Deployment, running a pre-built GHCR
-# image, no ConfigMap/pip-install step) — also reads SPARK_IMAGE_REPO
-# so it only counts Jobs that actually use the configured Spark image, not
-# anything that merely carries the queue=spark label
+# image, no ConfigMap/pip-install step)
 export SPARK_IMAGE_REPO="${SPARK_IMAGE%:*}"
-envsubst '${INFRA_NAMESPACE} ${SPARK_IMAGE_REPO} ${SPARK_QUEUE_CONTROLLER_IMAGE}' < spark-queue/portable/manifests/queue-controller-deployment.yaml | kubectl apply -f -
+envsubst '${INFRA_NAMESPACE} ${SPARK_QUEUE_CONTROLLER_IMAGE}' < spark-queue/portable/manifests/queue-controller-deployment.yaml | kubectl apply -f -
 
-# the enforcement policy — matches on SPARK_IMAGE's repository (tag
-# stripped), so any tag of the configured image is caught, not just the
-# exact one
-envsubst '${SPARK_IMAGE_REPO}' < spark-queue/portable/manifests/spark-job-admission-policy.yaml | kubectl apply -f -
+# the enforcement policies — matches on SPARK_IMAGE's repository (any
+# tag or digest, not just the exact one configured), or the queue=spark
+# label for a differently-named image
+envsubst '${SPARK_IMAGE_REPO} ${INFRA_NAMESPACE}' < spark-queue/portable/manifests/spark-job-admission-policy.yaml | kubectl apply -f -
 ```
 ```
 deployment.apps/spark-queue-controller condition met
-2026-09-29 05:26:17,410 INFO Spark queue controller started: max_active_jobs=4 poll_interval=5s
+2026-10-10 22:59:17,039 INFO Spark queue controller started: max_active_jobs=4 poll_interval=5s stuck_grace=300s
 validatingadmissionpolicy.admissionregistration.k8s.io/spark-job-queue-policy created
 validatingadmissionpolicybinding.admissionregistration.k8s.io/spark-job-queue-policy-binding created
+validatingadmissionpolicy.admissionregistration.k8s.io/spark-bare-pod-policy created
+validatingadmissionpolicybinding.admissionregistration.k8s.io/spark-bare-pod-policy-binding created
 ```
 
 **2. A raw Spark-image Job, bypassing the template, is rejected**
@@ -240,6 +256,86 @@ Error: jobs.batch "team02-job-b" is forbidden: exceeded quota: team-spark-jobs-q
 Exactly 2 Jobs are created (1 per namespace) — the per-team cap rejects
 every other attempt.
 
+**7. Only the controller may change `suspend` or the `queue` label**
+
+```bash
+# a compliant Job, then two different bypass attempts on it
+kubectl patch job team01-job-a -n team-01 -p '{"spec":{"suspend":false}}' --type=merge
+kubectl patch job team01-job-a -n team-01 --type=json \
+  -p='[{"op":"remove","path":"/metadata/labels/queue"}]'
+```
+```
+The jobs "team01-job-a" is invalid: : ValidatingAdmissionPolicy 'spark-job-queue-policy'
+with binding 'spark-job-queue-policy-binding' denied request: Only the queue controller
+may change spec.suspend or the queue label after a Spark Job is created.
+```
+Both attempts are denied identically. The controller's own admission (the
+same `suspend -> false` patch, just from its own ServiceAccount) is
+unaffected — already proven by every other step here succeeding.
+
+**8. A bare Pod using the Spark image is rejected; a Job's own Pod isn't**
+
+```bash
+kubectl run bare-spark-pod -n team-01 --image=apache/spark:3.5.3 --restart=Never --command -- sleep 60
+```
+```
+The pods "bare-spark-pod" is invalid: : ValidatingAdmissionPolicy 'spark-bare-pod-policy'
+with binding 'spark-bare-pod-policy-binding' denied request: Bare Pods using the Spark
+image aren't allowed in team namespaces — submit via
+spark-queue/portable/manifests/team-spark-job-template.yaml.
+```
+A Job submitted via the template still works normally — its own child
+Pod has a real `ownerReferences` entry (`kind: Job`), so this policy
+never rejects it.
+
+**9. A Job missing `activeDeadlineSeconds` is rejected**
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: no-deadline-test
+  namespace: team-01
+  labels:
+    queue: spark
+spec:
+  suspend: true
+  template:
+    metadata:
+      labels:
+        queue: spark
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: spark
+          image: apache/spark:3.5.3
+          command: ["/bin/sh", "-c", "echo hi"]
+EOF
+```
+```
+The jobs "no-deadline-test" is invalid: : ValidatingAdmissionPolicy 'spark-job-queue-policy'
+with binding 'spark-job-queue-policy-binding' denied request: Spark Jobs must set
+spec.activeDeadlineSeconds (team-spark-job-template.yaml already does) — otherwise an
+abandoned job can hold its cluster-wide slot forever.
+```
+
+**10. A stuck job (pod never starts) is excluded from the active count**
+
+A Job admitted with a bad image tag never reaches `Running` — after
+`STUCK_GRACE_SECONDS`, the controller stops counting it, freeing its
+slot for a waiting Job, without touching its own `suspend`:
+
+```
+INFO admitting team-01/stuck-job-test (suspend -> false)
+WARNING team-01/stuck-job-test stuck (admitted 20s+ ago, no pod ever reached Running) —
+freeing its slot; activeDeadlineSeconds will actually terminate it
+INFO active=1 waiting=0 free_slots=3
+```
+`spec.activeDeadlineSeconds` (required by step 9 above) is what actually
+terminates the stuck Job later — this just stops it from wasting a slot
+in the meantime.
+
 ## Variables
 
 | Variable | Default | Description |
@@ -250,7 +346,8 @@ every other attempt.
 | `SPARK_JOB_NAME`, `SPARK_COMMAND` | *(required)* | Set per submission by the student |
 | `MAX_ACTIVE_JOBS` (controller env) | `4` | Cluster-wide cap |
 | `POLL_INTERVAL_SECONDS` (controller env) | `5` | Reconcile loop interval |
-| `SPARK_IMAGE_REPO` (controller env) | *(required)* | `SPARK_IMAGE` with its tag stripped — same value the admission policy matches on; a labeled Job using any other image is ignored |
+| `STUCK_GRACE_SECONDS` (controller env) | `300` | How long an admitted Job gets before a pod that never reaches Running frees its slot |
+| `SPARK_IMAGE_REPO` | *(required)* | `SPARK_IMAGE` with its tag stripped — used by the admission policy only (both to match Jobs by image and to match bare Pods); the controller itself counts by the `queue: spark` label alone |
 | `SPARK_QUEUE_CONTROLLER_IMAGE` | *(required)* | The controller's own pre-built GHCR image (not to be confused with `SPARK_IMAGE`, which is what student Spark jobs run) |
 
 ## Cleanup

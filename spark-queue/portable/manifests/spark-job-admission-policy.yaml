@@ -70,8 +70,8 @@ spec:
         object.spec.template.spec.containers.exists(c,
           c.image.contains('${SPARK_IMAGE_REPO}:') || c.image.contains('${SPARK_IMAGE_REPO}@')
         ) ||
-        ('queue' in object.metadata.labels && object.metadata.labels['queue'] == 'spark') ||
-        (request.operation == 'UPDATE' && 'queue' in oldObject.metadata.labels && oldObject.metadata.labels['queue'] == 'spark')
+        (has(object.metadata.labels) && 'queue' in object.metadata.labels && object.metadata.labels['queue'] == 'spark') ||
+        (request.operation == 'UPDATE' && has(oldObject.metadata.labels) && 'queue' in oldObject.metadata.labels && oldObject.metadata.labels['queue'] == 'spark')
   validations:
     - expression: "request.operation != 'CREATE' || object.spec.suspend == true"
       message: >-
@@ -80,7 +80,7 @@ spec:
         when a cluster-wide slot is free.
     - expression: >-
         request.operation != 'CREATE' ||
-        ('queue' in object.metadata.labels && object.metadata.labels['queue'] == 'spark')
+        (has(object.metadata.labels) && 'queue' in object.metadata.labels && object.metadata.labels['queue'] == 'spark')
       message: >-
         Spark Jobs must carry the 'queue: spark' label — use
         spark-queue/portable/manifests/team-spark-job-template.yaml.
@@ -93,8 +93,8 @@ spec:
         request.operation != 'UPDATE' ||
         request.userInfo.username == 'system:serviceaccount:${INFRA_NAMESPACE}:spark-queue-controller' ||
         (object.spec.suspend == oldObject.spec.suspend &&
-         ('queue' in object.metadata.labels ? object.metadata.labels['queue'] : '') ==
-         ('queue' in oldObject.metadata.labels ? oldObject.metadata.labels['queue'] : ''))
+         (has(object.metadata.labels) && 'queue' in object.metadata.labels ? object.metadata.labels['queue'] : '') ==
+         (has(oldObject.metadata.labels) && 'queue' in oldObject.metadata.labels ? oldObject.metadata.labels['queue'] : ''))
       message: >-
         Only the queue controller may change spec.suspend or the queue
         label after a Spark Job is created.
