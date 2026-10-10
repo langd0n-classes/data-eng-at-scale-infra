@@ -6,12 +6,12 @@
 # team's bootstrap address — same ordering the OpenShift pipeline already
 # uses.
 #
-# Only ever runs when check-source-changed-task.yaml's `changed` result is
+# Only ever runs when check-redeploy-needed-task.yaml's `changed` result is
 # "true" (see the pipeline's `when` guard) — so whenever this Task does
 # run, it always stamps the new SOURCE_HASH on the Deployment and forces a
 # rollout restart. This is required: the image tag is always the same
 # string (`:latest`), so `kubectl apply` alone sees no text difference and
-# never restarts the pod on its own, even though the registry content
+# never restarts the pod on its own, even though GHCR's published digest
 # changed — confirmed directly during event-generator/portable's own
 # standalone testing.
 #
@@ -38,10 +38,10 @@ spec:
     - name: EVENT_GENERATOR_NAME
       type: string
     - name: EVENT_GENERATOR_IMAGE
-      description: Full image reference the build-push-image Task pushed to
+      description: Full image reference GitHub Actions published to GHCR
       type: string
     - name: SOURCE_HASH
-      description: check-source-changed Task's computed hash, stamped on the Deployment
+      description: check-redeploy-needed Task's computed hash, stamped on the Deployment
       type: string
     - name: EVENT_RATE_PER_SEC
       type: string

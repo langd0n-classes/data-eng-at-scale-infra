@@ -2,6 +2,7 @@
 # Produces synthetic health events for Kafka testing and demos
 
 FROM python:3.11-slim
+LABEL org.opencontainers.image.source=https://github.com/langd0n-classes/data-eng-at-scale-infra
 
 WORKDIR /app
 

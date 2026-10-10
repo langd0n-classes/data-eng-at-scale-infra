@@ -26,9 +26,6 @@ spec:
     name: deploy-all-teams
   taskRunTemplate:
     serviceAccountName: pipeline
-    podTemplate:
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
   params:
     - name: GIT_URL
       value: "${GIT_REPO_URL}"

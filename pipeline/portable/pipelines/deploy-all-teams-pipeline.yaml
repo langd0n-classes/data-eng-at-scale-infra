@@ -136,14 +136,8 @@ spec:
     - name: EVENT_GENERATOR_NAME
       type: string
     - name: EVENT_GENERATOR_IMAGE
-      description: Full image reference to build and push, and later deploy from
+      description: Full image reference GitHub Actions publishes and this pipeline deploys from
       type: string
-    - name: EVENT_GENERATOR_DOCKERFILE
-      type: string
-      default: ./Dockerfile
-    - name: EVENT_GENERATOR_CONTEXT
-      type: string
-      default: event-generator
     - name: EVENT_RATE_PER_SEC
       type: string
     - name: TOPIC_PREFIX
@@ -178,39 +172,22 @@ spec:
 
     - name: check-event-generator-changed
       taskRef:
-        name: check-source-changed
-      runAfter: ["clone"]
+        name: check-redeploy-needed
+      # No runAfter: unlike the old code-hashing version, this Task
+      # touches no workspace at all (just params), so it has no actual
+      # dependency on clone — runs in parallel with it. deploy-event-generator
+      # still correctly waits for this Task regardless, since Tekton infers
+      # that ordering automatically from the $(tasks.check-event-generator-changed...)
+      # result references below.
       params:
         - name: DEPLOYMENT_NAME
           value: $(params.EVENT_GENERATOR_NAME)
         - name: NAMESPACE
           value: $(params.INFRA_NAMESPACE)
-        - name: CONTEXT
-          value: $(params.EVENT_GENERATOR_CONTEXT)
-        - name: CONFIG_VALUES
-          value: "$(params.EVENT_RATE_PER_SEC)|$(params.TOPIC_PREFIX)|$(params.TOPIC_SUFFIX)|$(params.TOPIC)|$(params.REGIONS)|$(params.TEAM_BOOTSTRAP_SERVERS)|$(params.KAFKA_BOOTSTRAP_SERVERS)"
-      workspaces:
-        - name: source
-          workspace: source
-
-    - name: build-event-generator-image
-      taskRef:
-        name: build-push-image
-      runAfter: ["check-event-generator-changed"]
-      when:
-        - input: $(tasks.check-event-generator-changed.results.changed)
-          operator: in
-          values: ["true"]
-      params:
         - name: IMAGE
           value: $(params.EVENT_GENERATOR_IMAGE)
-        - name: DOCKERFILE
-          value: $(params.EVENT_GENERATOR_DOCKERFILE)
-        - name: CONTEXT
-          value: $(params.EVENT_GENERATOR_CONTEXT)
-      workspaces:
-        - name: source
-          workspace: source
+        - name: CONFIG_VALUES
+          value: "$(params.EVENT_RATE_PER_SEC)|$(params.TOPIC_PREFIX)|$(params.TOPIC_SUFFIX)|$(params.TOPIC)|$(params.REGIONS)|$(params.TEAM_BOOTSTRAP_SERVERS)|$(params.KAFKA_BOOTSTRAP_SERVERS)"
 
     - name: deploy-kafka-team1
       taskRef:
@@ -530,7 +507,7 @@ spec:
     - name: deploy-event-generator
       taskRef:
         name: deploy-event-generator
-      runAfter: ["build-event-generator-image", "deploy-kafka-team1", "deploy-kafka-team2", "deploy-kafka-team3", "deploy-kafka-team4", "deploy-kafka-team5", "deploy-kafka-team6", "deploy-kafka-team7", "deploy-kafka-team8", "deploy-kafka-team9", "deploy-kafka-team10", "deploy-kafka-team11", "deploy-kafka-team12", "deploy-kafka-team13", "deploy-kafka-team14", "deploy-kafka-team15"]
+      runAfter: ["check-event-generator-changed", "deploy-kafka-team1", "deploy-kafka-team2", "deploy-kafka-team3", "deploy-kafka-team4", "deploy-kafka-team5", "deploy-kafka-team6", "deploy-kafka-team7", "deploy-kafka-team8", "deploy-kafka-team9", "deploy-kafka-team10", "deploy-kafka-team11", "deploy-kafka-team12", "deploy-kafka-team13", "deploy-kafka-team14", "deploy-kafka-team15"]
       when:
         - input: $(tasks.check-event-generator-changed.results.changed)
           operator: in

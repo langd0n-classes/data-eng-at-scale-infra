@@ -59,7 +59,7 @@ echo ""
 info "Removing Tekton Tasks, Pipeline, and PipelineRuns..."
 kubectl delete pipelinerun -n "${INFRA_NAMESPACE}" -l app=data-eng-infra --ignore-not-found
 kubectl delete pipeline deploy-all-teams -n "${INFRA_NAMESPACE}" --ignore-not-found
-kubectl delete task deploy-kafka deploy-event-generator check-source-changed git-clone build-push-image -n "${INFRA_NAMESPACE}" --ignore-not-found
+kubectl delete task deploy-kafka deploy-event-generator check-redeploy-needed git-clone -n "${INFRA_NAMESPACE}" --ignore-not-found
 
 echo ""
 info "Removing the pipeline ServiceAccount and RBAC..."
@@ -81,6 +81,6 @@ kubectl delete serviceaccount pipeline -n "${INFRA_NAMESPACE}" --ignore-not-foun
 echo ""
 echo "============================================================"
 echo " Pipeline teardown complete"
-echo " (team namespaces, onboarding, registry, Spark queue, and cluster-wide"
+echo " (team namespaces, onboarding, Spark queue, and cluster-wide"
 echo "  prerequisites are left installed — see teardown-prerequisites.sh)"
 echo "============================================================"

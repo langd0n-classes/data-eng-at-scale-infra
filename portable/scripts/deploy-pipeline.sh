@@ -58,9 +58,8 @@ echo ""
 info "Step 2 — Tekton Tasks + Pipeline..."
 envsubst '${KUBECTL_CLI_IMAGE}' < "${REPO_ROOT}/pipeline/portable/tasks/deploy-kafka-task.yaml" | kubectl apply -f -
 envsubst '${KUBECTL_CLI_IMAGE}' < "${REPO_ROOT}/pipeline/portable/tasks/deploy-event-generator-task.yaml" | kubectl apply -f -
-envsubst '${KUBECTL_CLI_IMAGE}' < "${REPO_ROOT}/pipeline/portable/tasks/check-source-changed-task.yaml" | kubectl apply -f -
+envsubst '${KUBECTL_CLI_IMAGE}' < "${REPO_ROOT}/pipeline/portable/tasks/check-redeploy-needed-task.yaml" | kubectl apply -f -
 kubectl apply -f "${REPO_ROOT}/pipeline/portable/tasks/git-clone-task.yaml"
-kubectl apply -f "${REPO_ROOT}/pipeline/portable/tasks/build-push-image-task.yaml"
 kubectl apply -f "${REPO_ROOT}/pipeline/portable/pipelines/deploy-all-teams-pipeline.yaml"
 
 echo ""

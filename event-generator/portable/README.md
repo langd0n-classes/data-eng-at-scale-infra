@@ -14,10 +14,10 @@ no OpenShift API calls anywhere in the application logic).
 
 ## Compatibility
 
-Plain `kubectl`, a pre-built image pulled from an in-cluster registry
-(`registry/portable/`) instead of an `ImageStream`/`BuildConfig` pair. Runs
-on any conformant Kubernetes cluster: Kind, k3s, EKS, GKE, AKS, a
-bare-metal cluster, etc.
+Plain `kubectl`, a pre-built image pulled from GHCR
+(`ghcr.io/langd0n-classes/event-generator`) instead of an
+`ImageStream`/`BuildConfig` pair. Runs on any conformant Kubernetes
+cluster: Kind, k3s, EKS, GKE, AKS, a bare-metal cluster, etc.
 
 ## Prerequisites
 
@@ -27,8 +27,10 @@ bare-metal cluster, etc.
 - **Kafka deployed for each team** — `kafka/portable/README.md` (needed
   for `TEAM_BOOTSTRAP_SERVERS` below — there's nothing to produce events
   to otherwise)
-- **An image already pushed to the registry** — see "Prerequisite: an
-  image in the registry" below for the two ways to get there
+- **The GHCR pull secret created** — `portable/README.md`'s "Before you
+  start" (needed to pull a private image)
+- **An image already pushed to GHCR** — see "Prerequisite: an image in
+  GHCR" below for how
 - **`config.env` created and filled in** — see below
 
 ## Before you start: update config.env
@@ -43,16 +45,21 @@ these, which need a specific value, not just any value:
 
 | Variable | Notes |
 |---|---|
-| `EVENT_GENERATOR_IMAGE` | Must already exist in the registry under this exact reference — either pushed by the full pipeline (`pipeline/portable/`), or by `build-and-push.sh` below |
+| `EVENT_GENERATOR_IMAGE` | Must already exist in GHCR under this exact reference — pushed automatically by `.github/workflows/build-event-generator.yml` on every commit touching `event-generator/`, or manually by `build-and-push.sh` below |
 | `TEAM_BOOTSTRAP_SERVERS` | One `team_id=bootstrap_server` entry per team you've deployed Kafka for — see `kafka/portable/README.md` |
 | `TOPIC`, `KAFKA_BOOTSTRAP_SERVERS` | Leave commented out/empty — single-cluster mode only, not the multi-team mode used throughout this validation |
 
-## Prerequisite: an image in the registry
+## Prerequisite: an image in GHCR
 
 This Deployment only ever *runs* an already-built image — it never builds
-one itself. `EVENT_GENERATOR_IMAGE` must already be pushed to the registry
-(`registry/portable/`) before step 1 below will work, either via the full
-pipeline (`pipeline/portable/`), or standalone:
+one itself. `EVENT_GENERATOR_IMAGE` must already be pushed to GHCR before
+step 1 below will work. Normally that just happens automatically — every
+commit touching `event-generator/` triggers
+`.github/workflows/build-event-generator.yml`. To build+push manually
+instead (testing a change before it's committed, or without waiting on
+CI), `build-and-push.sh` uses local Docker — needs a `docker login
+ghcr.io` first, with a PAT that has `write:packages` (different from, and
+more privileged than, the cluster's own read-only `ghcr-pull-secret`):
 
 ```bash
 source config.env
@@ -61,32 +68,22 @@ bash event-generator/portable/build-and-push.sh git                    # pick on
 bash event-generator/portable/build-and-push.sh local event-generator  # pick one: from your local checkout
 ```
 ```
-INFO Pushing image to localhost:30500/event-generator:latest
-INFO Pushed localhost:30500/event-generator@sha256:1a3c5d60e157070bee46b7b9f07413b6834bc2379f49e643f3a5d8b21dc04e44
+=> [internal] load build definition from Dockerfile
+=> => naming to ghcr.io/langd0n-classes/event-generator:latest
+latest: digest: sha256:1a3c5d60e157070bee46b7b9f07413b6834bc2379f49e643f3a5d8b21dc04e44 size: 1234
 ```
 
-Runs kaniko as a plain Pod — no Docker daemon needed, works the same on a
-real cluster as on Kind. Both modes build from a small, short-lived 1Gi PVC
-(`git`: shallow+sparse clone; `local`: `kubectl cp`), never the whole repo,
-and the script deletes it when done.
-
-**Idempotent:** the script hashes only `src/` + `Dockerfile` (not docs) and
-compares it to a `source-hash` annotation already on the Deployment.
-Unchanged — it skips the build entirely. Changed — it builds, pushes,
-stamps the new hash, and runs `kubectl rollout restart` so the change
-actually goes live (plain `kubectl apply` alone won't — the image tag never
-changes, so nothing tells Kubernetes to restart the pod). This needs
-`imagePullPolicy: Always` on the Deployment (already set).
-
-The real pipeline (`pipeline/portable/`) does the identical check via
-`tasks/check-source-changed-task.yaml`, so a pipeline run that didn't touch
-the event generator skips rebuilding/redeploying it too.
+If a matching Deployment already exists, the script rolls it to pick up
+the new image — `imagePullPolicy: Always` on the Deployment (already set)
+is what makes the restarted pod actually pull the fresh push instead of
+reusing whatever it had cached under the same `:latest` tag.
 
 ## Validation walkthrough
 
 Validated on: Kubernetes (Kind) v1.34.11, using the image built and pushed
-in `pipeline/portable/` (`localhost:30500/event-generator:test2`) and Kafka
-for `team01` deployed via `kafka/portable/`.
+by `.github/workflows/build-event-generator.yml`
+(`ghcr.io/langd0n-classes/event-generator:latest`) and Kafka for `team01`
+deployed via `kafka/portable/`.
 
 **1. Deploy the ConfigMap and Deployment**
 
@@ -102,7 +99,7 @@ export TOPIC_PREFIX="events." TOPIC_SUFFIX=".raw" TOPIC=""
 export REGIONS="Boston,Worcester"
 export TEAM_BOOTSTRAP_SERVERS="team01=kafka-team01-kafka-bootstrap.team-01.svc.cluster.local:9092"
 export KAFKA_BOOTSTRAP_SERVERS=""
-export EVENT_GENERATOR_IMAGE="localhost:30500/event-generator:test2"
+export EVENT_GENERATOR_IMAGE="ghcr.io/langd0n-classes/event-generator:latest"
 
 envsubst < event-generator/portable/k8s/configmap.yaml | kubectl apply -f -   # team bootstrap servers, topic names, etc.
 envsubst < event-generator/portable/k8s/deployment.yaml | kubectl apply -f -  # the actual Deployment + Service

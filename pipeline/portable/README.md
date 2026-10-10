@@ -1,10 +1,9 @@
 # Portable Pipeline (Kind / k3s)
 
 A `kubectl`-only variant of Tekton CI/CD for the portable Fall 2026
-platform: Tekton Pipelines, a read-only Tekton Dashboard, an in-cluster
-image registry, and a per-team deploy pipeline (Kafka + event generator,
-deliberately no NiFi) — no OpenShift Pipelines operator, no OpenShift
-Routes/BuildConfigs/ImageStreams, no cloud account, no paid service.
+platform: Tekton Pipelines, a read-only Tekton Dashboard, and a deploy
+pipeline that provisions each team's Kafka and the one shared event
+generator.
 
 This does **not** replace the OpenShift path. `pipeline/setup.sh`,
 `pipeline/ops.sh`, and everything under `pipeline/tasks/`,
@@ -35,9 +34,9 @@ verify each one there, not here:
   `kafka/portable/scripts/deploy.sh`)
 - **ingress-nginx + cloud-provider-kind** installed —
   `ingress/portable/README.md` (needed to expose the Tekton Dashboard)
-- **In-cluster registry** deployed — `registry/portable/README.md` (needed
-  for the image-build Task below; its own build/push/pull behavior is
-  tested there, not here)
+- **The GHCR pull secret created** — `portable/README.md`'s "Before you
+  start" (needed for the deploy-event-generator Task below to pull its
+  image)
 - **Team namespaces onboarded** — `onboarding/portable/README.md` (needed
   before the deploy-kafka / deploy-event-generator Tasks below have
   anywhere to deploy into)
@@ -53,11 +52,11 @@ first:
 cp config.env.example config.env
 ```
 
-Then edit `config.env` and set: `VOLUME_SIZE`, `REGISTRY_VOLUME_SIZE`,
-`REGISTRY_NODE_PORT`, `KUBECTL_CLI_IMAGE`, `EVENT_GENERATOR_NAME`,
-`EVENT_GENERATOR_IMAGE`, `EVENT_RATE_PER_SEC`, `TOPIC_PREFIX`,
-`TOPIC_SUFFIX`, `REGIONS`, `TEAM_BOOTSTRAP_SERVERS`, and `SPARK_IMAGE` —
-plus these, which need a specific value, not just any value:
+Then edit `config.env` and set: `VOLUME_SIZE`, `KUBECTL_CLI_IMAGE`,
+`EVENT_GENERATOR_NAME`, `EVENT_GENERATOR_IMAGE`, `EVENT_RATE_PER_SEC`,
+`TOPIC_PREFIX`, `TOPIC_SUFFIX`, `REGIONS`, `TEAM_BOOTSTRAP_SERVERS`, and
+`SPARK_IMAGE` — plus these, which need a specific value, not just any
+value:
 
 | Variable                        | Notes                                                                                                                                                     |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -225,10 +224,10 @@ hold.
 
 ## The full per-team deploy pipeline
 
-Five Tasks chained by one Pipeline: clone → check if the event generator's
-source changed → (if changed) build+push its image → deploy every team's
-Kafka in parallel → (if changed) deploy the event generator once, after
-every team's Kafka is up. Same shape as
+Four Tasks chained by one Pipeline: clone → check whether the event
+generator needs redeploying (its GHCR image digest or its runtime config
+changed) → deploy every team's Kafka in parallel → (if needed) deploy the
+event generator once, after every team's Kafka is up. Same shape as
 `pipeline/pipelines/01-pipeline-deploy-all-teams.yaml`, minus NiFi. It
 hardcodes team1 through team15 (Tekton's `matrix` can't derive one param
 from another, e.g. building "team-01" out of "team" + "01") — a class with
@@ -236,22 +235,18 @@ fewer than 15 teams just leaves the unused `TEAMn_NAME` slots blank or
 `"skip"`, and each `deploy-kafka-teamN` Task has its own `when` guard
 skipping it.
 
-**1. Apply the Tasks** — three use fixed images (git, kaniko), two need
+**1. Apply the Tasks** — `git-clone` uses a fixed image; the rest need
 `${KUBECTL_CLI_IMAGE}` substituted (they run plain kubectl commands):
 
 ```bash
 source config.env
 kubectl apply -f pipeline/portable/tasks/git-clone-task.yaml
-kubectl apply -f pipeline/portable/tasks/build-push-image-task.yaml
-envsubst '${KUBECTL_CLI_IMAGE}' < pipeline/portable/tasks/check-source-changed-task.yaml | kubectl apply -f -
+envsubst '${KUBECTL_CLI_IMAGE}' < pipeline/portable/tasks/check-redeploy-needed-task.yaml | kubectl apply -f -
 envsubst '${KUBECTL_CLI_IMAGE}' < pipeline/portable/tasks/deploy-kafka-task.yaml | kubectl apply -f -
 envsubst '${KUBECTL_CLI_IMAGE}' < pipeline/portable/tasks/deploy-event-generator-task.yaml | kubectl apply -f -
 ```
 
-**2. Apply the Pipeline** — its `PipelineRun` needs `hostNetwork: true` on
-the pod template (`spec.taskRunTemplate.podTemplate.hostNetwork: true`),
-so the build step can reach `localhost:${REGISTRY_NODE_PORT}` — see
-`registry/portable/README.md` for why:
+**2. Apply the Pipeline**:
 
 ```bash
 kubectl apply -f pipeline/portable/pipelines/deploy-all-teams-pipeline.yaml
@@ -312,9 +307,9 @@ kubectl get pod -n team-01 -l strimzi.io/cluster=kafka-team01 -o jsonpath='{.ite
 # 0 — broker never restarted
 ```
 
-The event generator is idempotent too: a third re-run with no source
-change skipped `build-event-generator-image` and `deploy-event-generator`
-entirely (neither `TaskRun` was even created) — see
+The event generator is idempotent too: a third re-run with nothing
+changed (same GHCR digest, same config) skipped `deploy-event-generator`
+entirely (its `TaskRun` was never even created) — see
 `event-generator/portable/README.md` for the mechanism.
 
 **7. Unused team slots are skipped, not attempted-and-failed** —
@@ -322,7 +317,7 @@ confirmed for real: with `config.env` configured for 2 real teams and 13
 slots left as `"skip"`, only 2 `deploy-kafka-teamN` pods were created; the
 other 13 were cleanly skipped.
 
-The full 15-team pipeline definition (19 Tasks, 46 params) was confirmed
+The full 15-team pipeline definition (18 Tasks, 44 params) was confirmed
 structurally valid by Tekton's own admission webhook; live validation used
 2 teams — each team block is mechanically identical to the two already
 proven, and running all 15 Kafka brokers simultaneously wasn't necessary

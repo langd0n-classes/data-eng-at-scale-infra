@@ -1,15 +1,17 @@
 # event-generator/portable/k8s/deployment.yaml
 #
 # kubectl-only equivalent of event-generator/k8s/04-deployment.yaml — a
-# plain Deployment pulling a pre-built image from the in-cluster registry
-# (registry/portable/), no ImageStream/BuildConfig and no
-# `image.openshift.io/triggers` annotation. The image itself is built and
-# pushed by pipeline/portable/tasks/build-push-image-task.yaml.
+# plain Deployment pulling a pre-built private image from GHCR, no
+# ImageStream/BuildConfig and no `image.openshift.io/triggers` annotation.
+# The image itself is built and pushed by
+# .github/workflows/build-event-generator.yml on every commit touching
+# event-generator/, not by anything in this cluster.
 #
-# ${EVENT_GENERATOR_IMAGE} must be the exact reference the build Task
-# pushed to, e.g. localhost:${REGISTRY_NODE_PORT}/${EVENT_GENERATOR_NAME}:latest
-# — see registry/portable/README.md for why it's `localhost:<nodePort>`
-# rather than the registry Service's cluster-DNS name.
+# ${EVENT_GENERATOR_IMAGE} is ghcr.io/langd0n-classes/event-generator:latest
+# (see config.env.example) — private, so the Deployment also needs
+# imagePullSecrets pointing at the one ghcr-pull-secret credential in
+# infra (see portable/README.md's "Before you start" for how to create
+# it).
 #
 # event_generator.py and check_events.py need no changes at all — both are
 # already fully portable (env-var driven, no OpenShift API calls anywhere
@@ -34,6 +36,8 @@ spec:
       labels:
         app: ${EVENT_GENERATOR_NAME}
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
       containers:
         - name: generator
           image: ${EVENT_GENERATOR_IMAGE}
