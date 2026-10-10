@@ -2,8 +2,9 @@
 #
 # Runs scripts/queue-controller.py as a single Deployment in the infra
 # namespace (shared, per this repo's own namespace convention). RBAC is
-# scoped to exactly what it needs — get/list/watch/patch on Jobs
-# cluster-wide, nothing else, not full cluster-admin.
+# scoped to exactly what it needs — get/list/watch/patch on Jobs and
+# read-only get/list/watch on Pods (to detect a stuck job whose pod never
+# started), cluster-wide, nothing else, not full cluster-admin.
 #
 # Runs a pre-built image (spark-queue/portable/Dockerfile), published to
 # GHCR by .github/workflows/build-queue-controller.yml on every commit
@@ -11,14 +12,10 @@
 # ConfigMap mount and no pip install at pod startup.
 #
 # Usage:
-#   SPARK_IMAGE_REPO="${SPARK_IMAGE%:*}" \
-#   envsubst '${INFRA_NAMESPACE} ${SPARK_IMAGE_REPO} ${SPARK_QUEUE_CONTROLLER_IMAGE}' \
+#   envsubst '${INFRA_NAMESPACE} ${SPARK_QUEUE_CONTROLLER_IMAGE}' \
 #     < spark-queue/portable/manifests/queue-controller-deployment.yaml | kubectl apply -f -
 #
-# Required vars: INFRA_NAMESPACE, SPARK_IMAGE_REPO (SPARK_IMAGE with its
-# tag stripped — same value the admission policy itself matches on, so the
-# controller only counts Jobs that are actually Spark jobs, not anything
-# that merely carries the queue=spark label), SPARK_QUEUE_CONTROLLER_IMAGE
+# Required vars: INFRA_NAMESPACE, SPARK_QUEUE_CONTROLLER_IMAGE
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -38,6 +35,10 @@ rules:
     resources:
       - jobs
     verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources:
+      - pods
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -78,9 +79,6 @@ spec:
         - name: controller
           image: ${SPARK_QUEUE_CONTROLLER_IMAGE}
           imagePullPolicy: Always
-          env:
-            - name: SPARK_IMAGE_REPO
-              value: "${SPARK_IMAGE_REPO}"
           resources:
             requests:
               memory: 128Mi

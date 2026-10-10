@@ -5,14 +5,29 @@ Watches Jobs labeled queue=spark across every namespace and admits at most
 MAX_ACTIVE_JOBS at a time by flipping spec.suspend from true to false,
 oldest submission first. Never re-suspends a job once admitted.
 
-Also checks each Job's own container image against SPARK_IMAGE_REPO,
-the same repository (tag-stripped) the admission policy itself matches
-on — the label alone isn't enough to prove a Job is actually a Spark job,
-since nothing stops an unrelated Job from carrying it. Without this, any
-Job could occupy one of the cluster-wide slots this queue exists
-specifically to cap for Spark jobs (confirmed directly: a job labeled
-queue=spark but using a completely different image was still admitted
-and counted before this check existed).
+Classification is by the queue=spark label alone, matching
+spark-job-admission-policy.yaml's own design: once a Job wears that
+label, it's fully subject to suspend-gating and the 4-slot cap regardless
+of what image it runs — the admission policy already makes the label
+unspoofable (only the controller's own ServiceAccount may add/remove it
+after creation), so there's no need to additionally verify the image
+here too. An earlier version of this controller also filtered by image
+(SPARK_IMAGE_REPO) — removed, since keeping it would now incorrectly
+exclude a legitimately-labeled Job from counting just because it uses a
+different registry prefix or a digest reference, contradicting the
+label-only design the policy itself enforces.
+
+Also excludes a Job from the active count if it's been admitted
+(suspend=false) for longer than STUCK_GRACE_SECONDS with none of its pods
+ever reaching Running/Succeeded (a bad image tag stuck in
+ImagePullBackOff, or a pod stuck Pending because the team's ResourceQuota
+is full) — frees the slot for a waiting Job instead of letting a stuck
+submission hold it for its entire activeDeadlineSeconds window. Doesn't
+touch spec.suspend itself (an immediate resuspend would make it look
+"waiting" again and could get it right back in, right away, since it's
+still the oldest submission) — activeDeadlineSeconds (now required by
+the admission policy) is what actually terminates it, independently of
+this accounting fix.
 
 Uses a short poll loop rather than a live watch, deliberately: a missed
 watch event would otherwise wedge the queue until the controller restarts,
@@ -22,26 +37,37 @@ namespaces) that the simplicity is worth it.
 import logging
 import os
 import time
+from datetime import datetime, timezone
 
 from kubernetes import client, config
 
 MAX_ACTIVE_JOBS = int(os.environ.get("MAX_ACTIVE_JOBS", "4"))
 POLL_INTERVAL_SECONDS = int(os.environ.get("POLL_INTERVAL_SECONDS", "5"))
-SPARK_IMAGE_REPO = os.environ.get("SPARK_IMAGE_REPO", "")
+STUCK_GRACE_SECONDS = int(os.environ.get("STUCK_GRACE_SECONDS", "300"))
 QUEUE_LABEL_SELECTOR = "queue=spark"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("spark-queue-controller")
 
 
-def uses_spark_image(job) -> bool:
-    """Same scope the admission policy itself enforces: at least one
-    container using SPARK_IMAGE_REPO (any tag)."""
-    containers = job.spec.template.spec.containers or []
-    return any(
-        c.image and c.image.startswith(f"{SPARK_IMAGE_REPO}:")
-        for c in containers
-    )
+def is_stuck(job, core_api: "client.CoreV1Api") -> bool:
+    """True once a job has had STUCK_GRACE_SECONDS to start a pod and
+    still hasn't — no pod has reached Running or Succeeded. Covers both
+    a bad image tag (ImagePullBackOff) and a pod stuck Pending because
+    the team's ResourceQuota is full, without needing to distinguish
+    which — "never actually started" is the only thing that matters
+    for freeing its slot."""
+    start = job.status.start_time
+    if start is None:
+        return False
+    age = (datetime.now(timezone.utc) - start).total_seconds()
+    if age < STUCK_GRACE_SECONDS:
+        return False
+    pods = core_api.list_namespaced_pod(
+        job.metadata.namespace,
+        label_selector=f"job-name={job.metadata.name}",
+    ).items
+    return not any(p.status.phase in ("Running", "Succeeded") for p in pods)
 
 
 def is_active(job) -> bool:
@@ -55,19 +81,22 @@ def is_active(job) -> bool:
     return True
 
 
-def reconcile(batch_api: "client.BatchV1Api") -> None:
-    labeled = batch_api.list_job_for_all_namespaces(label_selector=QUEUE_LABEL_SELECTOR).items
+def reconcile(batch_api: "client.BatchV1Api", core_api: "client.CoreV1Api") -> None:
+    jobs = batch_api.list_job_for_all_namespaces(label_selector=QUEUE_LABEL_SELECTOR).items
 
-    jobs = [j for j in labeled if uses_spark_image(j)]
-    skipped = len(labeled) - len(jobs)
-    if skipped:
-        log.warning(
-            "ignoring %d job(s) labeled queue=spark but not using %s:* — "
-            "not actually a Spark job, not counted toward the cap",
-            skipped, SPARK_IMAGE_REPO,
-        )
+    active = []
+    for job in jobs:
+        if not is_active(job):
+            continue
+        if is_stuck(job, core_api):
+            log.warning(
+                "%s/%s stuck (admitted %ds+ ago, no pod ever reached Running) — "
+                "freeing its slot; activeDeadlineSeconds will actually terminate it",
+                job.metadata.namespace, job.metadata.name, STUCK_GRACE_SECONDS,
+            )
+            continue
+        active.append(job)
 
-    active = [j for j in jobs if is_active(j)]
     waiting = [j for j in jobs if j.spec.suspend]
     waiting.sort(key=lambda j: j.metadata.creation_timestamp)  # oldest submission first
 
@@ -86,14 +115,16 @@ def reconcile(batch_api: "client.BatchV1Api") -> None:
 def main() -> None:
     config.load_incluster_config()
     batch_api = client.BatchV1Api()
+    core_api = client.CoreV1Api()
     log.info(
-        "Spark queue controller started: max_active_jobs=%d poll_interval=%ds",
+        "Spark queue controller started: max_active_jobs=%d poll_interval=%ds stuck_grace=%ds",
         MAX_ACTIVE_JOBS,
         POLL_INTERVAL_SECONDS,
+        STUCK_GRACE_SECONDS,
     )
     while True:
         try:
-            reconcile(batch_api)
+            reconcile(batch_api, core_api)
         except Exception:
             log.exception("reconcile failed, will retry next poll")
         time.sleep(POLL_INTERVAL_SECONDS)
