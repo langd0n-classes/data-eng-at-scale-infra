@@ -5,26 +5,20 @@
 # scoped to exactly what it needs — get/list/watch/patch on Jobs
 # cluster-wide, nothing else, not full cluster-admin.
 #
-# Deliberately no custom-built image for this piece: a plain
-# python:3.12-slim installing the one dependency (kubernetes client) at
-# startup, matching this repo's "educational, simple" posture — one
-# script, no Dockerfile/build/push cycle needed for something this small.
-# The tradeoff (a network dependency at pod start) is acceptable at this
-# scale; the actual event-generator image (real runtime dependencies,
-# rebuilt often) is what genuinely needs the build pipeline in
-# pipeline/portable/.
+# Runs a pre-built image (spark-queue/portable/Dockerfile), published to
+# GHCR by .github/workflows/build-queue-controller.yml on every commit
+# touching spark-queue/portable/ — queue-controller.py is baked in, no
+# ConfigMap mount and no pip install at pod startup.
 #
 # Usage:
-#   kubectl create configmap spark-queue-controller-script \
-#     --from-file=queue-controller.py=spark-queue/portable/scripts/queue-controller.py \
-#     -n infra --dry-run=client -o yaml | kubectl apply -f -
-#   SPARK_IMAGE_REPO="${SPARK_IMAGE%:*}" envsubst '${INFRA_NAMESPACE} ${SPARK_IMAGE_REPO}' \
+#   SPARK_IMAGE_REPO="${SPARK_IMAGE%:*}" \
+#   envsubst '${INFRA_NAMESPACE} ${SPARK_IMAGE_REPO} ${SPARK_QUEUE_CONTROLLER_IMAGE}' \
 #     < spark-queue/portable/manifests/queue-controller-deployment.yaml | kubectl apply -f -
 #
 # Required vars: INFRA_NAMESPACE, SPARK_IMAGE_REPO (SPARK_IMAGE with its
 # tag stripped — same value the admission policy itself matches on, so the
 # controller only counts Jobs that are actually Spark jobs, not anything
-# that merely carries the queue=spark label)
+# that merely carries the queue=spark label), SPARK_QUEUE_CONTROLLER_IMAGE
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -78,18 +72,15 @@ spec:
         app: spark-queue-controller
     spec:
       serviceAccountName: spark-queue-controller
+      imagePullSecrets:
+        - name: ghcr-pull-secret
       containers:
         - name: controller
-          image: python:3.12-slim
-          command: ["/bin/sh", "-c"]
-          args:
-            - "pip install --no-cache-dir kubernetes==31.0.0 && python /app/queue-controller.py"
+          image: ${SPARK_QUEUE_CONTROLLER_IMAGE}
+          imagePullPolicy: Always
           env:
             - name: SPARK_IMAGE_REPO
               value: "${SPARK_IMAGE_REPO}"
-          volumeMounts:
-            - name: script
-              mountPath: /app
           resources:
             requests:
               memory: 128Mi
@@ -97,7 +88,3 @@ spec:
             limits:
               memory: 256Mi
               cpu: 200m
-      volumes:
-        - name: script
-          configMap:
-            name: spark-queue-controller-script

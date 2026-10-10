@@ -97,15 +97,12 @@ for id in 01 02; do
     < spark-queue/portable/manifests/team-jobs-resourcequota.yaml | kubectl apply -f -
 done
 
-# the controller script, as a ConfigMap the Deployment below mounts
-kubectl create configmap spark-queue-controller-script \
-  --from-file=queue-controller.py=spark-queue/portable/scripts/queue-controller.py \
-  -n infra --dry-run=client -o yaml | kubectl apply -f -
-# the controller itself (RBAC + Deployment) — also reads SPARK_IMAGE_REPO
+# the controller itself (RBAC + Deployment, running a pre-built GHCR
+# image, no ConfigMap/pip-install step) — also reads SPARK_IMAGE_REPO
 # so it only counts Jobs that actually use the configured Spark image, not
 # anything that merely carries the queue=spark label
 export SPARK_IMAGE_REPO="${SPARK_IMAGE%:*}"
-envsubst '${INFRA_NAMESPACE} ${SPARK_IMAGE_REPO}' < spark-queue/portable/manifests/queue-controller-deployment.yaml | kubectl apply -f -
+envsubst '${INFRA_NAMESPACE} ${SPARK_IMAGE_REPO} ${SPARK_QUEUE_CONTROLLER_IMAGE}' < spark-queue/portable/manifests/queue-controller-deployment.yaml | kubectl apply -f -
 
 # the enforcement policy — matches on SPARK_IMAGE's repository (tag
 # stripped), so any tag of the configured image is caught, not just the
@@ -254,12 +251,12 @@ every other attempt.
 | `MAX_ACTIVE_JOBS` (controller env) | `4` | Cluster-wide cap |
 | `POLL_INTERVAL_SECONDS` (controller env) | `5` | Reconcile loop interval |
 | `SPARK_IMAGE_REPO` (controller env) | *(required)* | `SPARK_IMAGE` with its tag stripped — same value the admission policy matches on; a labeled Job using any other image is ignored |
+| `SPARK_QUEUE_CONTROLLER_IMAGE` | *(required)* | The controller's own pre-built GHCR image (not to be confused with `SPARK_IMAGE`, which is what student Spark jobs run) |
 
 ## Cleanup
 
 ```bash
 kubectl delete -f spark-queue/portable/manifests/spark-job-admission-policy.yaml --ignore-not-found
 kubectl delete -f spark-queue/portable/manifests/queue-controller-deployment.yaml --ignore-not-found
-kubectl delete configmap spark-queue-controller-script -n infra --ignore-not-found
 for id in 01 02; do kubectl delete resourcequota team-spark-jobs-quota -n team-$id --ignore-not-found; done
 ```
