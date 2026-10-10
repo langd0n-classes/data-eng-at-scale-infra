@@ -2,8 +2,8 @@
 # portable/scripts/status-platform.sh
 #
 # Read-only status report for the whole portable platform: every
-# cluster-wide prerequisite, the registry, onboarding, the Spark queue,
-# and per-team Kafka + the shared event generator. Mirrors ops.sh's
+# cluster-wide prerequisite, onboarding, the Spark queue, and per-team
+# Kafka + the shared event generator. Mirrors ops.sh's
 # cmd_status/cmd_status_all pattern — always safe to run, never changes
 # anything.
 #
@@ -34,10 +34,9 @@ EXTERNAL_IP="$(kubectl get service ingress-nginx-controller -n ingress-nginx \
   -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)"
 echo "ingress-nginx external IP: ${EXTERNAL_IP:-<pending>}"
 
-section "Registry"
-kubectl get deployment registry -n "${INFRA_NAMESPACE}" --no-headers 2>/dev/null \
-  || echo "registry: not found"
-kubectl get service registry -n "${INFRA_NAMESPACE}" --no-headers 2>/dev/null || true
+section "GHCR pull credential"
+kubectl get secret ghcr-pull-secret -n "${INFRA_NAMESPACE}" --no-headers 2>/dev/null \
+  || echo "ghcr-pull-secret: not found — see portable/README.md's \"Before you start\""
 
 section "Onboarding (namespaces)"
 kubectl get namespace -l app=data-eng-infra --no-headers 2>/dev/null || echo "none found"

@@ -8,8 +8,8 @@
 # Full team-to-team isolation, not scoped to any one service: a pod in this
 # team's namespace can be reached by (a) other pods in the same namespace,
 # and (b) pods in the infra namespace (which hosts the shared event
-# generator, Tekton, the in-cluster registry, and the Spark queue
-# controller) — and by nothing else. No team can reach any other team's
+# generator, Tekton, and the Spark queue controller) — and by nothing
+# else. No team can reach any other team's
 # pods or services, Kafka included but not limited to it.
 #
 # This is ingress-only by design: it's enforced at the destination

@@ -8,8 +8,8 @@
 #   - onboarding (team namespaces, quota, ServiceAccount, RBAC,
 #     NetworkPolicy, per-team Spark quota — all tied to
 #     onboarding/cluster.env's NUM_TEAMS)
-#   - shared infra services (the in-cluster registry, the Spark queue
-#     controller + admission policy)
+#   - shared infra services (the Spark queue controller + admission
+#     policy)
 #   - the Tekton Dashboard's Ingress (applied last on purpose — see Step 6)
 #
 # Deliberately does NOT include pipeline RBAC, Tekton Tasks/Pipeline, or
@@ -41,8 +41,8 @@ if [[ ! -f "${REPO_ROOT}/config.env" ]]; then
 fi
 source "${REPO_ROOT}/config.env"
 
-for var in INFRA_NAMESPACE STORAGE_CLASS REGISTRY_VOLUME_SIZE \
-           REGISTRY_NODE_PORT SPARK_IMAGE DASHBOARD_HOST; do
+for var in INFRA_NAMESPACE STORAGE_CLASS SPARK_IMAGE \
+           SPARK_QUEUE_CONTROLLER_IMAGE DASHBOARD_HOST; do
   val="${!var:-}"
   if [[ -z "$val" ]]; then
     echo "ERROR: ${var} is not set in config.env"
@@ -85,23 +85,21 @@ else
 fi
 
 echo ""
-info "Step 4 — In-cluster registry..."
-envsubst '${INFRA_NAMESPACE} ${STORAGE_CLASS} ${REGISTRY_VOLUME_SIZE} ${REGISTRY_NODE_PORT}' \
-  < "${REPO_ROOT}/registry/portable/manifests/registry.yaml" | kubectl apply -f -
-kubectl rollout status deployment/registry -n "${INFRA_NAMESPACE}" --timeout=120s
-
-echo ""
-info "Step 5 — Spark queue controller + admission policy..."
-kubectl create configmap spark-queue-controller-script \
-  --from-file=queue-controller.py="${REPO_ROOT}/spark-queue/portable/scripts/queue-controller.py" \
-  -n "${INFRA_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+info "Step 4 — Spark queue controller + admission policy..."
 SPARK_IMAGE_REPO="${SPARK_IMAGE%:*}"
 export SPARK_IMAGE_REPO
-envsubst '${INFRA_NAMESPACE} ${SPARK_IMAGE_REPO}' < "${REPO_ROOT}/spark-queue/portable/manifests/queue-controller-deployment.yaml" | kubectl apply -f -
+envsubst '${INFRA_NAMESPACE} ${SPARK_IMAGE_REPO} ${SPARK_QUEUE_CONTROLLER_IMAGE}' \
+  < "${REPO_ROOT}/spark-queue/portable/manifests/queue-controller-deployment.yaml" | kubectl apply -f -
+# Always restart, not just on manifest-text change — the image tag is
+# always :latest, so a new GHCR build never shows up as a kubectl-apply
+# diff on its own. Cheap here: this is a rare, manually-run install, not
+# a tight per-team loop.
+kubectl rollout restart deployment/spark-queue-controller -n "${INFRA_NAMESPACE}"
+kubectl rollout status deployment/spark-queue-controller -n "${INFRA_NAMESPACE}" --timeout=120s
 envsubst '${SPARK_IMAGE_REPO}' < "${REPO_ROOT}/spark-queue/portable/manifests/spark-job-admission-policy.yaml" | kubectl apply -f -
 
 echo ""
-info "Step 6 — Tekton Dashboard Ingress..."
+info "Step 5 — Tekton Dashboard Ingress..."
 # Applying an Ingress before ingress-nginx's admission webhook is actually
 # reachable fails with "connection refused" — confirmed directly, even
 # when its Endpoints object already looks ready (kube-proxy's own
@@ -123,7 +121,7 @@ until echo "${DASHBOARD_INGRESS_RENDERED}" | kubectl apply -f -; do
 done
 
 echo ""
-info "Step 7 — Tekton Dashboard link..."
+info "Step 6 — Tekton Dashboard link..."
 EXTERNAL_IP="$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)"
 # Test the thing that actually matters — does DASHBOARD_HOST already
 # resolve to something — rather than guessing from which platform this

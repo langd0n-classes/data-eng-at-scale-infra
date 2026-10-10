@@ -5,9 +5,9 @@
 # onboarding/portable/apply-onboarding.sh's own namespace creation: every
 # team namespace AND the infra namespace itself (if you only want to wipe
 # the Kafka/event-generator state and keep onboarding, use
-# teardown-pipeline.sh instead). Deleting infra cascades the registry, the
-# Spark queue controller, and infra's own quota/limitrange/RBAC — all of
-# it lives inside that namespace. What a namespace delete can't reach
+# teardown-pipeline.sh instead). Deleting infra cascades the Spark queue
+# controller and infra's own quota/limitrange/RBAC — all of it lives
+# inside that namespace. What a namespace delete can't reach
 # (cluster-scoped objects: the admission policy, its ClusterRole/
 # ClusterRoleBinding) is removed explicitly. Also removes the Tekton
 # Dashboard Ingress and the cluster-wide prerequisites themselves (Strimzi,
@@ -46,7 +46,7 @@ echo " Tearing down prerequisites"
 echo "============================================================"
 
 echo ""
-info "Removing onboarded namespaces (team-*, ${INFRA_NAMESPACE}) — cascades Kafka CRs/PVCs, the registry, the Spark queue controller, quota, RBAC, NetworkPolicy..."
+info "Removing onboarded namespaces (team-*, ${INFRA_NAMESPACE}) — cascades Kafka CRs/PVCs, the Spark queue controller, quota, RBAC, NetworkPolicy..."
 # --timeout bounds the wait (kubectl's own default is "wait forever" for a stuck
 # finalizer — confirmed directly: --wait=true and --timeout=0s are kubectl delete's
 # own defaults) — a stuck Calico-related delete hung exactly this way earlier in

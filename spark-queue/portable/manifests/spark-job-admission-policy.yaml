@@ -30,8 +30,8 @@
 # matchConditions simply never trigger. Matching on the repository still
 # means only the repo you actually configured is ever affected — switching
 # SPARK_IMAGE to a different distribution entirely (bitnami/spark, a
-# custom image pushed to the in-cluster registry, etc.) just works, no
-# policy change needed.
+# custom image from your own registry, etc.) just works, no policy
+# change needed.
 #
 # Usage:
 #   SPARK_IMAGE_REPO="${SPARK_IMAGE%:*}" envsubst '${SPARK_IMAGE_REPO}' \

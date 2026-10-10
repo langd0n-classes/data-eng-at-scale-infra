@@ -2,7 +2,7 @@
 #
 # kubectl-only equivalent of onboarding/01-infra-namespace.yaml. Creates the
 # shared infrastructure namespace where the event generator, Tekton
-# pipelines, the in-cluster registry, and the Spark queue controller live.
+# pipelines, and the Spark queue controller live.
 #
 # Usage:
 #   source onboarding/portable/cluster.env && \

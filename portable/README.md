@@ -7,9 +7,8 @@ component's own `README.md` for what each piece actually does and how to
 test it standalone.
 
 Covered elsewhere: `onboarding/portable/README.md`, `kafka/portable/README.md`,
-`registry/portable/README.md`, `event-generator/portable/README.md`,
-`ingress/portable/README.md`, `spark-queue/portable/README.md`,
-`pipeline/portable/README.md`.
+`event-generator/portable/README.md`, `ingress/portable/README.md`,
+`spark-queue/portable/README.md`, `pipeline/portable/README.md`.
 
 ## Before you start
 
@@ -32,6 +31,43 @@ cp onboarding/cluster.env.example onboarding/cluster.env
 # edit both — see each component's own README for which variables matter
 ```
 
+### Then, create the GHCR pull secret
+
+Event-generator and the Spark queue controller are private GHCR images
+(`ghcr.io/langd0n-classes/...`), built by GitHub Actions — nothing in
+this repo builds them in-cluster anymore. `install-prerequisites.sh`
+below deploys the queue controller from this image, so the pull
+credential has to exist first:
+
+```bash
+kubectl create namespace infra --dry-run=client -o yaml | kubectl apply -f -
+
+# Generate a classic GitHub PAT first: Settings -> Developer settings ->
+# Personal access tokens -> Tokens (classic) -> scope read:packages only,
+# with an expiration (don't leave it permanent).
+#
+# Read it into a variable rather than typing it as a literal argument —
+# a literal --docker-password=YOUR_TOKEN leaks into shell history and
+# briefly into `ps aux`. The -p/prompt flag on `read` differs between
+# bash and zsh, so prompt with a plain echo instead — portable either way:
+echo -n "GHCR PAT (read:packages): "
+read -rs GHCR_PAT
+echo
+# Replace YOUR_GITHUB_USERNAME below with your actual GitHub username —
+# no brackets, this is a real argument, not a placeholder marker (a
+# literal <...> is shell redirection syntax, not something to paste as-is).
+kubectl create secret docker-registry ghcr-pull-secret \
+  --docker-server=ghcr.io \
+  --docker-username=YOUR_GITHUB_USERNAME \
+  --docker-password="${GHCR_PAT}" \
+  -n infra
+unset GHCR_PAT
+```
+
+Never redirect `kubectl create secret ... -o yaml` to a file inside the
+repo, even temporarily. Nothing else to create manually — GitHub Actions
+pushes using its own built-in `GITHUB_TOKEN`, not a PAT.
+
 ## The commands
 
 Split by **what actually changes together**: prerequisites (install once,
@@ -44,8 +80,8 @@ can run, and none of it changes when the pipeline's own definition does:
 cluster-wide installs (Strimzi, Tekton Pipelines, Tekton Dashboard,
 ingress-nginx), onboarding (team namespaces, quota, ServiceAccount, RBAC,
 NetworkPolicy, per-team Spark quota), and shared infra services (the
-in-cluster registry, the Spark queue controller + admission policy, the
-Dashboard's Ingress). Idempotent — safe to re-run.
+Spark queue controller + admission policy, the Dashboard's Ingress).
+Idempotent — safe to re-run.
 
 > Students submit Spark jobs using
 > `spark-queue/portable/manifests/team-spark-job-template.yaml` — it
@@ -109,8 +145,8 @@ bash portable/scripts/teardown-pipeline.sh
 
 **6. `teardown-prerequisites.sh`** — undoes step 1, in full symmetry with
 onboarding's own namespace creation: every team namespace *and* the infra
-namespace itself (cascading everything inside each — the registry, the
-Spark queue controller included), plus the Spark queue's cluster-scoped
+namespace itself (cascading everything inside each — the Spark queue
+controller included), plus the Spark queue's cluster-scoped
 objects (admission policy, RBAC — a namespace delete can't reach those),
 the Dashboard Ingress, and the cluster-wide prerequisites themselves.
 Rarely needed — mainly for a real shared cloud cluster, where deleting the
@@ -159,9 +195,8 @@ tekton-dashboard   1/1   1   1   4m31s
 ingress-nginx-controller   1/1   1   1   4m29s
 ingress-nginx external IP: 172.18.0.3
 
-── Registry ──
-registry   1/1   1   1   2m13s
-registry   NodePort   10.96.42.67   <none>   5000:30500/TCP   2m13s
+── GHCR pull credential ──
+ghcr-pull-secret   kubernetes.io/dockerconfigjson   1   2m13s
 
 ── Onboarding (namespaces) ──
 infra     Active   3d14h
