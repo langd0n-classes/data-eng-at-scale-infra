@@ -18,3 +18,17 @@ metadata:
   labels:
     app: data-eng-infra
     team: team-${TEAM_ID}
+    # Pod Security Admission: baseline is the real floor (blocks
+    # privileged/hostPath/hostNetwork pods — edit RBAC alone doesn't).
+    # restricted was tried first and confirmed live to reject Kafka
+    # (Strimzi's broker pod never reached Ready) and even a plain
+    # nginx/busybox pod with no securityContext set, so it's used here
+    # only as warn/audit — visible in the API response/audit log for any
+    # future pod that would violate it, without blocking anything that
+    # actually needs to run today.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: v1.34
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.34
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.34

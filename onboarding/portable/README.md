@@ -125,6 +125,27 @@ rolebinding.rbac.authorization.k8s.io/team-workload-edit   ClusterRole/edit
 networkpolicy.networking.k8s.io/team-isolation
 ```
 
+Team namespaces also enforce Pod Security Admission at `baseline`
+(blocks privileged/hostPath/hostNetwork pods — `edit` RBAC alone doesn't)
+with `restricted` set as `warn`/`audit` only, since `restricted` rejects
+Kafka's own broker pod:
+
+```bash
+kubectl get namespace team-01 -o jsonpath='{.metadata.labels}'
+```
+```
+{"pod-security.kubernetes.io/audit":"restricted", ...
+ "pod-security.kubernetes.io/enforce":"baseline", ...
+ "pod-security.kubernetes.io/warn":"restricted", ...}
+```
+
+```bash
+kubectl run test --image=nginx:alpine -n team-01 --overrides='{"spec":{"hostNetwork":true}}'
+```
+```
+Error from server (Forbidden): pods "test" is forbidden: violates PodSecurity "baseline:v1.34": host namespaces (hostNetwork=true)
+```
+
 **3. Test cross-team isolation, for real**
 
 ```bash
