@@ -7,10 +7,18 @@
 #
 # Full team-to-team isolation, not scoped to any one service: a pod in this
 # team's namespace can be reached by (a) other pods in the same namespace,
-# and (b) pods in the infra namespace (which hosts the shared event
-# generator, Tekton, and the Spark queue controller) — and by nothing
-# else. No team can reach any other team's
-# pods or services, Kafka included but not limited to it.
+# (b) pods in the infra namespace (which hosts the shared event
+# generator, Tekton, and the Spark queue controller), and (c) the shared
+# ingress-nginx controller (ingress/portable/) — and by nothing else. No
+# team can reach any other team's pods or services, Kafka included but
+# not limited to it.
+#
+# (c) is needed because an Ingress pointing at a team Service proxies the
+# request through the ingress-nginx controller's own pod — a different
+# source than the original client, in its own namespace — so without
+# this rule that hop is dropped. `ingress-nginx` is a fixed namespace
+# name (same literal used throughout ingress/portable/'s own scripts),
+# not a config.env variable, so it's a literal here too.
 #
 # This is ingress-only by design: it's enforced at the destination
 # namespace's policy, so denying inbound traffic here is sufficient — no
@@ -40,3 +48,7 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: ${INFRA_NAMESPACE}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx

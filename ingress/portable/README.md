@@ -101,7 +101,7 @@ NAME                       TYPE           CLUSTER-IP    EXTERNAL-IP   PORT(S)
 ingress-nginx-controller   LoadBalancer   10.96.72.33   172.18.0.3    80:31177/TCP,443:32471/TCP
 ```
 
-**4. Confirm it's actually reachable end to end**
+**4. Confirm the controller itself is reachable**
 
 ```bash
 curl -sv --max-time 5 http://172.18.0.3/
@@ -116,8 +116,56 @@ curl -sv --max-time 5 http://172.18.0.3/
 ```
 The `404` here is expected and correct — it's ingress-nginx's own default
 backend response, confirming traffic reached the controller through the
-real LoadBalancer IP. It will route to a real service once an `Ingress`
-resource exists (see `pipeline/portable/manifests/tekton-dashboard-ingress-template.yaml`).
+real LoadBalancer IP. It doesn't yet prove a real Ingress actually routes
+anywhere — that needs a real Ingress resource in a real namespace, tested
+next.
+
+**5. Confirm a real Ingress in a team namespace actually routes traffic**
+
+Requires `onboarding/portable/` already applied (team namespaces + their
+NetworkPolicy must exist first). A throwaway test pod, Service, and
+Ingress in `team-01`:
+
+```bash
+kubectl run ingress-test-web --image=nginx:alpine -n team-01 --labels=app=ingress-test --port=80 --restart=Never
+kubectl expose pod ingress-test-web -n team-01 --port=80 --name=ingress-test-web
+kubectl apply -f - <<'EOF'
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-test
+  namespace: team-01
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: team01-test.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ingress-test-web
+                port:
+                  number: 80
+EOF
+```
+
+```bash
+curl -s --max-time 6 --resolve "team01-test.local:80:172.18.0.3" "http://team01-test.local/" -w "\nHTTP %{http_code}\n"
+```
+```
+<!DOCTYPE html>
+... Welcome to nginx! ...
+HTTP 200
+```
+
+```bash
+# cleanup
+kubectl delete ingress ingress-test -n team-01 --ignore-not-found
+kubectl delete svc ingress-test-web -n team-01 --ignore-not-found
+kubectl delete pod ingress-test-web -n team-01 --ignore-not-found
+```
 
 ## Cleanup
 
