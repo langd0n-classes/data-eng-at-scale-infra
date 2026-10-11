@@ -153,8 +153,18 @@ value, or whatever you set `EXTERNAL_DOMAIN` to):
 source config.env   # only if you haven't already, in this shell
 EXTERNAL_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 
-# Reads succeed
-curl -s --resolve "${DASHBOARD_HOST}:80:${EXTERNAL_IP}" "http://${DASHBOARD_HOST}/api/v1/namespaces" -o - -w "\nHTTP %{http_code}\n"
+# No credentials — rejected before the request even reaches the Dashboard
+curl -sk --resolve "${DASHBOARD_HOST}:443:${EXTERNAL_IP}" "https://${DASHBOARD_HOST}/api/v1/namespaces" -o - -w "\nHTTP %{http_code}\n"
+```
+
+```
+401 Authorization Required
+HTTP 401
+```
+
+```bash
+# Authenticated reads succeed
+curl -sk -u "${DASHBOARD_USER}:${DASHBOARD_PASS}" --resolve "${DASHBOARD_HOST}:443:${EXTERNAL_IP}" "https://${DASHBOARD_HOST}/api/v1/namespaces" -o - -w "\nHTTP %{http_code}\n"
 ```
 
 ```
@@ -163,9 +173,10 @@ HTTP 200
 ```
 
 ```bash
-# Writes are rejected
-curl -s -X POST --resolve "${DASHBOARD_HOST}:80:${EXTERNAL_IP}" \
-  "http://${DASHBOARD_HOST}/api/v1/namespaces/default/pipelineruns" -d '{}' -w "\nHTTP %{http_code}\n"
+# Authenticated writes are still rejected — read-only is enforced
+# independently of auth
+curl -sk -X POST -u "${DASHBOARD_USER}:${DASHBOARD_PASS}" --resolve "${DASHBOARD_HOST}:443:${EXTERNAL_IP}" \
+  "https://${DASHBOARD_HOST}/api/v1/namespaces/default/pipelineruns" -d '{}' -w "\nHTTP %{http_code}\n"
 ```
 
 ```
@@ -174,8 +185,9 @@ HTTP 403
 ```
 
 On a real DNS-backed cluster, `--resolve` isn't needed at all — point
-`DASHBOARD_HOST` at a real hostname and just `curl http://${DASHBOARD_HOST}/...`
-directly.
+`DASHBOARD_HOST` at a real hostname and just `curl -k -u "${DASHBOARD_USER}:${DASHBOARD_PASS}" https://${DASHBOARD_HOST}/...`
+directly (`-k` because the cert is self-signed — see "Create the Tekton
+Dashboard auth + TLS secrets" in `portable/README.md`).
 
 **To open the Dashboard in a browser** (not just curl): `--resolve` only
 fakes DNS for that one curl call, so a browser needs real name resolution
@@ -190,8 +202,10 @@ On a real cloud cluster (EKS, GKE, AKS, OVHcloud, any managed Kubernetes),
 skip `/etc/hosts` entirely — `ingress-nginx-controller`'s `LoadBalancer`
 already has a real, routable public IP there, so instead create a real DNS
 A record pointing `DASHBOARD_HOST` at that IP. Once that record exists,
-any browser can open `http://${DASHBOARD_HOST}/` directly, with no
-per-machine setup.
+any browser can open `https://${DASHBOARD_HOST}/` directly, with no
+per-machine setup — expect a self-signed-certificate warning (click
+through it) and a basic-auth login prompt (the username/password from
+"Create the Tekton Dashboard auth + TLS secrets" in `portable/README.md`).
 
 ## Pipeline RBAC
 
