@@ -11,8 +11,15 @@
 #
 # Required vars: DASHBOARD_HOST — a hostname routed to the ingress-nginx
 # LoadBalancer's external IP (e.g. via /etc/hosts on Kind, or real DNS on a
-# cloud cluster). No TLS here — matches this repo's existing plaintext,
-# educational-simplicity posture (see SECURITY.md).
+# cloud cluster).
+#
+# Requires two Secrets to already exist in this same namespace
+# (tekton-pipelines) — never created by any script, same manual posture
+# as ghcr-pull-secret (see portable/README.md's "Before you start"):
+#   - tekton-dashboard-auth: an Opaque Secret with a single `auth` key
+#     holding an htpasswd-format (bcrypt) line — basic-auth credential.
+#   - tekton-dashboard-tls: a kubernetes.io/tls Secret — a cert/key pair
+#     whose SAN matches DASHBOARD_HOST.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -20,8 +27,16 @@ metadata:
   namespace: tekton-pipelines
   labels:
     app: tekton-dashboard
+  annotations:
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: tekton-dashboard-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Tekton Dashboard - Authorized Staff Only"
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - ${DASHBOARD_HOST}
+      secretName: tekton-dashboard-tls
   rules:
     - host: ${DASHBOARD_HOST}
       http:

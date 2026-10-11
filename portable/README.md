@@ -65,8 +65,50 @@ unset GHCR_PAT
 ```
 
 Never redirect `kubectl create secret ... -o yaml` to a file inside the
-repo, even temporarily. Nothing else to create manually — GitHub Actions
-pushes using its own built-in `GITHUB_TOKEN`, not a PAT.
+repo, even temporarily. GitHub Actions pushes using its own built-in
+`GITHUB_TOKEN`, not a PAT.
+
+### Then, create the Tekton Dashboard auth + TLS secrets
+
+The Dashboard Ingress (`pipeline/portable/manifests/tekton-dashboard-ingress-template.yaml`)
+requires two Secrets to already exist in `tekton-pipelines` before it's
+applied — pick a username and password for Dashboard access first:
+
+```bash
+echo -n "Tekton Dashboard username: "
+read -r DASHBOARD_USER
+echo -n "Tekton Dashboard password: "
+read -rs DASHBOARD_PASS
+echo
+
+# bcrypt-hash it into htpasswd format (requires htpasswd from
+# apache2-utils/httpd-tools; falls back to a one-off container if you
+# don't have it installed locally)
+if command -v htpasswd >/dev/null 2>&1; then
+  HTPASSWD_LINE="$(htpasswd -nbB "${DASHBOARD_USER}" "${DASHBOARD_PASS}")"
+else
+  HTPASSWD_LINE="$(docker run --rm httpd:2.4-alpine htpasswd -nbB "${DASHBOARD_USER}" "${DASHBOARD_PASS}")"
+fi
+kubectl create secret generic tekton-dashboard-auth \
+  --from-literal=auth="${HTPASSWD_LINE}" \
+  -n tekton-pipelines
+unset DASHBOARD_PASS HTPASSWD_LINE
+
+# Self-signed TLS cert for DASHBOARD_HOST — RSA 2048 + SHA-256, with a
+# subjectAltName (modern clients require SAN, not just CN)
+source config.env
+openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
+  -keyout /tmp/tekton-dashboard.key -out /tmp/tekton-dashboard.crt \
+  -subj "/CN=${DASHBOARD_HOST}" \
+  -addext "subjectAltName=DNS:${DASHBOARD_HOST}"
+kubectl create secret tls tekton-dashboard-tls \
+  --cert=/tmp/tekton-dashboard.crt --key=/tmp/tekton-dashboard.key \
+  -n tekton-pipelines
+rm -f /tmp/tekton-dashboard.key /tmp/tekton-dashboard.crt
+```
+
+Never redirect `kubectl create secret ... -o yaml` to a file inside the
+repo, even temporarily. Nothing else to create manually.
 
 ## The commands
 

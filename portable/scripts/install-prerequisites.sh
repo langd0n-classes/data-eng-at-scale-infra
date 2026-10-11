@@ -144,7 +144,7 @@ echo "============================================================"
 if [[ -n "${RESOLVED_IP}" ]]; then
   # Already resolves — real DNS record, or an /etc/hosts entry from a
   # previous run — nothing left to do.
-  echo "   http://${DASHBOARD_HOST}/"
+  echo "   https://${DASHBOARD_HOST}/ (self-signed cert — accept the warning; basic-auth login required)"
 elif [[ -n "${EXTERNAL_IP}" ]]; then
   echo " ${DASHBOARD_HOST} doesn't resolve yet. Pick whichever applies:"
   echo "   Local cluster (Kind, k3s, ...), no real DNS:"
@@ -152,7 +152,7 @@ elif [[ -n "${EXTERNAL_IP}" ]]; then
   echo "   Real cloud cluster (OVHcloud, EKS, GKE, AKS, ...):"
   echo "     create a DNS A record for ${DASHBOARD_HOST} -> ${EXTERNAL_IP}"
   echo " Then open:"
-  echo "   http://${DASHBOARD_HOST}/"
+  echo "   https://${DASHBOARD_HOST}/ (self-signed cert — accept the warning; basic-auth login required)"
 else
   echo " ingress-nginx has no external IP yet — see the warning above"
   echo " (on Kind: start cloud-provider-kind; on a real cloud: the"

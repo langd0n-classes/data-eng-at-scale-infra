@@ -38,6 +38,12 @@ section "GHCR pull credential"
 kubectl get secret ghcr-pull-secret -n "${INFRA_NAMESPACE}" --no-headers 2>/dev/null \
   || echo "ghcr-pull-secret: not found — see portable/README.md's \"Before you start\""
 
+section "Tekton Dashboard auth + TLS"
+kubectl get secret tekton-dashboard-auth -n tekton-pipelines --no-headers 2>/dev/null \
+  || echo "tekton-dashboard-auth: not found — see portable/README.md's \"Before you start\""
+kubectl get secret tekton-dashboard-tls -n tekton-pipelines --no-headers 2>/dev/null \
+  || echo "tekton-dashboard-tls: not found — see portable/README.md's \"Before you start\""
+
 section "Onboarding (namespaces)"
 kubectl get namespace -l app=data-eng-infra --no-headers 2>/dev/null || echo "none found"
 
