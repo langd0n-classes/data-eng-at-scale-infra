@@ -1,0 +1,88 @@
+# spark-queue/portable/manifests/queue-controller-deployment.yaml
+#
+# Runs scripts/queue-controller.py as a single Deployment in the infra
+# namespace (shared, per this repo's own namespace convention). RBAC is
+# scoped to exactly what it needs — get/list/watch/patch on Jobs and
+# read-only get/list/watch on Pods (to detect a stuck job whose pod never
+# started), cluster-wide, nothing else, not full cluster-admin.
+#
+# Runs a pre-built image (spark-queue/portable/Dockerfile), published to
+# GHCR by .github/workflows/build-queue-controller.yml on every commit
+# touching spark-queue/portable/ — queue-controller.py is baked in, no
+# ConfigMap mount and no pip install at pod startup.
+#
+# Usage:
+#   envsubst '${INFRA_NAMESPACE} ${SPARK_QUEUE_CONTROLLER_IMAGE}' \
+#     < spark-queue/portable/manifests/queue-controller-deployment.yaml | kubectl apply -f -
+#
+# Required vars: INFRA_NAMESPACE, SPARK_QUEUE_CONTROLLER_IMAGE
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spark-queue-controller
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: spark-queue-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spark-queue-controller-role
+  labels:
+    app: spark-queue-controller
+rules:
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources:
+      - pods
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spark-queue-controller-binding
+  labels:
+    app: spark-queue-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spark-queue-controller-role
+subjects:
+  - kind: ServiceAccount
+    name: spark-queue-controller
+    namespace: ${INFRA_NAMESPACE}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-queue-controller
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: spark-queue-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spark-queue-controller
+  template:
+    metadata:
+      labels:
+        app: spark-queue-controller
+    spec:
+      serviceAccountName: spark-queue-controller
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: controller
+          image: ${SPARK_QUEUE_CONTROLLER_IMAGE}
+          imagePullPolicy: Always
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 50m
+            limits:
+              memory: 256Mi
+              cpu: 200m

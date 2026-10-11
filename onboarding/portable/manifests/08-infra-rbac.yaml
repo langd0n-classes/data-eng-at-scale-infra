@@ -1,0 +1,32 @@
+# onboarding/portable/manifests/08-infra-rbac.yaml — Teacher RBAC for infra namespace
+#
+# kubectl-only equivalent of onboarding/06-infra-rbac.yaml. The RoleBinding
+# itself needs no change to be portable — `kind: Group` is a standard
+# Kubernetes RBAC subject type, not an OpenShift-only concept. What IS
+# OpenShift-only is `oc adm groups new`/`add-users`, the tool used to manage
+# *which usernames belong to which group*. On a vanilla cluster, group
+# membership instead comes from whatever the cluster's authentication
+# mechanism asserts — e.g. an X.509 client certificate's Organization (O=)
+# field, or an OIDC provider's `groups` claim — see
+# onboarding/portable/README.md for a concrete Kind-testable example.
+#
+# Usage:
+#   source onboarding/portable/cluster.env && \
+#   envsubst '${INFRA_NAMESPACE} ${INFRA_ADMIN_GROUP}' \
+#   < onboarding/portable/manifests/08-infra-rbac.yaml | kubectl apply -f -
+#
+# Called by: onboarding/portable/apply-onboarding.sh
+# Required vars: INFRA_NAMESPACE, INFRA_ADMIN_GROUP
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: infra-admins-edit
+  namespace: ${INFRA_NAMESPACE}
+subjects:
+  - kind: Group
+    name: ${INFRA_ADMIN_GROUP}
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: edit
+  apiGroup: rbac.authorization.k8s.io

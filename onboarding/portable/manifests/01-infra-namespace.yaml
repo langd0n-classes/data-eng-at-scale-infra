@@ -1,0 +1,19 @@
+# onboarding/portable/manifests/01-infra-namespace.yaml — Infra namespace
+#
+# kubectl-only equivalent of onboarding/01-infra-namespace.yaml. Creates the
+# shared infrastructure namespace where the event generator, Tekton
+# pipelines, and the Spark queue controller live.
+#
+# Usage:
+#   source onboarding/portable/cluster.env && \
+#   envsubst '${INFRA_NAMESPACE}' < onboarding/portable/manifests/01-infra-namespace.yaml | kubectl apply -f -
+#
+# Called by: onboarding/portable/apply-onboarding.sh
+# Required vars: INFRA_NAMESPACE
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${INFRA_NAMESPACE}
+  labels:
+    app: data-eng-infra
+    component: infra

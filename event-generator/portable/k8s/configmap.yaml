@@ -1,0 +1,40 @@
+# event-generator/portable/k8s/configmap.yaml
+#
+# Identical to event-generator/k8s/03-configmap.yaml — nothing here is
+# OpenShift-specific, so it's reused unmodified rather than duplicated with
+# drift risk. Kept as its own copy (not a symlink) since portable/ is meant
+# to be usable standalone, the same way kafka/portable/ doesn't reach back
+# into kafka/operator/ for anything.
+#
+# Deploy with: envsubst < configmap.yaml | kubectl apply -f -
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${EVENT_GENERATOR_NAME}-config
+  namespace: ${INFRA_NAMESPACE}
+  labels:
+    app: ${EVENT_GENERATOR_NAME}
+data:
+  # Event generation rate (events per second across all teams)
+  EVENT_RATE_PER_SEC: "${EVENT_RATE_PER_SEC}"
+
+  # Topic naming pattern:
+  # Multi-team:   ${TOPIC_PREFIX}${TEAM_ID}${TOPIC_SUFFIX} (e.g., events.team01.raw)
+  # Single-cluster: ${TOPIC_PREFIX}${TOPIC_SUFFIX} (e.g., events.raw) OR set TOPIC explicitly
+  TOPIC_PREFIX: "${TOPIC_PREFIX}"
+  TOPIC_SUFFIX: "${TOPIC_SUFFIX}"
+  # Optional explicit topic name (overrides prefix/suffix for single-cluster mode)
+  TOPIC: "${TOPIC}"
+
+  # Geographic regions for simulation (comma-separated)
+  REGIONS: "${REGIONS}"
+
+  # Multi-team mode: team-to-Kafka bootstrap server mapping
+  # Format: team_id=bootstrap_server,team_id=bootstrap_server,...
+  # Dynamically generated at deployment time from config.env
+  TEAM_BOOTSTRAP_SERVERS: "${TEAM_BOOTSTRAP_SERVERS}"
+
+  # Single-cluster mode: Single shared Kafka cluster
+  # Set in config.env to use single-cluster mode instead of multi-team
+  KAFKA_BOOTSTRAP_SERVERS: "${KAFKA_BOOTSTRAP_SERVERS}"

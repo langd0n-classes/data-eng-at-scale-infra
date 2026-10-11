@@ -1,0 +1,63 @@
+# onboarding/portable/manifests/09-team-rbac.yaml — RBAC for one team namespace
+#
+# kubectl-only equivalent of onboarding/07-team-rbac.yaml. Creates three
+# RoleBindings per team namespace:
+#   1. Teachers (infra-admins group) — edit access, same as the OpenShift path.
+#   2. Students (team-XX-devs group) — full edit access, same as the
+#      OpenShift path. See manifests/08-infra-rbac.yaml's header comment for
+#      how group membership is established portably (no `oc adm groups`).
+#   3. The team's own ServiceAccount (manifests/07-team-serviceaccount.yaml)
+#      — edit access scoped to its own namespace only, so that team's Tekton
+#      PipelineRun (pipeline/portable/) can deploy its own Kafka, event
+#      generator, and Spark Job template without touching any other
+#      namespace.
+#
+# Usage (single team, manual):
+#   source onboarding/portable/cluster.env && \
+#   export TEAM_ID=01 && \
+#   envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${INFRA_ADMIN_GROUP} ${TEAM_GROUP_SUFFIX}' \
+#   < onboarding/portable/manifests/09-team-rbac.yaml | kubectl apply -f -
+#
+# Called by: onboarding/portable/apply-onboarding.sh
+# Required vars: TEAM_NAMESPACE_PREFIX, TEAM_ID, INFRA_ADMIN_GROUP, TEAM_GROUP_SUFFIX
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: infra-admins-edit
+  namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+subjects:
+  - kind: Group
+    name: ${INFRA_ADMIN_GROUP}
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: edit
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: team-devs-edit
+  namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+subjects:
+  - kind: Group
+    name: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}-${TEAM_GROUP_SUFFIX}
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: edit
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: team-workload-edit
+  namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+subjects:
+  - kind: ServiceAccount
+    name: team-workload
+    namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+roleRef:
+  kind: ClusterRole
+  name: edit
+  apiGroup: rbac.authorization.k8s.io

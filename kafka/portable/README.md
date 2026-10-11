@@ -160,6 +160,7 @@ existence checks throughout.
 | `STORAGE_CLASS` | `standard` | Falls back to `config.env`'s value if set, then this default |
 | `VOLUME_SIZE` | `2Gi` | Falls back to `config.env`'s value if set, then this default |
 | `STRIMZI_OPERATOR_NAMESPACE` | `strimzi-system` | Falls back to `config.env`'s value if set, then this default |
+| `INFRA_NAMESPACE` | `infra` | Scopes the Kafka listener's own `networkPolicyPeers` (team isolation) |
 
 `scripts/deploy.sh` and `scripts/reset-data.sh` source the repo-root
 `config.env` for the first two if it exists (same convention as

@@ -2,6 +2,7 @@
 # Produces synthetic health events for Kafka testing and demos
 
 FROM python:3.11-slim
+LABEL org.opencontainers.image.source=https://github.com/langd0n-classes/data-eng-at-scale-infra
 
 WORKDIR /app
 
@@ -12,7 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY src/event_generator.py .
 
-# Health check endpoint port
+# Health check endpoint port (also used for readiness/liveness probes)
 EXPOSE 8000
 
 # Run the generator

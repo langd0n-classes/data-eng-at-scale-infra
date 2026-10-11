@@ -1,0 +1,53 @@
+# spark-queue/portable/manifests/team-spark-job-template.yaml
+#
+# The template students actually fill in and submit — same pattern as
+# nifi/team-statefulset-template.yaml: infra provides the template with the
+# queue mechanism's required fields already correct, so a student never
+# needs to understand the queue itself, only their own container image and
+# command.
+#
+# `spec.suspend: true` and the `queue: spark` label are set here as a
+# convention/convenience — spark-job-admission-policy.yaml is what actually
+# *enforces* both regardless of what gets submitted, so skipping this
+# template doesn't bypass the queue.
+#
+# `ttlSecondsAfterFinished` frees this team's ResourceQuota slot
+# automatically once the Job finishes (success or failure);
+# `activeDeadlineSeconds` force-kills a hung job so it doesn't hold a
+# cluster-wide slot forever. Together these are what "abandoned jobs
+# release their slots" means in practice.
+#
+# Replace SPARK_COMMAND with your actual spark-submit invocation (or
+# whatever your job actually runs) before applying.
+#
+# Usage:
+#   envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${SPARK_JOB_NAME} ${SPARK_IMAGE} ${SPARK_COMMAND}' \
+#   < spark-queue/portable/manifests/team-spark-job-template.yaml | kubectl apply -f -
+#
+# Required vars: TEAM_NAMESPACE_PREFIX, TEAM_ID, SPARK_JOB_NAME, SPARK_IMAGE, SPARK_COMMAND
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${SPARK_JOB_NAME}
+  namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+  labels:
+    app: data-eng-infra
+    team: team-${TEAM_ID}
+    queue: spark
+spec:
+  suspend: true
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 7200
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        queue: spark
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: spark
+          image: ${SPARK_IMAGE}
+          command: ["/bin/sh", "-c"]
+          args:
+            - ${SPARK_COMMAND}

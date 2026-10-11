@@ -1,0 +1,98 @@
+# pipeline/portable/rbac/role-rolebinding-namespace.yaml
+#
+# kubectl-only equivalent of pipeline/rbac/04-role-rolebinding-namespace.yaml
+# — same fallback for a cluster where only namespace-scoped permissions are
+# available (mirrors the "shared cluster, e.g. NERC" scenario the OpenShift
+# path already documents). Apply once per namespace the pipeline needs to
+# operate in (infra + every team namespace).
+#
+# One gap this can't close: deploy-kafka-task.yaml reuses
+# kafka/portable/scripts/deploy.sh as-is, which checks the target namespace
+# exists before doing anything else. That's a read on a cluster-scoped
+# resource (Namespace) — a plain Role can never grant that, regardless of
+# which namespace it's applied in, only a ClusterRole can. Even on a
+# restricted cluster, someone with broader access still needs to grant that
+# one narrow rule once (see apply-rbac.sh, which requests exactly
+# get/list/watch on namespaces — nothing else — when it detects this path).
+#
+# Apply with (loop over every namespace):
+#   source config.env && envsubst '${INFRA_NAMESPACE}' \
+#     < pipeline/portable/rbac/role-rolebinding-namespace.yaml | kubectl apply -f - -n <namespace>
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pipeline-runner-role
+  labels:
+    app: tekton-pipeline
+    component: rbac
+rules:
+  # Core Kubernetes resources
+  - apiGroups: [""]
+    resources:
+      - pods
+      - services
+      - configmaps
+      - persistentvolumeclaims
+      - serviceaccounts
+      - events
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Workload resources
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - statefulsets
+      - replicasets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Needed to watch pod status (kubectl wait --for=condition=Ready)
+  - apiGroups: [""]
+    resources:
+      - pods/log
+      - pods/exec
+    verbs: ["get", "list", "watch"]
+
+  # Needed to trigger rollout restarts
+  - apiGroups: ["apps"]
+    resources:
+      - deployments/rollout
+    verbs: ["update", "patch"]
+
+  # PodDisruptionBudget — required to apply PDB per team after Kafka is ready
+  - apiGroups: ["policy"]
+    resources:
+      - poddisruptionbudgets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Kafka operator CRs (Strimzi) — required to create/manage Kafka clusters
+  - apiGroups: ["kafka.strimzi.io"]
+    resources:
+      - kafkas
+      - kafkanodepools
+      - kafkatopics
+      - kafkausers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # RoleBindings — required to delete monitoring RoleBindings during teardown
+  # Note: even --ignore-not-found triggers an RBAC check before the 404 lookup
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources:
+      - rolebindings
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pipeline-runner-binding
+  labels:
+    app: tekton-pipeline
+    component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pipeline-runner-role
+subjects:
+  - kind: ServiceAccount
+    name: pipeline
+    namespace: ${INFRA_NAMESPACE}

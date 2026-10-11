@@ -1,0 +1,23 @@
+# onboarding/portable/manifests/03-infra-resourcequota.yaml — ResourceQuota for infra namespace
+#
+# kubectl-only equivalent of onboarding/01c-infra-resourcequota.yaml.
+#
+# Usage:
+#   source onboarding/portable/cluster.env && \
+#   envsubst '${INFRA_NAMESPACE} ${INFRA_RESOURCE_QUOTA_CPU} \
+#             ${INFRA_RESOURCE_QUOTA_MEMORY} ${INFRA_RESOURCE_QUOTA_STORAGE}' \
+#   < onboarding/portable/manifests/03-infra-resourcequota.yaml | kubectl apply -f -
+#
+# Called by: onboarding/portable/apply-onboarding.sh
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: infra-quota
+  namespace: ${INFRA_NAMESPACE}
+spec:
+  hard:
+    requests.cpu: ${INFRA_RESOURCE_QUOTA_CPU}
+    requests.memory: ${INFRA_RESOURCE_QUOTA_MEMORY}
+    limits.cpu: ${INFRA_RESOURCE_QUOTA_CPU}
+    limits.memory: ${INFRA_RESOURCE_QUOTA_MEMORY}
+    requests.storage: ${INFRA_RESOURCE_QUOTA_STORAGE}

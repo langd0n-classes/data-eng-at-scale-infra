@@ -1,0 +1,114 @@
+# pipeline/portable/tasks/check-redeploy-needed-task.yaml
+#
+# Decides whether the event generator needs redeploying — either its GHCR
+# image changed, or its runtime config did (CONFIG_VALUES —
+# EVENT_RATE_PER_SEC, TOPIC_PREFIX/SUFFIX, TOPIC, REGIONS,
+# TEAM_BOOTSTRAP_SERVERS, KAFKA_BOOTSTRAP_SERVERS) — and compares the
+# combined hash to the `source-hash` annotation already on the Deployment.
+# Confirmed directly as a real gap in an earlier version of this check:
+# hashing code alone meant a config-only change was silently never applied
+# on retrigger.
+#
+# Queries GHCR directly for the image's current digest rather than hashing
+# local source files — this platform no longer builds the image in-cluster
+# at all (GitHub Actions does, asynchronously, whenever event-generator/
+# changes), so there's no local source tree to hash here, and a locally
+# computed value couldn't reliably predict what GHCR actually has anyway. A
+# brand-new cluster (no source-hash annotation yet) is always treated as
+# "changed," regardless of whether GHCR already has the image from a
+# previous cluster's run.
+#
+# Auth note (confirm live, don't assume): the pull secret is a
+# kubernetes.io/dockerconfigjson Secret whose key is `.dockerconfigjson`,
+# but crane/docker expect credentials at $DOCKER_CONFIG/config.json — the
+# query-digest step copies/renames it before calling crane.
+#
+# Usage: referenced from a PipelineRun/Pipeline, not applied standalone
+# beyond `kubectl apply -f check-redeploy-needed-task.yaml -n infra`.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: check-redeploy-needed
+  namespace: infra
+  labels:
+    app: data-eng-infra
+spec:
+  params:
+    - name: DEPLOYMENT_NAME
+      description: Deployment whose source-hash annotation to compare against
+      type: string
+    - name: NAMESPACE
+      type: string
+    - name: IMAGE
+      description: Full image reference to query GHCR's current digest for, e.g. ghcr.io/langd0n-classes/event-generator:latest
+      type: string
+    - name: CONFIG_VALUES
+      description: Pipe-delimited runtime config values folded into the hash too, so a config-only change (not just the image) still triggers a redeploy
+      type: string
+      default: ""
+  results:
+    - name: changed
+      description: "\"true\" if a redeploy is needed, \"false\" to skip"
+    - name: hash
+      description: The newly computed digest+config hash, for the deploy Task to stamp on the Deployment
+  volumes:
+    - name: ghcr-auth
+      secret:
+        secretName: ghcr-pull-secret
+    - name: scratch
+      emptyDir: {}
+  steps:
+    - name: query-digest
+      image: gcr.io/go-containerregistry/crane:debug
+      volumeMounts:
+        - name: ghcr-auth
+          mountPath: /secret
+          readOnly: true
+        - name: scratch
+          mountPath: /scratch
+      env:
+        - name: IMAGE
+          value: $(params.IMAGE)
+      script: |
+        #!/busybox/sh
+        set -eu
+        mkdir -p /tmp/docker
+        cp /secret/.dockerconfigjson /tmp/docker/config.json
+        export DOCKER_CONFIG=/tmp/docker
+        crane digest "${IMAGE}" > /scratch/digest.txt
+    - name: decide
+      image: ${KUBECTL_CLI_IMAGE}
+      volumeMounts:
+        - name: scratch
+          mountPath: /scratch
+      # Params passed as env vars, not substituted directly into the script
+      # text — Tekton's $(params.X) is a literal text replacement done
+      # before bash ever parses the script, so a value containing a
+      # backtick, $(), or an unescaped quote could break out of string
+      # context or inject a command. CONFIG_VALUES in particular is built
+      # from config.env values (TEAM_BOOTSTRAP_SERVERS, REGIONS, ...) that
+      # this Task doesn't control the exact contents of.
+      env:
+        - name: CONFIG_VALUES
+          value: $(params.CONFIG_VALUES)
+        - name: DEPLOYMENT_NAME
+          value: $(params.DEPLOYMENT_NAME)
+        - name: NAMESPACE
+          value: $(params.NAMESPACE)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        DIGEST="$(cat /scratch/digest.txt)"
+        NEW_HASH="$(printf '%s' "${DIGEST}${CONFIG_VALUES}" | sha256sum | awk '{print $1}')"
+        PREV_HASH="$(kubectl get deployment "${DEPLOYMENT_NAME}" -n "${NAMESPACE}" -o jsonpath='{.metadata.annotations.source-hash}' 2>/dev/null || true)"
+
+        echo -n "${NEW_HASH}" > "$(results.hash.path)"
+
+        if kubectl get deployment "${DEPLOYMENT_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1 \
+           && [[ -n "${PREV_HASH}" && "${PREV_HASH}" == "${NEW_HASH}" ]]; then
+          echo "No redeploy needed (${NEW_HASH:0:12}...) — image and config unchanged."
+          echo -n "false" > "$(results.changed.path)"
+        else
+          echo "Redeploy needed (new image digest or config changed, or first deploy)."
+          echo -n "true" > "$(results.changed.path)"
+        fi

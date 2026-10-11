@@ -62,6 +62,10 @@ Adding or removing a team from Slack or the terminal automatically updates the e
 
 ## Quick Start
 
+For a `kubectl`-only alternative to this OpenShift Quick Start (Kind/k3s, no
+OpenShift required), start with [portable/README.md](portable/README.md) —
+the single orchestration index for the whole portable platform.
+
 ### 1. Install OpenShift Pipelines Operator
 
 Install via OperatorHub as kubeadmin. Required for `setup.sh` (ops.sh and ChatOps work without it).
@@ -136,6 +140,8 @@ Set up the `/infra` slash command (see [chatops/README.md](chatops/README.md)), 
 ```
 data-eng-at-scale-infra/
 ├── config.env.example          Runtime config template — copy to config.env
+├── portable/                   kubectl-only orchestration index (Kind/k3s, no OpenShift) —
+│                               install-prerequisites.sh, deploy-pipeline.sh, status/teardown
 ├── onboarding/                 One-time cluster setup (kubeadmin): namespaces, quotas,
 │                               LimitRanges, RBAC groups — run before anything else
 ├── pipeline/                   Two tools for classroom operations (run after onboarding):
@@ -150,6 +156,8 @@ data-eng-at-scale-infra/
 ├── kafka/                      Kafka broker templates and per-team deploy scripts
 ├── nifi/                       NiFi instance templates and per-team deploy scripts
 ├── event-generator/            Synthetic event producer (Python, outbreak simulation)
+├── ingress/                    Portable-platform ingress controller (kubectl-only, Kind/k3s)
+├── spark-queue/                Portable-platform Spark job queue (kubectl-only, Kind/k3s)
 ├── storage/                    Optional MinIO (S3) and PostgreSQL templates
 └── learning/                   16 step-by-step student guides
 ```
