@@ -19,6 +19,15 @@ on the OpenShift path, untouched).
 variable at all — confirmed directly, not assumed. Nothing to update
 before running this component.
 
+## Known risk: ingress-nginx is unmaintained upstream
+
+ingress-nginx stopped receiving further releases or security fixes as of
+March 2026 — the Kubernetes project's stated replacement is Gateway API.
+This platform stays on ingress-nginx for now rather than migrating to
+Gateway API or another controller; the time budget for this round of
+work didn't cover that migration. Accepted, explicit risk — not an
+oversight.
+
 ## Compatibility
 
 Plain `kubectl`, ingress-nginx's own upstream manifests, no OpenShift-only
