@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # pipeline/portable/prerequisites/install-tekton-dashboard.sh
 #
-# Cluster-admin, one-time script: installs the Tekton Dashboard v0.72.0 in
-# READ-ONLY mode, using the official upstream release manifest.
+# Cluster-admin, one-time script: installs the Tekton Dashboard (version
+# pinned in portable/versions.env) in READ-ONLY mode, using the official
+# upstream release manifest.
 #
 # Confirmed (not assumed) by inspecting the manifest directly: the plain
 # `release.yaml` build passes `--read-only=true` to the dashboard container
@@ -17,7 +18,10 @@
 # Usage: install-tekton-dashboard.sh
 set -euo pipefail
 
-TEKTON_DASHBOARD_VERSION="v0.72.0"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/portable/versions.env"
 
 echo "=========================================="
 echo "Installing Tekton Dashboard (${TEKTON_DASHBOARD_VERSION}, read-only)"

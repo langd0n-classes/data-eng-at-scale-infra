@@ -49,7 +49,8 @@ cd kafka/portable
 **1. Create a cluster** *(Kind shown; substitute your own cluster/context for k3s, EKS, etc. — requires the `kind` CLI and Docker or Podman installed)*
 
 ```bash
-kind create cluster --name strimzi-portable --image kindest/node:v1.34.11
+source ../../portable/versions.env   # KIND_NODE_IMAGE pin
+kind create cluster --name strimzi-portable --image "${KIND_NODE_IMAGE}"
 kubectl get storageclass
 ```
 ```

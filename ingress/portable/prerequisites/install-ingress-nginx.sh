@@ -2,7 +2,8 @@
 # ingress/portable/prerequisites/install-ingress-nginx.sh
 #
 # Cluster-admin, one-time script: installs the ingress-nginx controller
-# (v1.15.1) using the generic "cloud" provider manifest — not Kind's
+# (version pinned in portable/versions.env) using the generic "cloud"
+# provider manifest — not Kind's
 # NodePort-specific one — so the controller's own Service is a real
 # `type: LoadBalancer`, matching how it will actually behave on a real
 # cloud (OVH included) later. Item 9 requires exactly one such Service for
@@ -20,7 +21,10 @@
 # Usage: install-ingress-nginx.sh
 set -euo pipefail
 
-INGRESS_NGINX_VERSION="controller-v1.15.1"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/portable/versions.env"
 
 echo "=========================================="
 echo "Installing ingress-nginx (${INGRESS_NGINX_VERSION})"

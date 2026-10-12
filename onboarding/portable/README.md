@@ -68,8 +68,11 @@ enforce NetworkPolicy. Calico's default IP pool (`192.168.0.0/16`) must
 match the cluster's pod subnet, so it's set explicitly:
 
 ```bash
+# version pins (KIND_NODE_IMAGE, CALICO_VERSION) come from portable/versions.env
+source portable/versions.env
+
 # create the Kind cluster with its default CNI disabled
-kind create cluster --name portable-fall-platform --image kindest/node:v1.34.11 --config - <<'EOF'
+kind create cluster --name portable-fall-platform --image "${KIND_NODE_IMAGE}" --config - <<'EOF'
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 networking:
@@ -80,11 +83,11 @@ nodes:
 EOF
 
 # install the Calico operator
-kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/tigera-operator.yaml
+kubectl create -f "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
 # wait for its CRDs to exist before using them
 kubectl wait --for=condition=Established crd/installations.operator.tigera.io --timeout=60s
 # apply Calico's actual configuration (IP pool, etc.)
-curl -sL https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/custom-resources.yaml | kubectl create -f -
+curl -sL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/custom-resources.yaml" | kubectl create -f -
 # wait for the node and all Calico pods to come up
 kubectl wait --for=condition=Ready node --all --timeout=180s
 kubectl wait --for=condition=Ready pods --all -n calico-system --timeout=180s

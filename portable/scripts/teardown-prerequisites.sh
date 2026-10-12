@@ -13,10 +13,9 @@
 # Dashboard Ingress and the cluster-wide prerequisites themselves (Strimzi,
 # Tekton Pipelines, the Tekton Dashboard, ingress-nginx).
 #
-# Versions in the cluster-wide section must match
-# install-prerequisites.sh's own pinned versions exactly (each
-# `kubectl delete -f <url>` targets the same release manifest the
-# matching install used).
+# Versions in the cluster-wide section come from portable/versions.env —
+# the same file install-prerequisites.sh's own install scripts source —
+# so there's exactly one place to update, not one per script.
 #
 # The cluster-wide teardown is rarely needed — mainly for a real shared
 # cloud cluster, where deleting the whole cluster isn't an option the way
@@ -34,6 +33,8 @@ if [[ -f "${REPO_ROOT}/config.env" ]]; then
   # shellcheck disable=SC1090
   source "${REPO_ROOT}/config.env"
 fi
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/portable/versions.env"
 INFRA_NAMESPACE="${INFRA_NAMESPACE:-infra}"
 STRIMZI_OPERATOR_NAMESPACE="${STRIMZI_OPERATOR_NAMESPACE:-strimzi-system}"
 
@@ -71,19 +72,19 @@ info "Removing the Tekton Dashboard Ingress..."
 kubectl delete ingress tekton-dashboard -n tekton-pipelines --ignore-not-found
 
 echo ""
-info "Removing ingress-nginx (controller-v1.15.1)..."
-kubectl delete -f "https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.15.1/deploy/static/provider/cloud/deploy.yaml" --ignore-not-found --timeout=60s
+info "Removing ingress-nginx (${INGRESS_NGINX_VERSION})..."
+kubectl delete -f "https://raw.githubusercontent.com/kubernetes/ingress-nginx/${INGRESS_NGINX_VERSION}/deploy/static/provider/cloud/deploy.yaml" --ignore-not-found --timeout=60s
 
 echo ""
-info "Removing the Tekton Dashboard (v0.72.0)..."
-kubectl delete -f "https://github.com/tektoncd/dashboard/releases/download/v0.72.0/release.yaml" --ignore-not-found --timeout=60s
+info "Removing the Tekton Dashboard (${TEKTON_DASHBOARD_VERSION})..."
+kubectl delete -f "https://github.com/tektoncd/dashboard/releases/download/${TEKTON_DASHBOARD_VERSION}/release.yaml" --ignore-not-found --timeout=60s
 
 echo ""
-info "Removing Tekton Pipelines (v1.15.3)..."
-kubectl delete -f "https://github.com/tektoncd/pipeline/releases/download/v1.15.3/release.yaml" --ignore-not-found --timeout=60s
+info "Removing Tekton Pipelines (${TEKTON_PIPELINES_VERSION})..."
+kubectl delete -f "https://github.com/tektoncd/pipeline/releases/download/${TEKTON_PIPELINES_VERSION}/release.yaml" --ignore-not-found --timeout=60s
 
 echo ""
-info "Removing the Strimzi operator (0.51.0)..."
+info "Removing the Strimzi operator (${STRIMZI_VERSION})..."
 kubectl delete namespace "${STRIMZI_OPERATOR_NAMESPACE}" --ignore-not-found --timeout=60s
 kubectl delete crd -l app=strimzi --ignore-not-found --timeout=60s
 kubectl delete clusterrole,clusterrolebinding -l app=strimzi --ignore-not-found

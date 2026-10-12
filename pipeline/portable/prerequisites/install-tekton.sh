@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # pipeline/portable/prerequisites/install-tekton.sh
 #
-# Cluster-admin, one-time script: installs Tekton Pipelines v1.15.3 (LTS)
-# using the official release manifest. Installs into the `tekton-pipelines`
-# namespace (upstream default).
+# Cluster-admin, one-time script: installs Tekton Pipelines (LTS, version
+# pinned in portable/versions.env) using the official release manifest.
+# Installs into the `tekton-pipelines` namespace (upstream default).
 #
 # This is the portable equivalent of installing the OpenShift Pipelines
 # operator via OperatorHub (root README.md Quick Start, step 1) — vanilla
@@ -15,7 +15,10 @@
 # Usage: install-tekton.sh
 set -euo pipefail
 
-TEKTON_PIPELINES_VERSION="v1.15.3"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/portable/versions.env"
 
 echo "=========================================="
 echo "Installing Tekton Pipelines (${TEKTON_PIPELINES_VERSION})"
