@@ -8,22 +8,27 @@ test it standalone.
 
 Covered elsewhere: `onboarding/portable/README.md`, `kafka/portable/README.md`,
 `event-generator/portable/README.md`, `ingress/portable/README.md`,
-`spark-queue/portable/README.md`, `pipeline/portable/README.md`.
+`spark-queue/portable/README.md`, `pipeline/portable/README.md`,
+`providers/README.md`.
 
 ## Before you start
 
-A cluster must already exist and be the current `kubectl` context —
-`install-prerequisites.sh` doesn't create one.
+**1. Have a cluster ready** — `install-prerequisites.sh` doesn't create
+one for you.
 
-### On Kind
+- **Local Kind cluster**: create it with a NetworkPolicy-enforcing CNI
+  (Calico), not Kind's own default — see `onboarding/portable/README.md`'s
+  walkthrough step 1 for the exact commands.
+- **A real cluster you already have** (managed or self-hosted): confirm
+  Kubernetes 1.30+ and a dynamic StorageClass. NetworkPolicy enforcement
+  doesn't need manual checking — `apply-onboarding.sh` proves it live,
+  either way.
 
-The cluster must be created with a NetworkPolicy-enforcing CNI (Calico)
-already installed, not just Kind's own default — see
-`onboarding/portable/README.md`'s walkthrough step 1 for the exact
-commands. Skipping that doesn't make anything fail outright, it just
-means onboarding's own team isolation silently isn't enforced.
+**2. Pick your provider** — see `providers/README.md` for what this is
+and how to use it. Defaults to `kind` — nothing to do for local
+validation.
 
-### Then, on any cluster
+**3. Copy and edit the two env files**:
 
 ```bash
 cp config.env.example config.env
@@ -31,7 +36,7 @@ cp onboarding/cluster.env.example onboarding/cluster.env
 # edit both — see each component's own README for which variables matter
 ```
 
-### Then, create the GHCR pull secret
+**4. Create the GHCR pull secret**
 
 Event-generator and the Spark queue controller are private GHCR images
 (`ghcr.io/langd0n-classes/...`), built by GitHub Actions — nothing in
@@ -68,13 +73,19 @@ Never redirect `kubectl create secret ... -o yaml` to a file inside the
 repo, even temporarily. GitHub Actions pushes using its own built-in
 `GITHUB_TOKEN`, not a PAT.
 
-### Then, create the Tekton Dashboard auth + TLS secrets
+**5. Create the Tekton Dashboard auth + TLS secrets**
 
 The Dashboard Ingress (`pipeline/portable/manifests/tekton-dashboard-ingress-template.yaml`)
 requires two Secrets to already exist in `tekton-pipelines` before it's
 applied — pick a username and password for Dashboard access first:
 
 ```bash
+# tekton-pipelines doesn't exist yet this early (Tekton itself is
+# installed later, in install-prerequisites.sh) — create it now so the
+# secrets below have somewhere to go; Tekton's own install merges into
+# this same namespace cleanly.
+kubectl create namespace tekton-pipelines --dry-run=client -o yaml | kubectl apply -f -
+
 echo -n "Tekton Dashboard username: "
 read -r DASHBOARD_USER
 echo -n "Tekton Dashboard password: "
@@ -125,6 +136,22 @@ NetworkPolicy, per-team Spark quota), and shared infra services (the
 Spark queue controller + admission policy, the Dashboard's Ingress).
 Idempotent — safe to re-run.
 
+**Only if you're on Kind**: this step detects it (via your `kubectl`
+context starting with `kind-`) and tells you, mid-run, that
+`ingress-nginx` has no external IP yet and to start this separately, in
+its own terminal — Kind has no LoadBalancer implementation of its own,
+unlike a real cluster, which needs nothing here:
+
+```bash
+sudo bash ingress/portable/prerequisites/install-cloud-provider-kind.sh
+```
+
+Needs `sudo` and must keep running in the background for as long as
+you want `LoadBalancer` Services to keep working — that's why it's a
+separate command, not folded into the script itself (a script can't
+prompt for a sudo password mid-run, and can't leave a daemon running
+past its own exit). See `ingress/portable/README.md` for more.
+
 > Students submit Spark jobs using
 > `spark-queue/portable/manifests/team-spark-job-template.yaml` — it
 > already sets the three things required together for a Spark job to be
@@ -161,6 +188,7 @@ team, or retry after a partial failure.
 
 ```bash
 source config.env
+source "providers/${PROVIDER:-kind}.env"   # sets STORAGE_CLASS for the run below
 export RUN_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 envsubst < pipeline/portable/runs/run-all-teams-pipeline-run.yaml | kubectl create -f -
 ```
@@ -191,14 +219,26 @@ namespace itself (cascading everything inside each — the Spark queue
 controller included), plus the Spark queue's cluster-scoped
 objects (admission policy, RBAC — a namespace delete can't reach those),
 the Dashboard Ingress, and the cluster-wide prerequisites themselves.
-Rarely needed — mainly for a real shared cloud cluster, where deleting the
-whole cluster isn't an option the way it is on Kind.
+
+**On Kind**: skip this (and `teardown-pipeline.sh`) entirely — just
+delete the whole cluster instead:
+
+```bash
+kind delete cluster --name portable-fall-platform
+```
+
+**On a real cluster**: deleting the whole cluster usually isn't an
+option, so this script is how you tear the platform down without
+touching the cluster itself:
 
 ```bash
 bash portable/scripts/teardown-prerequisites.sh
 ```
 
 ## Validated end to end
+
+This record is from the Kind path specifically — the mechanics are
+identical on a real cluster, per "Before you start" above.
 
 Full cycle, in this order, on the same cluster:
 

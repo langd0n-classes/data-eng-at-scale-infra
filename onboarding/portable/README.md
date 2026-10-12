@@ -47,10 +47,19 @@ validation walkthrough installs Calico first. Most managed clusters (EKS,
 GKE, AKS) already ship a NetworkPolicy-enforcing CNI; only a from-scratch
 Kind/k3s cluster needs this extra step.
 
+`apply-onboarding.sh` proves this live before onboarding any namespace
+(`providers/lib/check-networkpolicy.sh` — a real deny-all-ingress test),
+and aborts if it fails. See `portable/README.md`'s "Then, pick your
+provider" for `PROVIDER`.
+
 ## Validation walkthrough
 
 Validated on: Kubernetes (Kind) v1.34.11, Calico v3.32.2 (for NetworkPolicy
 enforcement — see Compatibility above).
+
+Only step 1 (creating the cluster) is Kind-specific — if you already
+have a real cluster meeting the two requirements above (Kubernetes
+1.30+, NetworkPolicy enforcement), skip straight to step 2.
 
 **1. Create a cluster with a NetworkPolicy-enforcing CNI**
 

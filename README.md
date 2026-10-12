@@ -158,6 +158,8 @@ data-eng-at-scale-infra/
 ├── event-generator/            Synthetic event producer (Python, outbreak simulation)
 ├── ingress/                    Portable-platform ingress controller (kubectl-only, Kind/k3s)
 ├── spark-queue/                Portable-platform Spark job queue (kubectl-only, Kind/k3s)
+├── providers/                  Portable-platform provider adapter files (StorageClass,
+│                               LoadBalancer behavior, NetworkPolicy check, min K8s version)
 ├── storage/                    Optional MinIO (S3) and PostgreSQL templates
 └── learning/                   16 step-by-step student guides
 ```

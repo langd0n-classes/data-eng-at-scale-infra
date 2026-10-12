@@ -32,8 +32,9 @@ verify each one there, not here:
 - **Strimzi operator** installed — `kafka/portable/README.md` (needed
   because the deploy-kafka Task below runs
   `kafka/portable/scripts/deploy.sh`)
-- **ingress-nginx + cloud-provider-kind** installed —
-  `ingress/portable/README.md` (needed to expose the Tekton Dashboard)
+- **ingress-nginx installed** (`cloud-provider-kind` too, only if
+  you're on Kind) — `ingress/portable/README.md` (needed to expose the
+  Tekton Dashboard)
 - **The GHCR pull secret created** — `portable/README.md`'s "Before you
   start" (needed for the deploy-event-generator Task below to pull its
   image)
@@ -61,7 +62,7 @@ value:
 | Variable                        | Notes                                                                                                                                                     |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `INFRA_NAMESPACE`               | Hard-required by `apply-rbac.sh` below — it exits immediately if this isn't set                                                                           |
-| `STORAGE_CLASS`                 | `standard` on Kind                                                                                                                                        |
+| `STORAGE_CLASS`                 | Set by `providers/${PROVIDER}.env` (default `kind`), not this file                                                                                          |
 | `GIT_REPO_URL` + `GIT_BRANCH`   | Point these at `feature/portable-fall-platform` specifically — none of this exists on `main` yet, so cloning `main` leaves every Task with nothing to run |
 | `DASHBOARD_HOST`                | Hostname routed to the ingress-nginx LoadBalancer's external IP — needed to expose the Dashboard below                                                    |
 | `TEAMn_NAME`, `TEAMn_NAMESPACE` | Set the pairs for however many teams you actually want deployed, leaving every other slot as `"skip"` (see "Every `TEAMn_NAME`..." further below)         |
@@ -277,6 +278,7 @@ random `generateName` suffix) — sortable by name, and readable at a
 glance, not just from `creationTimestamp`:
 
 ```bash
+source "providers/${PROVIDER:-kind}.env"   # sets STORAGE_CLASS for the run below
 export RUN_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 envsubst < pipeline/portable/runs/run-all-teams-pipeline-run.yaml | kubectl create -f -
 ```
