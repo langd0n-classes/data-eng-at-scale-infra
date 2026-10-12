@@ -41,14 +41,37 @@ if [[ ! -f "${REPO_ROOT}/config.env" ]]; then
 fi
 source "${REPO_ROOT}/config.env"
 
+# Provider-specific values (StorageClass, LoadBalancer behavior, the
+# NetworkPolicy-enforcement check, minimum Kubernetes version) live in
+# providers/ — portable path only, selected via PROVIDER. The OpenShift
+# path never sources this and is unaffected.
+PROVIDER="${PROVIDER:-kind}"
+PROVIDER_ENV_FILE="${REPO_ROOT}/providers/${PROVIDER}.env"
+if [[ ! -f "${PROVIDER_ENV_FILE}" ]]; then
+  echo "ERROR: no providers/${PROVIDER}.env file found for PROVIDER='${PROVIDER}'."
+  echo "       Copy providers/TEMPLATE.env.example to providers/${PROVIDER}.env and fill in real values."
+  exit 1
+fi
+source "${PROVIDER_ENV_FILE}"
+
 for var in INFRA_NAMESPACE STORAGE_CLASS SPARK_IMAGE \
-           SPARK_QUEUE_CONTROLLER_IMAGE DASHBOARD_HOST; do
+           SPARK_QUEUE_CONTROLLER_IMAGE DASHBOARD_HOST MIN_KUBERNETES_VERSION; do
   val="${!var:-}"
   if [[ -z "$val" ]]; then
-    echo "ERROR: ${var} is not set in config.env"
+    echo "ERROR: ${var} is not set in config.env or providers/${PROVIDER}.env"
     exit 1
   fi
 done
+
+CLUSTER_VERSION="$(kubectl version -o json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['serverVersion']['major']+'.'+d['serverVersion']['minor'].rstrip('+'))" 2>/dev/null || true)"
+if [[ -z "${CLUSTER_VERSION}" ]]; then
+  echo "ERROR: couldn't determine the cluster's Kubernetes version (kubectl version failed)."
+  exit 1
+fi
+if [[ "$(printf '%s\n' "${MIN_KUBERNETES_VERSION}" "${CLUSTER_VERSION}" | sort -V | head -1)" != "${MIN_KUBERNETES_VERSION}" ]]; then
+  echo "ERROR: cluster is Kubernetes ${CLUSTER_VERSION}, below the required MIN_KUBERNETES_VERSION=${MIN_KUBERNETES_VERSION} (ValidatingAdmissionPolicy needs this)."
+  exit 1
+fi
 
 echo "============================================================"
 echo " Installing prerequisites"

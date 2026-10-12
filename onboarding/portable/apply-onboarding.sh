@@ -81,6 +81,22 @@ source "$CONFIG_FILE"
 
 ONBOARDING_NUM_TEAMS="${NUM_TEAMS}"
 
+# Provider-specific values (StorageClass, LoadBalancer behavior, the
+# NetworkPolicy-enforcement check, minimum Kubernetes version) live in
+# providers/ — portable path only, selected via PROVIDER. The OpenShift
+# path (onboarding/apply-onboarding.sh) never sources this and is
+# unaffected. Sourced independently here too (not just relying on
+# install-prerequisites.sh having already done it), so this script still
+# works correctly when run standalone.
+PROVIDER="${PROVIDER:-kind}"
+PROVIDER_ENV_FILE="${REPO_ROOT}/providers/${PROVIDER}.env"
+if [[ ! -f "${PROVIDER_ENV_FILE}" ]]; then
+  echo "ERROR: no providers/${PROVIDER}.env file found for PROVIDER='${PROVIDER}'."
+  echo "       Copy providers/TEMPLATE.env.example to providers/${PROVIDER}.env and fill in real values."
+  exit 1
+fi
+source "${PROVIDER_ENV_FILE}"
+
 MISSING=()
 for var in INFRA_NAMESPACE TEAM_NAMESPACE_PREFIX NUM_TEAMS STORAGE_CLASS \
            INFRA_RESOURCE_QUOTA_CPU INFRA_RESOURCE_QUOTA_MEMORY INFRA_RESOURCE_QUOTA_STORAGE \
@@ -89,7 +105,7 @@ for var in INFRA_NAMESPACE TEAM_NAMESPACE_PREFIX NUM_TEAMS STORAGE_CLASS \
            INFRA_LIMIT_CONTAINER_CPU_DEFAULT INFRA_LIMIT_CONTAINER_MEM_DEFAULT \
            INFRA_LIMIT_CONTAINER_CPU_REQUEST INFRA_LIMIT_CONTAINER_MEM_REQUEST \
            RESOURCE_QUOTA_CPU RESOURCE_QUOTA_MEMORY RESOURCE_QUOTA_STORAGE \
-           INFRA_ADMIN_GROUP TEAM_GROUP_SUFFIX; do
+           INFRA_ADMIN_GROUP TEAM_GROUP_SUFFIX MIN_KUBERNETES_VERSION; do
   val="${!var:-}"
   if [[ -z "$val" ]]; then
     MISSING+=("$var")
@@ -97,10 +113,28 @@ for var in INFRA_NAMESPACE TEAM_NAMESPACE_PREFIX NUM_TEAMS STORAGE_CLASS \
 done
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
-  echo "ERROR: The following cluster.env variables are missing or empty:"
+  echo "ERROR: The following cluster.env/providers/${PROVIDER}.env variables are missing or empty:"
   for m in "${MISSING[@]}"; do echo "         $m"; done
   echo "       Edit onboarding/cluster.env and re-run."
   exit 1
+fi
+
+if [[ "$DRY_RUN" != "true" ]]; then
+  CLUSTER_VERSION="$(kubectl version -o json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['serverVersion']['major']+'.'+d['serverVersion']['minor'].rstrip('+'))" 2>/dev/null || true)"
+  if [[ -z "${CLUSTER_VERSION}" ]]; then
+    echo "ERROR: couldn't determine the cluster's Kubernetes version (kubectl version failed)."
+    exit 1
+  fi
+  if [[ "$(printf '%s\n' "${MIN_KUBERNETES_VERSION}" "${CLUSTER_VERSION}" | sort -V | head -1)" != "${MIN_KUBERNETES_VERSION}" ]]; then
+    echo "ERROR: cluster is Kubernetes ${CLUSTER_VERSION}, below the required MIN_KUBERNETES_VERSION=${MIN_KUBERNETES_VERSION} (ValidatingAdmissionPolicy needs this)."
+    exit 1
+  fi
+
+  # shellcheck disable=SC1091
+  source "${REPO_ROOT}/providers/lib/check-networkpolicy.sh"
+  if ! check_networkpolicy_enforcement; then
+    exit 1
+  fi
 fi
 
 ok "Config loaded — infra: ${INFRA_NAMESPACE}, teams: ${NUM_TEAMS}, storage: ${STORAGE_CLASS}"

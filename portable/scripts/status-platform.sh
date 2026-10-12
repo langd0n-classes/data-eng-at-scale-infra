@@ -18,8 +18,16 @@ if [[ -f "${REPO_ROOT}/config.env" ]]; then
   source "${REPO_ROOT}/config.env"
 fi
 INFRA_NAMESPACE="${INFRA_NAMESPACE:-infra}"
+PROVIDER="${PROVIDER:-kind}"
 
 section() { echo ""; echo "── $* ──"; }
+
+section "Provider"
+if [[ -f "${REPO_ROOT}/providers/${PROVIDER}.env" ]]; then
+  echo "PROVIDER=${PROVIDER} (providers/${PROVIDER}.env)"
+else
+  echo "PROVIDER=${PROVIDER} — providers/${PROVIDER}.env not found"
+fi
 
 section "Cluster-wide prerequisites"
 kubectl get deployment strimzi-cluster-operator -n "${STRIMZI_OPERATOR_NAMESPACE:-strimzi-system}" \

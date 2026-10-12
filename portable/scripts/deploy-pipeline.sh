@@ -12,7 +12,7 @@
 # nothing — same reasoning Tekton itself uses: apply Tasks/Pipeline once,
 # submit PipelineRuns repeatedly:
 #
-#   source config.env && envsubst < pipeline/portable/runs/run-all-teams-pipeline-run.yaml | kubectl create -f -
+#   source config.env && source providers/${PROVIDER:-kind}.env && envsubst < pipeline/portable/runs/run-all-teams-pipeline-run.yaml | kubectl create -f -
 #
 # Usage: deploy-pipeline.sh
 set -euo pipefail
@@ -28,6 +28,18 @@ if [[ ! -f "${REPO_ROOT}/config.env" ]]; then
   exit 1
 fi
 source "${REPO_ROOT}/config.env"
+
+# Same provider override as install-prerequisites.sh — must be sourced
+# here too, independently, since this runs as its own later invocation
+# and has no memory of what PROVIDER that earlier run used.
+PROVIDER="${PROVIDER:-kind}"
+PROVIDER_ENV_FILE="${REPO_ROOT}/providers/${PROVIDER}.env"
+if [[ ! -f "${PROVIDER_ENV_FILE}" ]]; then
+  echo "ERROR: no providers/${PROVIDER}.env file found for PROVIDER='${PROVIDER}'."
+  echo "       Copy providers/TEMPLATE.env.example to providers/${PROVIDER}.env and fill in real values."
+  exit 1
+fi
+source "${PROVIDER_ENV_FILE}"
 
 for var in INFRA_NAMESPACE STORAGE_CLASS VOLUME_SIZE KUBECTL_CLI_IMAGE \
            GIT_REPO_URL GIT_BRANCH EVENT_GENERATOR_NAME EVENT_GENERATOR_IMAGE \
@@ -75,5 +87,5 @@ echo " or check status with: bash portable/scripts/status-platform.sh"
 echo ""
 echo " Next time, skip re-applying RBAC/Tasks/Pipeline — just submit"
 echo " another run directly:"
-echo "   source config.env && envsubst < pipeline/portable/runs/run-all-teams-pipeline-run.yaml | kubectl create -f -"
+echo "   source config.env && source providers/${PROVIDER:-kind}.env && envsubst < pipeline/portable/runs/run-all-teams-pipeline-run.yaml | kubectl create -f -"
 echo "============================================================"
