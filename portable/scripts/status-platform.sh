@@ -60,6 +60,8 @@ kubectl get deployment spark-queue-controller -n "${INFRA_NAMESPACE}" --no-heade
   || echo "spark-queue-controller: not found"
 kubectl get validatingadmissionpolicy spark-job-queue-policy --no-headers 2>/dev/null \
   || echo "spark-job-queue-policy: not found"
+kubectl get validatingadmissionpolicy spark-bare-pod-policy --no-headers 2>/dev/null \
+  || echo "spark-bare-pod-policy: not found"
 kubectl get job -A -l queue=spark -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,SUSPEND:.spec.suspend 2>/dev/null
 
 section "Per-team Kafka"

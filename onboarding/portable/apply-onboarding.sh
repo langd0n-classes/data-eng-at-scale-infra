@@ -268,9 +268,11 @@ echo ""
 if [[ "$DRY_RUN" == "false" ]]; then
   echo " Namespaces created:"
   [[ "$TEAMS_ONLY" == "false" ]] && echo "   ${INFRA_NAMESPACE}"
-  for i in $(seq 1 "${ONBOARDING_NUM_TEAMS}"); do
-    echo "   ${TEAM_NAMESPACE_PREFIX}-$(printf '%02d' "$i")"
-  done
+  if [[ "$INFRA_ONLY" == "false" ]]; then
+    for i in $(seq "${FROM_TEAM}" "${ONBOARDING_NUM_TEAMS}"); do
+      echo "   ${TEAM_NAMESPACE_PREFIX}-$(printf '%02d' "$i")"
+    done
+  fi
 fi
 
 echo ""

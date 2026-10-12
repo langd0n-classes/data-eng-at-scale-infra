@@ -119,7 +119,7 @@ envsubst '${INFRA_NAMESPACE} ${SPARK_IMAGE_REPO} ${SPARK_QUEUE_CONTROLLER_IMAGE}
 # a tight per-team loop.
 kubectl rollout restart deployment/spark-queue-controller -n "${INFRA_NAMESPACE}"
 kubectl rollout status deployment/spark-queue-controller -n "${INFRA_NAMESPACE}" --timeout=120s
-envsubst '${SPARK_IMAGE_REPO}' < "${REPO_ROOT}/spark-queue/portable/manifests/spark-job-admission-policy.yaml" | kubectl apply -f -
+envsubst '${SPARK_IMAGE_REPO} ${INFRA_NAMESPACE}' < "${REPO_ROOT}/spark-queue/portable/manifests/spark-job-admission-policy.yaml" | kubectl apply -f -
 
 echo ""
 info "Step 5 — Tekton Dashboard Ingress..."
