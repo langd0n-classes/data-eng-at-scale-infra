@@ -210,9 +210,19 @@ through it) and a basic-auth login prompt (the username/password from
 
 ## Pipeline RBAC
 
-`rbac/` auto-detects "dedicated" vs. "shared" cluster the same way
-`onboarding/apply-onboarding.sh` already does (`kubectl auth can-i create
-clusterrolebindings`). `apply-rbac.sh` auto-sources `config.env` itself —
+`rbac/` applies the least-privilege RBAC that's sufficient to run the
+pipeline by default: a namespace-scoped `Role`+`RoleBinding`
+(`role-rolebinding-namespace.yaml`) applied to `infra` and every team
+namespace, plus one minimal separate `ClusterRole`
+(`clusterrole-namespaces-read.yaml`) for the one unavoidable cluster-scoped
+read — `get/list/watch` on `Namespace` objects, which a namespaced `Role`
+can't grant. This is the default even on a cluster where the account
+applying it also has cluster-admin — a cluster-wide `ClusterRoleBinding`
+would let the pipeline's own ServiceAccount create pods/ServiceAccounts in
+every namespace including `kube-system`, which (unlike this platform's own
+team namespaces) typically has no Pod Security restriction at all. Picking
+the broader option just because it's available would trade that away for
+no benefit. `apply-rbac.sh` auto-sources `config.env` itself —
 `INFRA_NAMESPACE` needs to already be set there (see "Update config.env"
 above).
 
@@ -222,20 +232,23 @@ bash pipeline/portable/rbac/apply-rbac.sh
 
 ```
 serviceaccount/pipeline created
-Cluster type: dedicated (cluster-admin available) — using a ClusterRoleBinding
-clusterrole.rbac.authorization.k8s.io/pipeline-runner-role-portable created
-clusterrolebinding.rbac.authorization.k8s.io/pipeline-runner-binding-portable created
+Using namespace-scoped Role+RoleBinding (least privilege, the default)
+Requesting one minimal cluster-scoped read (namespaces) separately...
+clusterrole.rbac.authorization.k8s.io/pipeline-namespaces-reader created
+  → infra
+role.rbac.authorization.k8s.io/pipeline-runner-role created
+rolebinding.rbac.authorization.k8s.io/pipeline-runner-binding created
 ```
 
-Most vanilla-Kubernetes clusters — a self-provisioned cloud cluster, a
-bare-metal cluster you stood up yourself, etc. — hand the account that
-created the cluster full cluster-admin by default, so this same
-dedicated-cluster path is the common case generally, not just on Kind.
-The shared-cluster fallback (`role-rolebinding-namespace.yaml` +
-`clusterrole-namespaces-read.yaml`, mirroring
-`pipeline/rbac/04-role-rolebinding-namespace.yaml`'s NERC scenario) exists
-for the less common case of a restricted/shared cluster where that doesn't
-hold.
+Set `PREFER_CLUSTERROLEBINDING=true` to opt into the broader alternative
+instead — one `ClusterRoleBinding` (`clusterrolebinding.yaml`) covering
+every namespace, still gated by the same `kubectl auth can-i create
+clusterrolebindings` check (cluster-admin is still required; the flag only
+changes which path is *preferred* when it's available):
+
+```bash
+PREFER_CLUSTERROLEBINDING=true bash pipeline/portable/rbac/apply-rbac.sh
+```
 
 ## The full per-team deploy pipeline
 

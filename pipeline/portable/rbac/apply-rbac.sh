@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 # pipeline/portable/rbac/apply-rbac.sh
 #
-# Applies the pipeline ServiceAccount and whichever RBAC variant fits this
-# cluster, auto-detected the same way onboarding/apply-onboarding.sh already
-# detects "dedicated" vs "shared" cluster type:
-#   - Dedicated (cluster-admin available, e.g. Kind/k3s locally, OVHcloud's
-#     default kubeconfig): one ClusterRoleBinding covering every namespace.
-#   - Shared (no cluster-admin, e.g. a restricted managed cluster): a
-#     namespace-scoped Role+RoleBinding applied to infra and every team
-#     namespace, plus one minimal separate ClusterRole for the one
-#     unavoidable cluster-scoped read (see role-rolebinding-namespace.yaml's
-#     header comment).
+# Applies the pipeline ServiceAccount and the least-privilege RBAC that's
+# sufficient to run the pipeline: a namespace-scoped Role+RoleBinding applied
+# to infra and every team namespace, plus one minimal separate ClusterRole
+# for the one unavoidable cluster-scoped read (see
+# role-rolebinding-namespace.yaml's header comment). This is the default
+# regardless of whether the cluster would also allow something broader —
+# unrestricted cluster-wide pod/ServiceAccount creation would reach
+# kube-system (which, unlike this platform's own team namespaces, has no Pod
+# Security restriction), so it's never picked just because it's available.
 #
-# Usage: apply-rbac.sh
+# PREFER_CLUSTERROLEBINDING=true opts into the broader alternative instead:
+# one ClusterRoleBinding covering every namespace via clusterrolebinding.yaml
+# (still requires cluster-admin — gated by the same `can-i` check below).
+#
+# Usage:
+#   apply-rbac.sh                                   # namespace-scoped Role (default)
+#   PREFER_CLUSTERROLEBINDING=true apply-rbac.sh    # cluster-wide ClusterRoleBinding (opt-in)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,11 +34,11 @@ echo "=========================================="
 
 envsubst '${INFRA_NAMESPACE}' < "${SCRIPT_DIR}/serviceaccount.yaml" | kubectl apply -f -
 
-if kubectl auth can-i create clusterrolebindings &>/dev/null; then
-  echo "Cluster type: dedicated (cluster-admin available) — using a ClusterRoleBinding"
+if [[ "${PREFER_CLUSTERROLEBINDING:-false}" == "true" ]] && kubectl auth can-i create clusterrolebindings &>/dev/null; then
+  echo "PREFER_CLUSTERROLEBINDING=true — using a cluster-wide ClusterRoleBinding"
   envsubst '${INFRA_NAMESPACE}' < "${SCRIPT_DIR}/clusterrolebinding.yaml" | kubectl apply -f -
 else
-  echo "Cluster type: shared (no cluster-admin) — using namespace-scoped Role+RoleBinding"
+  echo "Using namespace-scoped Role+RoleBinding (least privilege, the default)"
   echo "Requesting one minimal cluster-scoped read (namespaces) separately..."
   envsubst '${INFRA_NAMESPACE}' < "${SCRIPT_DIR}/clusterrole-namespaces-read.yaml" | kubectl apply -f -
 
