@@ -207,33 +207,44 @@ Role/RoleBinding-per-namespace path `apply-rbac.sh` can use), the shared
 event generator, and — since this is what a `PipelineRun` actually
 produces, not onboarding — each team's Kafka (CR, KafkaNodePool, PDB,
 PVCs). Team namespaces and onboarding are left alone, so you can wipe and
-resubmit a run without redoing onboarding.
+resubmit a run without redoing onboarding. Asks for confirmation first;
+`FORCE=true` skips the prompt.
 
 ```bash
-bash portable/scripts/teardown-pipeline.sh
+bash portable/scripts/teardown-pipeline.sh              # interactive
+FORCE=true bash portable/scripts/teardown-pipeline.sh   # no prompt
 ```
 
 **6. `teardown-prerequisites.sh`** — undoes step 1, in full symmetry with
 onboarding's own namespace creation: every team namespace *and* the infra
 namespace itself (cascading everything inside each — the Spark queue
 controller included), plus the Spark queue's cluster-scoped
-objects (admission policy, RBAC — a namespace delete can't reach those),
-the Dashboard Ingress, and the cluster-wide prerequisites themselves.
+objects (admission policy, RBAC — a namespace delete can't reach those)
+and the Dashboard Ingress. Asks for confirmation first.
 
-**On Kind**: skip this (and `teardown-pipeline.sh`) entirely — just
-delete the whole cluster instead:
+The cluster-wide prerequisites themselves (ingress-nginx, Tekton,
+Strimzi) are **not** touched by default — they're shared, cluster-wide
+singletons another tenant on the same cluster might depend on. Set
+`CLUSTER_WIDE_TEARDOWN=true` to also remove them (asks a second,
+separate confirmation); `FORCE=true` skips any prompt.
+
+```bash
+bash portable/scripts/teardown-prerequisites.sh                                 # this platform's own stuff only
+FORCE=true bash portable/scripts/teardown-prerequisites.sh                       # same, no prompt
+CLUSTER_WIDE_TEARDOWN=true bash portable/scripts/teardown-prerequisites.sh       # also removes ingress-nginx/Tekton/Strimzi
+FORCE=true CLUSTER_WIDE_TEARDOWN=true bash portable/scripts/teardown-prerequisites.sh   # full wipe, no prompts
+```
+
+**On Kind**: skip all of this entirely — just delete the whole cluster
+instead:
 
 ```bash
 kind delete cluster --name portable-fall-platform
 ```
 
 **On a real cluster**: deleting the whole cluster usually isn't an
-option, so this script is how you tear the platform down without
-touching the cluster itself:
-
-```bash
-bash portable/scripts/teardown-prerequisites.sh
-```
+option, so the commands above are how you tear the platform down
+without touching the cluster itself.
 
 ## Validated end to end
 

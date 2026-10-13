@@ -65,7 +65,7 @@ kubectl get validatingadmissionpolicy spark-bare-pod-policy --no-headers 2>/dev/
 kubectl get job -A -l queue=spark -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,SUSPEND:.spec.suspend 2>/dev/null
 
 section "Per-team Kafka"
-for ns in $(kubectl get namespace -l team --no-headers -o custom-columns=:.metadata.name 2>/dev/null); do
+for ns in $(kubectl get namespace -l app=data-eng-infra --no-headers -o custom-columns=:.metadata.name 2>/dev/null); do
   kubectl get kafka -n "${ns}" --no-headers 2>/dev/null || echo "${ns}: no Kafka found"
 done
 
