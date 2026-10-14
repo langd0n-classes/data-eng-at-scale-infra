@@ -195,8 +195,32 @@ All five results matched expectations exactly: same-namespace traffic and
 `infra`-sourced traffic are allowed, cross-team traffic is blocked in both
 directions.
 
+**3b. Same test, against Kafka itself**
+
+nginx proves `team-isolation` works for a plain Service — it can't catch
+a Strimzi listener-specific leak (fixed via `networkPolicyPeers` in
+`kafka/portable/manifests/kafka-template.yaml`). This re-runs the same
+probe against the real thing.
+
 ```bash
-# cleanup test pods (keep the onboarded namespaces)
+bash kafka/portable/prerequisites/install-strimzi.sh   # one-time, skip if already installed
+INFRA_NAMESPACE=infra bash kafka/portable/scripts/deploy.sh team01 team-01
+kubectl wait kafka kafka-team01 -n team-01 --for=condition=Ready --timeout=180s
+
+BOOTSTRAP=kafka-team01-kafka-bootstrap.team-01.svc.cluster.local
+kubectl exec test-01 -n team-01 -- nc -zvw4 "$BOOTSTRAP" 9092      # same ns — expect open
+kubectl exec test-02 -n team-02 -- nc -zvw4 "$BOOTSTRAP" 9092      # cross-team — expect blocked
+kubectl exec test-infra -n infra -- nc -zvw4 "$BOOTSTRAP" 9092     # infra — expect open
+```
+```
+test-01 -> kafka-team01:    open                    [REACHED]
+test-02 -> kafka-team01:    Connection timed out     [BLOCKED]
+test-infra -> kafka-team01: open                     [REACHED]
+```
+
+```bash
+# cleanup (keep the onboarded namespaces)
+bash kafka/portable/scripts/remove.sh --yes team01 team-01
 kubectl delete pod web-01 test-01 -n team-01 --ignore-not-found
 kubectl delete svc web-01 -n team-01 --ignore-not-found
 kubectl delete pod web-02 test-02 -n team-02 --ignore-not-found
