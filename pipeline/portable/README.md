@@ -55,9 +55,8 @@ cp config.env.example config.env
 
 Then edit `config.env` and set: `VOLUME_SIZE`, `KUBECTL_CLI_IMAGE`,
 `EVENT_GENERATOR_NAME`, `EVENT_GENERATOR_IMAGE`, `EVENT_RATE_PER_SEC`,
-`TOPIC_PREFIX`, `TOPIC_SUFFIX`, `REGIONS`, `TEAM_BOOTSTRAP_SERVERS`, and
-`SPARK_IMAGE` — plus these, which need a specific value, not just any
-value:
+`TOPIC_PREFIX`, `TOPIC_SUFFIX`, `REGIONS`, and `SPARK_IMAGE` — plus these,
+which need a specific value, not just any value:
 
 | Variable                        | Notes                                                                                                                                                     |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -65,7 +64,7 @@ value:
 | `STORAGE_CLASS`                 | Set by `providers/${PROVIDER}.env` (default `kind`), not this file                                                                                          |
 | `GIT_REPO_URL` + `GIT_BRANCH`   | Point these at `feature/portable-fall-platform` specifically — none of this exists on `main` yet, so cloning `main` leaves every Task with nothing to run |
 | `DASHBOARD_HOST`                | Hostname routed to the ingress-nginx LoadBalancer's external IP — needed to expose the Dashboard below                                                    |
-| `TEAMn_NAME`, `TEAMn_NAMESPACE` | Set the pairs for however many teams you actually want deployed, leaving every other slot as `"skip"` (see "Every `TEAMn_NAME`..." further below)         |
+| `TEAMn_NAME`, `TEAMn_NAMESPACE` | Set the pairs for however many teams you actually want deployed, leaving every other slot as `"skip"` (see "Every `TEAMn_NAME`..." further below). `deploy-pipeline.sh` generates `TEAM_BOOTSTRAP_SERVERS` from these automatically — nothing to set for it directly. |
 
 Separately, `onboarding/cluster.env`'s `NUM_TEAMS` must match how many
 teams you're actually onboarding — see `onboarding/portable/README.md`.
