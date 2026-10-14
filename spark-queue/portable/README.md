@@ -40,7 +40,11 @@ finishes.
 every 5 seconds, counts Jobs labeled `queue: spark`, and admits queued
 ones (flips `spec.suspend` to `false`) oldest-first, up to 4 at a time. A
 Job whose pod never reaches `Running` within `STUCK_GRACE_SECONDS` is
-excluded from the count so its slot frees up for a waiting Job.
+excluded from the count so its slot frees up for a waiting Job. The
+Deployment uses `strategy: Recreate` so this cap can't be broken by a
+restart/redeploy itself — the default `RollingUpdate` would briefly run
+an old and new controller pod together, each independently admitting
+jobs with no coordination between them.
 
 **Submission is validated, not just conventional** — a
 `ValidatingAdmissionPolicy` rejects a Job using the configured Spark

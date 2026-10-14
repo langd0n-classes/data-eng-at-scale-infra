@@ -6,6 +6,14 @@
 # read-only get/list/watch on Pods (to detect a stuck job whose pod never
 # started), cluster-wide, nothing else, not full cluster-admin.
 #
+# strategy: Recreate (not the Deployment default of RollingUpdate) — with
+# replicas: 1, the default would surge an extra pod during every
+# redeploy/restart, briefly running two independent controller instances
+# with no coordination between them, each able to admit up to
+# MAX_ACTIVE_JOBS on its own and double the cluster-wide cap. Recreate
+# fully terminates the old pod before starting the new one, so at most
+# one controller instance ever runs.
+#
 # Runs a pre-built image (spark-queue/portable/Dockerfile), published to
 # GHCR by .github/workflows/build-queue-controller.yml on every commit
 # touching spark-queue/portable/ — queue-controller.py is baked in, no
@@ -64,6 +72,8 @@ metadata:
     app: spark-queue-controller
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: spark-queue-controller
