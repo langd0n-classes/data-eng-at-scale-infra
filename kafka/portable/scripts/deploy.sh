@@ -55,10 +55,9 @@ fi
 
 export TEAM_NAME TEAM_NAMESPACE STORAGE_CLASS VOLUME_SIZE
 
-echo "Applying KafkaNodePool + Kafka CR + PodDisruptionBudget..."
+echo "Applying KafkaNodePool + Kafka CR..."
 envsubst < "${MANIFEST_DIR}/kafka-nodepool-template.yaml" | kubectl apply -f -
 envsubst < "${MANIFEST_DIR}/kafka-template.yaml"          | kubectl apply -f -
-envsubst < "${MANIFEST_DIR}/pdb-template.yaml"             | kubectl apply -f -
 
 echo ""
 echo "Waiting for Kafka to be ready..."
