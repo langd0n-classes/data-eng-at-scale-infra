@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # kafka/portable/scripts/remove.sh — Remove a team's Kafka resources and PVCs (portable/kubectl variant)
 #
-# Mirrors kafka/per-team/delete-team.sh. The PodDisruptionBudget is
-# Strimzi's own (not applied by this package, see deploy.sh), so it's
-# owned by the Kafka CR and cascades away when that's deleted below,
-# nothing to delete here explicitly.
+# Mirrors kafka/per-team/delete-team.sh, plus PodDisruptionBudget deletion
+# (which delete-team.sh currently omits).
 #
 # Usage: remove.sh [--yes] <team_name> <team_namespace>
 #   --yes, -y   skip the confirmation prompt (for scripted cleanup)
@@ -49,7 +47,8 @@ echo ""
 echo "Resources to be deleted:"
 echo "  - Kafka CR: kafka-${TEAM_NAME}"
 echo "  - KafkaNodePool CR: dual-role"
-echo "  - (operator cascades: pods, services, PVC, PodDisruptionBudget)"
+echo "  - PodDisruptionBudget: kafka-${TEAM_NAME}-pdb"
+echo "  - (operator cascades: pods, services, PVC)"
 echo ""
 if [ -n "${ASSUME_YES}" ]; then
   confirm="yes"
@@ -70,6 +69,9 @@ kubectl delete kafka "kafka-${TEAM_NAME}" -n "${TEAM_NAMESPACE}" --ignore-not-fo
 
 echo "  Deleting KafkaNodePool CR..."
 kubectl delete kafkanodepool dual-role -n "${TEAM_NAMESPACE}" --ignore-not-found
+
+echo "  Deleting PodDisruptionBudget..."
+kubectl delete pdb "kafka-${TEAM_NAME}-pdb" -n "${TEAM_NAMESPACE}" --ignore-not-found
 
 echo "  Deleting Strimzi PVCs..."
 # --wait=false: a PVC held by a finalizer would otherwise block here forever,

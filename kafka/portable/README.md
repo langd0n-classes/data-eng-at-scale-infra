@@ -151,27 +151,6 @@ All four `scripts/` commands are safe to re-run — `deploy.sh` is idempotent
 by construction (`kubectl apply`), the others use `--ignore-not-found` /
 existence checks throughout.
 
-## Node drain behavior
-
-`deploy.sh` does not apply its own PodDisruptionBudget for a team's
-broker — Strimzi already creates one for the same pod, and a second,
-separately-applied budget with `minAvailable: 1` over a single-replica
-broker allowed zero voluntary disruptions, blocking every node drain
-indefinitely. Strimzi's own budget already allows the one disruption a
-single-replica broker needs, so draining a node running a team's broker
-completes normally: the broker pod is evicted, the Strimzi operator
-recreates it on a schedulable node, and it resumes accepting producer
-traffic once Ready again.
-
-Confirm exactly one PodDisruptionBudget exists per team (Strimzi's own):
-```bash
-kubectl get pdb -n team-01
-```
-```
-NAME                 MIN AVAILABLE   MAX UNAVAILABLE   ALLOWED DISRUPTIONS   AGE
-kafka-team01-kafka   N/A             1                 1                     39h
-```
-
 ## Variables
 
 | Variable | Default | Description |
