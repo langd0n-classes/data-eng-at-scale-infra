@@ -65,7 +65,7 @@ Then edit `config.env` and set:
 | Variable | Example value | Notes |
 |---|---|---|
 | `INFRA_NAMESPACE` | `infra` | Where the queue controller runs |
-| `SPARK_IMAGE` | `apache/spark:3.5.3` | Must match exactly what `team-spark-job-template.yaml` is filled in with |
+| `SPARK_IMAGE` | `apache/spark@sha256:d0f5d6...` | Digest-pinned; must match exactly what `team-spark-job-template.yaml` is filled in with |
 | `TEAM_NAMESPACE_PREFIX` | `team` | Must match `onboarding/cluster.env`'s value |
 
 `TEAM_ID` below is **not** a `config.env` variable — it's set per command,
@@ -87,7 +87,8 @@ for id in 01 02; do
 done
 
 # the controller itself (RBAC + Deployment)
-export SPARK_IMAGE_REPO="${SPARK_IMAGE%:*}"
+# repo@digest form: strip at '@', not ':' (the digest itself has a colon)
+export SPARK_IMAGE_REPO="${SPARK_IMAGE%%@*}"
 envsubst '${INFRA_NAMESPACE} ${SPARK_QUEUE_CONTROLLER_IMAGE}' < spark-queue/portable/manifests/queue-controller-deployment.yaml | kubectl apply -f -
 
 # the enforcement policies
@@ -312,7 +313,7 @@ Only the first Job is created — the per-team cap rejects every other attempt.
 | `MAX_ACTIVE_JOBS` (controller env) | `4` | Cluster-wide cap |
 | `POLL_INTERVAL_SECONDS` (controller env) | `5` | Reconcile loop interval |
 | `STUCK_GRACE_SECONDS` (controller env) | `300` | How long an admitted Job gets before a pod that never starts frees its slot |
-| `SPARK_IMAGE_REPO` | *(required)* | `SPARK_IMAGE` with its tag stripped — used by the admission policies |
+| `SPARK_IMAGE_REPO` | *(required)* | `SPARK_IMAGE` with its `@digest` stripped — used by the admission policies |
 | `SPARK_QUEUE_CONTROLLER_IMAGE` | *(required)* | The controller's own pre-built image |
 
 ## Cleanup

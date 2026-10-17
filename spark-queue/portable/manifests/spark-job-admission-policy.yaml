@@ -44,7 +44,7 @@
 # student submitted.
 #
 # Usage:
-#   SPARK_IMAGE_REPO="${SPARK_IMAGE%:*}" \
+#   SPARK_IMAGE_REPO="${SPARK_IMAGE%%@*}" \
 #   envsubst '${SPARK_IMAGE_REPO} ${INFRA_NAMESPACE}' \
 #   < spark-queue/portable/manifests/spark-job-admission-policy.yaml | kubectl apply -f -
 #

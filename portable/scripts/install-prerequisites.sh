@@ -109,7 +109,14 @@ fi
 
 echo ""
 info "Step 4 — Spark queue controller + admission policy..."
-SPARK_IMAGE_REPO="${SPARK_IMAGE%:*}"
+# repo@digest has a colon inside the digest itself, so a plain ${VAR%:*}
+# would wrongly cut at that colon instead of at the (absent) tag — strip
+# at '@' first when present, only fall back to ':' for a tag-form image.
+if [[ "${SPARK_IMAGE}" == *@* ]]; then
+  SPARK_IMAGE_REPO="${SPARK_IMAGE%%@*}"
+else
+  SPARK_IMAGE_REPO="${SPARK_IMAGE%:*}"
+fi
 export SPARK_IMAGE_REPO
 envsubst '${INFRA_NAMESPACE} ${SPARK_IMAGE_REPO} ${SPARK_QUEUE_CONTROLLER_IMAGE}' \
   < "${REPO_ROOT}/spark-queue/portable/manifests/queue-controller-deployment.yaml" | kubectl apply -f -
