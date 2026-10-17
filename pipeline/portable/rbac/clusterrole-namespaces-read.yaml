@@ -1,0 +1,42 @@
+# pipeline/portable/rbac/clusterrole-namespaces-read.yaml
+#
+# Used only on the shared-cluster fallback path (role-rolebinding-namespace.yaml),
+# where every other permission is namespace-scoped. This is the one thing a
+# plain Role can never grant (Namespace is a cluster-scoped resource) —
+# read-only, nothing else, a much smaller ask than the full
+# ClusterRoleBinding in clusterrolebinding.yaml. See
+# role-rolebinding-namespace.yaml's header comment for why it's needed at
+# all (kafka/portable/scripts/deploy.sh's namespace-existence check).
+#
+# Apply with:
+#   source config.env && envsubst '${INFRA_NAMESPACE}' \
+#     < pipeline/portable/rbac/clusterrole-namespaces-read.yaml | kubectl apply -f -
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pipeline-namespaces-reader
+  labels:
+    app: tekton-pipeline
+    component: rbac
+rules:
+  - apiGroups: [""]
+    resources:
+      - namespaces
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pipeline-namespaces-reader-binding
+  labels:
+    app: tekton-pipeline
+    component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pipeline-namespaces-reader
+subjects:
+  - kind: ServiceAccount
+    name: pipeline
+    namespace: ${INFRA_NAMESPACE}

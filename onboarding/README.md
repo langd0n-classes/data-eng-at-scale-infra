@@ -2,6 +2,8 @@
 
 First step to get the entire project running on a fresh cluster. Sets up the cluster structure — namespaces, resource limits, and access control — that everything else builds on. Run this once as `kubeadmin` on any OpenShift cluster (CRC, NERC, or any OpenShift 4.x).
 
+For a `kubectl`-only variant (Kind/k3s, no OpenShift required), see [portable/README.md](portable/README.md).
+
 **What it creates:**
 - Infra namespace (`infra`) — shared namespace for infra team workloads, with ResourceQuota + LimitRange
 - Team namespaces (`team-01`, `team-02`, ...) with ResourceQuota + LimitRange

@@ -1,0 +1,24 @@
+# onboarding/portable/manifests/06-team-resourcequota.yaml — ResourceQuota per team namespace
+#
+# kubectl-only equivalent of onboarding/04-resourcequota.yaml.
+#
+# Usage (single team, manual):
+#   source onboarding/portable/cluster.env && \
+#   export TEAM_ID=01 && \
+#   envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} \
+#             ${RESOURCE_QUOTA_CPU} ${RESOURCE_QUOTA_MEMORY} ${RESOURCE_QUOTA_STORAGE}' \
+#   < onboarding/portable/manifests/06-team-resourcequota.yaml | kubectl apply -f -
+#
+# Called by: onboarding/portable/apply-onboarding.sh
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: team-quota
+  namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+spec:
+  hard:
+    requests.cpu: ${RESOURCE_QUOTA_CPU}
+    requests.memory: ${RESOURCE_QUOTA_MEMORY}
+    limits.cpu: ${RESOURCE_QUOTA_CPU}
+    limits.memory: ${RESOURCE_QUOTA_MEMORY}
+    requests.storage: ${RESOURCE_QUOTA_STORAGE}

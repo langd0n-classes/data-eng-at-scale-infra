@@ -37,6 +37,7 @@ TEAM_NAME="${_TEAM_NAME_ARG}"
 TEAM_NAMESPACE="${_TEAM_NAMESPACE_ARG}"
 STORAGE_CLASS="${CLI_STORAGE_CLASS:-${STORAGE_CLASS:-standard}}"
 VOLUME_SIZE="${CLI_VOLUME_SIZE:-${VOLUME_SIZE:-2Gi}}"
+INFRA_NAMESPACE="${INFRA_NAMESPACE:-infra}"
 
 echo "=========================================="
 echo "Deploying Kafka for ${TEAM_NAME} (portable)"
@@ -45,6 +46,7 @@ echo "Team Name:     ${TEAM_NAME}"
 echo "Namespace:     ${TEAM_NAMESPACE}"
 echo "Storage Class: ${STORAGE_CLASS}"
 echo "Volume Size:   ${VOLUME_SIZE}"
+echo "Infra NS:      ${INFRA_NAMESPACE}"
 echo ""
 
 if ! kubectl get namespace "${TEAM_NAMESPACE}" &>/dev/null; then
@@ -53,7 +55,7 @@ if ! kubectl get namespace "${TEAM_NAMESPACE}" &>/dev/null; then
   exit 1
 fi
 
-export TEAM_NAME TEAM_NAMESPACE STORAGE_CLASS VOLUME_SIZE
+export TEAM_NAME TEAM_NAMESPACE STORAGE_CLASS VOLUME_SIZE INFRA_NAMESPACE
 
 echo "Applying KafkaNodePool + Kafka CR + PodDisruptionBudget..."
 envsubst < "${MANIFEST_DIR}/kafka-nodepool-template.yaml" | kubectl apply -f -
