@@ -50,9 +50,12 @@ jobs with no coordination between them.
 `ValidatingAdmissionPolicy` rejects a Job using the configured Spark
 image, or carrying the `queue: spark` label, unless it already has
 `suspend: true`, the label, and `activeDeadlineSeconds` set. A second
-policy rejects bare Pods using the Spark image with no owner (also
-covers `spark-submit --master k8s://`, since it creates its driver Pod
-the same ownerless way).
+policy rejects *any* ownerless Pod in a team namespace, regardless of
+image — not just ones matching the Spark image by name, since a
+custom-built image (`FROM apache/spark` under a different name) would
+otherwise dodge the queue entirely. This also covers `spark-submit
+--master k8s://`, since it creates its driver Pod the same ownerless
+way.
 
 ## Before you start: update config.env
 

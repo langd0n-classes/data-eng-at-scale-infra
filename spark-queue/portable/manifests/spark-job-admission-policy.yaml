@@ -21,17 +21,23 @@
 #    it comes from the controller itself.
 #
 # 2. spark-bare-pod-policy — Pods can't be "queued" the way Jobs are
-#    (no `suspend` field, they run the instant they're created), so a
-#    bare Pod is matched by image only (no label to check for an
-#    ownerless pod). Denies any Pod using the Spark image with no
-#    ownerReferences at all — catches a student's own bare
-#    Pod (no owner) and `--deploy-mode cluster`'s externally-spawned
-#    driver Pod (Spark's own client creates it directly, no Kubernetes
-#    controller sets an owner back to anything) with the same rule, so
-#    cluster mode ends up unsupported as a side effect, not a special
-#    case. Legitimate client-mode executors stay allowed — Spark's own
-#    k8s backend sets their owner to the driver Pod (the Job template's
-#    own already-admitted pod), a real, non-empty ownerReference.
+#    (no `suspend` field, they run the instant they're created), so this
+#    denies any Pod with no ownerReferences at all in a team namespace,
+#    regardless of image — not matched by image name. Matching by image
+#    name alone would miss a custom-built image (e.g. `FROM apache/spark`
+#    published under a different name), so this doesn't try to recognize
+#    Spark at all: every legitimate Pod in a team namespace already has
+#    an owner (Kafka via the Strimzi operator, Spark Jobs via
+#    team-spark-job-template.yaml), so a bare Pod has no legitimate
+#    reason to exist there no matter what it runs. Catches a student's
+#    own bare Pod (no owner) and `--deploy-mode cluster`'s externally-
+#    spawned driver Pod (Spark's own client creates it directly, no
+#    Kubernetes controller sets an owner back to anything) with the same
+#    rule, so cluster mode ends up unsupported as a side effect, not a
+#    special case. Legitimate client-mode executors stay allowed —
+#    Spark's own k8s backend sets their owner to the driver Pod (the Job
+#    template's own already-admitted pod), a real, non-empty
+#    ownerReference.
 #
 # `MutatingAdmissionPolicy` (which could silently fix a non-compliant
 # submission) is not available on this cluster — confirmed directly
@@ -48,8 +54,8 @@
 #   envsubst '${SPARK_IMAGE_REPO} ${INFRA_NAMESPACE}' \
 #   < spark-queue/portable/manifests/spark-job-admission-policy.yaml | kubectl apply -f -
 #
-# Required vars: SPARK_IMAGE_REPO (used by both policies — must match
-# exactly what team-spark-job-template.yaml is filled in with),
+# Required vars: SPARK_IMAGE_REPO (used by spark-job-queue-policy only —
+# must match exactly what team-spark-job-template.yaml is filled in with),
 # INFRA_NAMESPACE (builds the controller's full ServiceAccount identity,
 # e.g. system:serviceaccount:infra:spark-queue-controller)
 apiVersion: admissionregistration.k8s.io/v1
@@ -124,17 +130,12 @@ spec:
         apiVersions: ["v1"]
         operations: ["CREATE"]
         resources: ["pods"]
-  matchConditions:
-    - name: uses-spark-image
-      expression: >-
-        object.spec.containers.exists(c,
-          c.image.contains('${SPARK_IMAGE_REPO}:') || c.image.contains('${SPARK_IMAGE_REPO}@')
-        )
   validations:
     - expression: "has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0"
       message: >-
-        Bare Pods using the Spark image aren't allowed in team namespaces —
-        submit via spark-queue/portable/manifests/team-spark-job-template.yaml.
+        Bare Pods aren't allowed in team namespaces — submit Spark jobs via
+        spark-queue/portable/manifests/team-spark-job-template.yaml; anything
+        else needs a Job/Deployment/StatefulSet to own its Pods.
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
