@@ -1,0 +1,31 @@
+# Staff login for checks and grading: all A03 topics and groups.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaUser
+metadata:
+  name: staff
+  namespace: a03-kafka
+  labels:
+    strimzi.io/cluster: a03
+spec:
+  authentication:
+    type: scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      - resource:
+          type: topic
+          name: "*"
+          patternType: literal
+        operations:
+          - All
+      - resource:
+          type: group
+          name: "*"
+          patternType: literal
+        operations:
+          - All
+      - resource:
+          type: cluster
+        operations:
+          - Describe
+          - DescribeConfigs
