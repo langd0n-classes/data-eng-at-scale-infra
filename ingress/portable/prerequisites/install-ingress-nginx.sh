@@ -16,6 +16,12 @@
 # that script is not needed at all — the cloud's own LoadBalancer
 # implementation takes over.
 #
+# Also disables ExternalName Service backends on the controller itself
+# (--disable-svc-external-name) and restricts what hosts a team Ingress
+# can claim (team-ingress-host-policy.yaml) — both close ways a team
+# could use the shared ingress to reach another team. See each one's own
+# comment for why.
+#
 # Safe to re-run (idempotent — kubectl apply).
 #
 # Usage: install-ingress-nginx.sh
@@ -33,9 +39,23 @@ echo "=========================================="
 kubectl apply -f "https://raw.githubusercontent.com/kubernetes/ingress-nginx/${INGRESS_NGINX_VERSION}/deploy/static/provider/cloud/deploy.yaml"
 
 echo ""
+echo "Disabling ExternalName Service backends..."
+# Patched in here, not before, since `kubectl apply` above always resets
+# args to upstream's list on every run — this keeps the flag present
+# regardless of how many times the script is re-run. Patched before
+# waiting for Available below so a fresh install's first rollout already
+# carries it, rather than an unpatched pod going Available first.
+kubectl patch deployment ingress-nginx-controller -n ingress-nginx \
+  --type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--disable-svc-external-name"}]'
+
+echo ""
 echo "Waiting for the ingress-nginx controller Deployment to become available..."
 kubectl wait deployment ingress-nginx-controller -n ingress-nginx \
   --for=condition=Available --timeout=180s
+
+echo ""
+echo "Restricting team Ingress hosts to each team's own namespace..."
+kubectl apply -f "${REPO_ROOT}/ingress/portable/manifests/team-ingress-host-policy.yaml"
 
 echo ""
 echo "=========================================="

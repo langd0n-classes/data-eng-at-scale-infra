@@ -132,12 +132,15 @@ next.
 **5. Confirm a real Ingress in a team namespace actually routes traffic**
 
 Requires `onboarding/portable/` already applied (team namespaces + their
-NetworkPolicy must exist first). A throwaway test pod, Service, and
-Ingress in `team-01`:
+NetworkPolicy must exist first). Team namespaces deny any ownerless Pod
+(`spark-bare-pod-policy`), so the web target needs an owner, and the
+host must start with the namespace's own name
+(`team-ingress-host-policy`, below) — a throwaway Deployment, Service,
+and Ingress in `team-01`:
 
 ```bash
-kubectl run ingress-test-web --image=nginx:alpine -n team-01 --labels=app=ingress-test --port=80 --restart=Never
-kubectl expose pod ingress-test-web -n team-01 --port=80 --name=ingress-test-web
+kubectl create deployment ingress-test-web --image=nginx:alpine -n team-01
+kubectl expose deployment ingress-test-web -n team-01 --port=80
 kubectl apply -f - <<'EOF'
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -147,7 +150,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: team01-test.local
+    - host: team-01.local
       http:
         paths:
           - path: /
@@ -161,7 +164,7 @@ EOF
 ```
 
 ```bash
-curl -s --max-time 6 --resolve "team01-test.local:80:172.18.0.3" "http://team01-test.local/" -w "\nHTTP %{http_code}\n"
+curl -s --max-time 6 --resolve "team-01.local:80:172.18.0.3" "http://team-01.local/" -w "\nHTTP %{http_code}\n"
 ```
 ```
 <!DOCTYPE html>
@@ -173,7 +176,55 @@ HTTP 200
 # cleanup
 kubectl delete ingress ingress-test -n team-01 --ignore-not-found
 kubectl delete svc ingress-test-web -n team-01 --ignore-not-found
-kubectl delete pod ingress-test-web -n team-01 --ignore-not-found
+kubectl delete deployment ingress-test-web -n team-01 --ignore-not-found
+```
+
+## Team Ingress isolation
+
+Two restrictions keep a team namespace's Ingress from reaching another
+team through the shared controller:
+
+- **`team-ingress-host-policy.yaml`** — every `host` in a team namespace's
+  Ingress must start with that namespace's own name
+  (`team-01`/`team-01.<anything>`), so a team can't claim another team's
+  host or the shared dashboard's.
+- **The controller runs with `--disable-svc-external-name`** — an
+  `ExternalName` Service can't be used as an Ingress backend at all, so
+  a team can't point an Ingress at another team's Service and have the
+  controller (not them) make that connection.
+
+```bash
+kubectl apply -f ingress/portable/manifests/team-ingress-host-policy.yaml
+```
+
+Usage — a host outside the namespace's own prefix is rejected:
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: other-host-test
+  namespace: team-01
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: team-02.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ingress-test-web
+                port:
+                  number: 80
+EOF
+```
+```
+The ingresses "other-host-test" is invalid: : ValidatingAdmissionPolicy 'team-ingress-host-policy'
+with binding 'team-ingress-host-policy-binding' denied request: Every Ingress host in a team
+namespace must start with that namespace's own name (e.g. "team-01" or "team-01.<anything>") —
+claiming another hostname, including the shared dashboard's, isn't allowed.
 ```
 
 ## Cleanup
@@ -184,4 +235,7 @@ sudo kill $(cat ingress/portable/prerequisites/.bin/cloud-provider-kind.pid)
 
 # Remove ingress-nginx
 kubectl delete -f "https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.15.1/deploy/static/provider/cloud/deploy.yaml"
+
+# Remove the team Ingress host policy
+kubectl delete -f ingress/portable/manifests/team-ingress-host-policy.yaml --ignore-not-found
 ```

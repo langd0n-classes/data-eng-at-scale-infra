@@ -134,6 +134,14 @@ else
   fi
 
   echo ""
+  info "Removing the team Ingress host policy..."
+  if kubectl delete -f "${REPO_ROOT}/ingress/portable/manifests/team-ingress-host-policy.yaml" --ignore-not-found; then
+    ok "Team Ingress host policy"
+  else
+    fail "Team Ingress host policy"
+  fi
+
+  echo ""
   info "Removing the Tekton Dashboard (${TEKTON_DASHBOARD_VERSION})..."
   if kubectl delete -f "https://github.com/tektoncd/dashboard/releases/download/${TEKTON_DASHBOARD_VERSION}/release.yaml" --ignore-not-found --timeout=60s; then
     ok "Tekton Dashboard"
