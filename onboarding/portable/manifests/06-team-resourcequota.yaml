@@ -22,3 +22,5 @@ spec:
     limits.cpu: ${RESOURCE_QUOTA_CPU}
     limits.memory: ${RESOURCE_QUOTA_MEMORY}
     requests.storage: ${RESOURCE_QUOTA_STORAGE}
+    services.loadbalancers: "0"
+    services.nodeports: "0"
