@@ -1,20 +1,21 @@
 # Portable Spark Job Queue (Kind / k3s)
 
 A `kubectl`-only job queue: at most four Spark jobs active across the
-cluster, at most one active per team. A finished or abandoned job
-releases its slot automatically.
+cluster, at most one active per team at a time — but a team can have any
+number of jobs waiting. A finished or abandoned job releases its slot
+automatically.
 
 Infra-maintainer-built. Students only ever fill in and submit
 `manifests/team-spark-job-template.yaml` — they never touch the
-ResourceQuota, the admission policy, or the queue controller.
+admission policy or the queue controller.
 
-> A Job must have `spec.suspend: true`, the `queue: spark` label, and
-> `spec.activeDeadlineSeconds` set to be accepted as a Spark job — the
-> template already sets all three. Only the queue controller may change
-> `spec.suspend` or the `queue` label once a Job exists. A student
-> submitting any other (non-Spark) Job doesn't need any of this, but the
-> per-team `ResourceQuota` below still caps them at one Job object at a
-> time regardless.
+> A Job must have `spec.suspend: true`, the `queue: spark` label,
+> `spec.activeDeadlineSeconds` set between 1 and 7200, and
+> `spec.parallelism` at most 1 to be accepted as a Spark job — the
+> template already sets all of these. Only the queue controller may
+> change `spec.suspend` or the `queue` label once a Job exists. A student
+> submitting any other (non-Spark) Job doesn't need any of this and isn't
+> subject to the queue at all.
 
 ## Compatibility
 
@@ -24,38 +25,49 @@ Kind, k3s, EKS, GKE, AKS, bare-metal, etc.
 
 ## Prerequisites
 
-- **Team namespaces onboarded** — `onboarding/portable/README.md` (needed
-  for the per-team `ResourceQuota` below, and because the queue controller
-  deploys into the `infra` namespace onboarding creates)
+- **Team namespaces onboarded** — `onboarding/portable/README.md` (the
+  queue controller deploys into the `infra` namespace onboarding creates)
 - **`config.env` created and filled in** — see below
 
 ## How it's enforced
 
-**One active job per team** — a namespace-scoped `ResourceQuota`
-(`count/jobs.batch: "1"`), applied per team namespace at onboarding time.
-`ttlSecondsAfterFinished` on the Job template frees the slot once it
-finishes.
+**One active job per team, any number waiting** — enforced entirely by
+`scripts/queue-controller.py`, not by a quota: a team can submit as many
+Jobs as it wants (a suspended Job creates zero pods and costs nothing),
+but the controller only ever admits one per namespace at a time,
+regardless of how many cluster-wide slots are free. `ttlSecondsAfterFinished`
+on the Job template frees up etcd once a finished Job's grace period
+passes.
 
-**Four active across the cluster** — `scripts/queue-controller.py` polls
-every 5 seconds, counts Jobs labeled `queue: spark`, and admits queued
-ones (flips `spec.suspend` to `false`) oldest-first, up to 4 at a time. A
-Job whose pod never reaches `Running` within `STUCK_GRACE_SECONDS` is
-excluded from the count so its slot frees up for a waiting Job. The
-Deployment uses `strategy: Recreate` so this cap can't be broken by a
-restart/redeploy itself — the default `RollingUpdate` would briefly run
-an old and new controller pod together, each independently admitting
-jobs with no coordination between them.
+**Four active across the cluster** — the same controller polls every 5
+seconds, counts Jobs labeled `queue: spark`, and admits queued ones
+(flips `spec.suspend` to `false`) oldest-first, up to 4 at a time,
+skipping any team that already has one running. A Job whose pod never
+reaches `Running` within `STUCK_GRACE_SECONDS` is force-terminated — its
+`activeDeadlineSeconds` is patched down to 1, handing it to Kubernetes'
+own Job controller to mark `Failed`/`DeadlineExceeded` within moments —
+rather than merely excluded from the count, which would leave a window
+for a pod that starts just afterward to run for real while already
+uncounted. A Job that already had a pod reach `Running` at least once
+(e.g. mid-retry after a crash) is never treated as stuck, even if its
+current pod is still `Pending`. The Deployment uses `strategy: Recreate`
+so this cap can't be broken by a restart/redeploy itself — the default
+`RollingUpdate` would briefly run an old and new controller pod
+together, each independently admitting jobs with no coordination between
+them.
 
 **Submission is validated, not just conventional** — a
 `ValidatingAdmissionPolicy` rejects a Job using the configured Spark
 image, or carrying the `queue: spark` label, unless it already has
-`suspend: true`, the label, and `activeDeadlineSeconds` set. A second
-policy rejects *any* ownerless Pod in a team namespace, regardless of
-image — not just ones matching the Spark image by name, since a
-custom-built image (`FROM apache/spark` under a different name) would
-otherwise dodge the queue entirely. This also covers `spark-submit
---master k8s://`, since it creates its driver Pod the same ownerless
-way.
+`suspend: true`, the label, `activeDeadlineSeconds` between 1 and 7200,
+`parallelism` at most 1, and `ttlSecondsAfterFinished` at most 86400 (one
+day — keeps finished Jobs from piling up now that there's no per-team
+count quota). A second policy rejects *any* ownerless Pod in a team
+namespace, regardless of image — not just ones matching the Spark image
+by name, since a custom-built image (`FROM apache/spark` under a
+different name) would otherwise dodge the queue entirely. This also
+covers `spark-submit --master k8s://`, since it creates its driver Pod
+the same ownerless way.
 
 ## Before you start: update config.env
 
@@ -72,7 +84,7 @@ Then edit `config.env` and set:
 | `TEAM_NAMESPACE_PREFIX` | `team` | Must match `onboarding/cluster.env`'s value |
 
 `TEAM_ID` below is **not** a `config.env` variable — it's set per command,
-once for each team namespace you're applying the quota to.
+once for each team namespace a job is submitted to.
 
 ## Validation walkthrough
 
@@ -82,12 +94,6 @@ Validated on: Kubernetes (Kind) v1.34.11.
 
 ```bash
 source config.env
-
-# per-team ResourceQuota — one per onboarded team namespace
-for id in 01 02; do
-  TEAM_ID=$id envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID}' \
-    < spark-queue/portable/manifests/team-jobs-resourcequota.yaml | kubectl apply -f -
-done
 
 # the controller itself (RBAC + Deployment)
 # repo@digest form: strip at '@', not ':' (the digest itself has a colon)
@@ -228,11 +234,11 @@ The controller's own log ties cause to effect directly:
 06:32:09 INFO active=4 waiting=0 free_slots=0
 ```
 
-**7. Timeout releases a slot, and `activeDeadlineSeconds` actually terminates it**
+**7. A stuck job is force-terminated, not just uncounted**
 
 Step 6 covered a person cancelling a job. This step covers the other
-way a slot frees up on its own: a job that gets *stuck* — its pod never
-even starts — instead of a person noticing and deleting it.
+way a slot frees up: a job that gets *stuck* — its pod never even
+starts — instead of a person noticing and deleting it.
 
 To simulate that, submit a Job with a bogus image tag, so its pod sits
 in `ImagePullBackOff` forever instead of running. The queue has no way
@@ -241,46 +247,38 @@ like any other Job first:
 
 ```bash
 source config.env
-SPARK_JOB_NAME=stuck-job TEAM_NAMESPACE_PREFIX=spark-test TEAM_ID=1 \
+SPARK_JOB_NAME=stuck-job TEAM_NAMESPACE_PREFIX=team TEAM_ID=01 \
 SPARK_IMAGE="apache/spark:nonexistent-tag-for-stuck-test" SPARK_COMMAND="echo unreachable" \
 envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${SPARK_JOB_NAME} ${SPARK_IMAGE} ${SPARK_COMMAND}' \
 < spark-queue/portable/manifests/team-spark-job-template.yaml | kubectl apply -f -
 
-kubectl get pods -n spark-test-1 -l job-name=stuck-job
-# stuck-job-4lzzv   0/1   ImagePullBackOff
+kubectl get pods -n team-01 -l job-name=stuck-job
+# stuck-job-fpjdd   0/1   ImagePullBackOff
 ```
 `STUCK_GRACE_SECONDS` is how long the controller waits for a Job's pod
-to reach `Running` before giving up on it and freeing its slot. It
-defaults to 300s (5 min) in production — lowered here to 30s purely so
-this test doesn't take 5 minutes to show a result, not a change to the
-shipped default:
+to reach `Running` before giving up on it. It defaults to 300s (5 min)
+in production — lowered here to 20s purely so this test doesn't take 5
+minutes to show a result, not a change to the shipped default:
 ```bash
-kubectl set env deployment/spark-queue-controller -n infra STUCK_GRACE_SECONDS=30
+kubectl set env deployment/spark-queue-controller -n infra STUCK_GRACE_SECONDS=20
 ```
-Once the grace window passes, the controller recognizes it as stuck and
-stops counting it — confirmed by its own log, not just inferred:
+Once the grace window passes, the controller force-terminates it by
+patching `activeDeadlineSeconds` down to 1 — handing termination to
+Kubernetes' own Job controller, rather than just excluding it from the
+count and leaving it alive. Confirmed by its own log, not just inferred:
 ```
-06:34:18 WARNING spark-test-1/stuck-job stuck (admitted 30s+ ago, no pod ever reached Running) — freeing its slot; activeDeadlineSeconds will actually terminate it
-06:34:18 INFO active=0 waiting=0 free_slots=4
+2026-10-21 02:28:38,282 WARNING team-01/stuck-job stuck (no pod ever reached Running after 20s) — forcing termination
+2026-10-21 02:28:38,293 INFO active=0 waiting=0 free_slots=4
 ```
-A freshly submitted Job is admitted immediately, proving the slot is
-genuinely usable, not just excluded from a count:
+The Job reaches a real `Failed`/`DeadlineExceeded` condition within
+seconds — not merely excluded from counting while still technically
+alive:
 ```bash
-SPARK_JOB_NAME=proof-job TEAM_NAMESPACE_PREFIX=spark-test TEAM_ID=2 SPARK_COMMAND="echo admitted-after-stuck-freed" \
-envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${SPARK_JOB_NAME} ${SPARK_IMAGE} ${SPARK_COMMAND}' \
-< spark-queue/portable/manifests/team-spark-job-template.yaml | kubectl apply -f -
-kubectl get job proof-job -n spark-test-2 -o jsonpath='{.spec.suspend}'
-# false
-```
-Being excluded from the count doesn't delete the stuck Job itself —
-`activeDeadlineSeconds` (set by the template, mutable after creation) is
-what actually terminates it:
-```bash
-kubectl patch job stuck-job -n spark-test-1 --type=merge -p '{"spec":{"activeDeadlineSeconds":20}}'
-kubectl get job stuck-job -n spark-test-1 -o jsonpath='{.status.conditions}'
+kubectl get job stuck-job -n team-01 -o jsonpath='{.status.conditions}'
 ```
 ```
-[..., {"type":"Failed","status":"True","reason":"DeadlineExceeded",
+[..., {"type":"FailureTarget","status":"True","reason":"DeadlineExceeded","lastProbeTime":"2026-10-21T02:28:38Z",...},
+ {"type":"Failed","status":"True","reason":"DeadlineExceeded","lastProbeTime":"2026-10-21T02:28:40Z",
   "message":"Job was active longer than specified deadline"}]
 ```
 Revert the test-only override afterward:
@@ -288,22 +286,94 @@ Revert the test-only override afterward:
 kubectl set env deployment/spark-queue-controller -n infra STUCK_GRACE_SECONDS-
 ```
 
-**8. The per-team 1-job cap**
+**7b. A legitimate retry isn't misclassified as stuck**
+
+A Job with `backoffLimit > 0` retries after a pod failure by creating a
+*new* pod, not restarting the old one — so a naive "is any current pod
+Running" check would misread a job that already ran and is correctly
+retrying as "never started," and force-terminate a job that's actually
+making progress. Submit a Job whose command always fails, forcing
+`team-spark-job-template.yaml`'s `backoffLimit: 2` to exhaust itself
+across multiple real, started-and-failed pod attempts:
 
 ```bash
 source config.env
-for n in a b c; do
-  SPARK_JOB_NAME=team01-job-$n TEAM_NAMESPACE_PREFIX=team TEAM_ID=01 SPARK_COMMAND="sleep 30" \
-  envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${SPARK_JOB_NAME} ${SPARK_IMAGE} ${SPARK_COMMAND}' \
-  < spark-queue/portable/manifests/team-spark-job-template.yaml | kubectl apply -f -
-done
+SPARK_JOB_NAME=retry-test TEAM_NAMESPACE_PREFIX=team TEAM_ID=01 SPARK_COMMAND="exit 1" \
+envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${SPARK_JOB_NAME} ${SPARK_IMAGE} ${SPARK_COMMAND}' \
+< spark-queue/portable/manifests/team-spark-job-template.yaml | kubectl apply -f -
+```
+Each retry pod genuinely starts and fails (`Error`, not stuck in
+`Pending`), and the Job is never force-terminated by the stuck-job path
+— it reaches its own natural terminal state instead:
+```bash
+kubectl get pods -n team-01 -l job-name=retry-test
 ```
 ```
-job.batch/team01-job-a created
-Error: jobs.batch "team01-job-b" is forbidden: exceeded quota: team-spark-jobs-quota ...
-Error: jobs.batch "team01-job-c" is forbidden: exceeded quota: team-spark-jobs-quota ...
+NAME               READY   STATUS   RESTARTS   AGE
+retry-test-dqblh   0/1     Error    0          85s
+retry-test-jjk7t   0/1     Error    0          96s
+retry-test-thbrs   0/1     Error    0          65s
 ```
-Only the first Job is created — the per-team cap rejects every other attempt.
+```bash
+kubectl get job retry-test -n team-01 -o jsonpath='{.status.conditions}'
+kubectl get job retry-test -n team-01 -o jsonpath='{.spec.activeDeadlineSeconds}'
+```
+```
+[..., {"type":"Failed","status":"True","reason":"BackoffLimitExceeded",
+  "message":"Job has reached the specified backoff limit"}]
+7200
+```
+`activeDeadlineSeconds` stayed at its original `7200` the whole time —
+never patched down to `1` — and the failure reason is `BackoffLimitExceeded`,
+not `DeadlineExceeded`: proof the stuck-job path never triggered for this
+job, confirmed by grepping the controller's log across the job's entire
+lifetime and finding no `stuck` warning for it at all.
+
+**8. One running job per team, any number waiting — queued, not rejected**
+
+```bash
+source config.env
+SPARK_JOB_NAME=demo-job-1 TEAM_NAMESPACE_PREFIX=team TEAM_ID=01 SPARK_COMMAND="sleep 40" \
+envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${SPARK_JOB_NAME} ${SPARK_IMAGE} ${SPARK_COMMAND}' \
+< spark-queue/portable/manifests/team-spark-job-template.yaml | kubectl apply -f -
+SPARK_JOB_NAME=demo-job-2 TEAM_NAMESPACE_PREFIX=team TEAM_ID=01 SPARK_COMMAND="echo hi" \
+envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${SPARK_JOB_NAME} ${SPARK_IMAGE} ${SPARK_COMMAND}' \
+< spark-queue/portable/manifests/team-spark-job-template.yaml | kubectl apply -f -
+SPARK_JOB_NAME=demo-job-3 TEAM_NAMESPACE_PREFIX=team TEAM_ID=01 SPARK_COMMAND="echo hi" \
+envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${SPARK_JOB_NAME} ${SPARK_IMAGE} ${SPARK_COMMAND}' \
+< spark-queue/portable/manifests/team-spark-job-template.yaml | kubectl apply -f -
+```
+```
+job.batch/demo-job-1 created
+job.batch/demo-job-2 created
+job.batch/demo-job-3 created
+```
+All three are created — no rejection. While `demo-job-1` is still
+running (`sleep 40`), both others stay queued:
+```bash
+kubectl get job demo-job-1 demo-job-2 demo-job-3 -n team-01 -o custom-columns=NAME:.metadata.name,SUSPEND:.spec.suspend
+```
+```
+NAME         SUSPEND
+demo-job-1   false
+demo-job-2   true
+demo-job-3   true
+```
+Once `demo-job-1` finishes, `demo-job-2` (the next-oldest submission) is
+admitted automatically — `demo-job-3` stays queued, even though
+cluster-wide slots are free, since team-01 already has one running:
+```
+2026-10-21 02:41:38,752 INFO active=0 waiting=2 free_slots=4
+2026-10-21 02:41:38,752 INFO admitting team-01/demo-job-2 (suspend -> false)
+```
+```bash
+kubectl get job demo-job-2 demo-job-3 -n team-01 -o custom-columns=NAME:.metadata.name,SUSPEND:.spec.suspend
+```
+```
+NAME         SUSPEND
+demo-job-2   false
+demo-job-3   true
+```
 
 ## Variables
 
@@ -315,7 +385,7 @@ Only the first Job is created — the per-team cap rejects every other attempt.
 | `SPARK_JOB_NAME`, `SPARK_COMMAND` | *(required)* | Set per submission by the student |
 | `MAX_ACTIVE_JOBS` (controller env) | `4` | Cluster-wide cap |
 | `POLL_INTERVAL_SECONDS` (controller env) | `5` | Reconcile loop interval |
-| `STUCK_GRACE_SECONDS` (controller env) | `300` | How long an admitted Job gets before a pod that never starts frees its slot |
+| `STUCK_GRACE_SECONDS` (controller env) | `300` | How long an admitted Job gets before a pod that never starts gets force-terminated |
 | `SPARK_IMAGE_REPO` | *(required)* | `SPARK_IMAGE` with its `@digest` stripped — used by the admission policies |
 | `SPARK_QUEUE_CONTROLLER_IMAGE` | *(required)* | The controller's own pre-built image |
 
@@ -324,5 +394,4 @@ Only the first Job is created — the per-team cap rejects every other attempt.
 ```bash
 kubectl delete -f spark-queue/portable/manifests/spark-job-admission-policy.yaml --ignore-not-found
 kubectl delete -f spark-queue/portable/manifests/queue-controller-deployment.yaml --ignore-not-found
-for id in 01 02; do kubectl delete resourcequota team-spark-jobs-quota -n team-$id --ignore-not-found; done
 ```
