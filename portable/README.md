@@ -132,9 +132,8 @@ actually do often).
 can run, and none of it changes when the pipeline's own definition does:
 cluster-wide installs (Strimzi, Tekton Pipelines, Tekton Dashboard,
 ingress-nginx), onboarding (team namespaces, quota, ServiceAccount, RBAC,
-NetworkPolicy, per-team Spark quota), and shared infra services (the
-Spark queue controller + admission policy, the Dashboard's Ingress).
-Idempotent — safe to re-run.
+NetworkPolicy), and shared infra services (the Spark queue controller +
+admission policy, the Dashboard's Ingress). Idempotent — safe to re-run.
 
 **Only if you're on Kind**: this step detects it (via your `kubectl`
 context starting with `kind-`) and tells you, mid-run, that
@@ -163,9 +162,8 @@ past its own exit). See `ingress/portable/README.md` for more.
 > `spark-queue/portable/README.md` for the full enforcement model.
 
 A student submitting any other (non-Spark) Job doesn't need any of the
-three — but the per-team `ResourceQuota` still caps them at one Job object
-at a time regardless, so they can't submit it while a Spark job is still
-sitting in their namespace, queued or not.
+three, and isn't subject to the queue at all — only Jobs matching the
+Spark image or carrying the `queue: spark` label are gated.
 
 ```bash
 bash portable/scripts/install-prerequisites.sh
@@ -262,7 +260,7 @@ Full cycle, in this order, on the same cluster:
 2. `teardown-prerequisites.sh` — confirmed Strimzi, Tekton Pipelines,
    Tekton Dashboard, and ingress-nginx all actually gone (their CRDs and
    namespaces deleted).
-3. `install-prerequisites.sh` — from that fully torn-down state, all 6
+3. `install-prerequisites.sh` — from that fully torn-down state, all 5
    steps succeed. Found and fixed a real race along the way: applying the
    Dashboard Ingress can hit "connection refused" against ingress-nginx's
    admission webhook — confirmed this isn't just an ordering issue (moving
