@@ -79,19 +79,29 @@ def main():
     create_topic(admin, topic)
     print("PASS create own topic", topic)
 
+    errors = []
+
+    def on_delivery(error, message):
+        if error is not None:
+            errors.append(error)
+
     producer = Producer(config)
     for number in range(3):
-        producer.produce(topic, key=str(number), value="event-" + str(number))
+        producer.produce(topic, key=str(number), value="event-" + str(number),
+                         on_delivery=on_delivery)
     remaining = producer.flush(30)
-    if remaining != 0:
-        raise SystemExit("FAIL produce: messages not delivered")
+    if remaining != 0 or errors:
+        raise SystemExit("FAIL produce: " + str(remaining) + " not confirmed, errors " + str(errors))
     print("PASS produce 3 messages")
 
+    expected = ["event-0", "event-1", "event-2"]
     first = consume_all(config, topic, prefix + "check-" + run_id, 3)
-    print("PASS consume", len(first), "messages")
+    if sorted(first) != expected:
+        raise SystemExit("FAIL consume: got " + str(first))
+    print("PASS consume 3 messages")
 
     replay = consume_all(config, topic, prefix + "replay-" + run_id, 3)
-    if sorted(first) != sorted(replay):
+    if sorted(replay) != expected:
         raise SystemExit("FAIL replay: different messages")
     print("PASS replay with a new group")
 
