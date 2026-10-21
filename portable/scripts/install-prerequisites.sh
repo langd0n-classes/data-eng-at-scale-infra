@@ -10,7 +10,7 @@
 #     onboarding/cluster.env's NUM_TEAMS)
 #   - shared infra services (the Spark queue controller + admission
 #     policy)
-#   - the Tekton Dashboard's Ingress (applied last on purpose — see Step 6)
+#   - the Tekton Dashboard's Ingress (applied last on purpose — see Step 4)
 #
 # Deliberately does NOT include pipeline RBAC, Tekton Tasks/Pipeline, or
 # submitting a PipelineRun — see deploy-pipeline.sh for that (the part
@@ -92,23 +92,7 @@ info "Step 2 — Onboarding (namespaces, quota, ServiceAccount, RBAC, NetworkPol
 bash "${REPO_ROOT}/onboarding/portable/apply-onboarding.sh"
 
 echo ""
-info "Step 3 — Spark per-team ResourceQuota..."
-ONBOARDING_CONFIG="${REPO_ROOT}/onboarding/cluster.env"
-if [[ -f "${ONBOARDING_CONFIG}" ]]; then
-  # shellcheck disable=SC1090
-  ( source "${ONBOARDING_CONFIG}"
-    for i in $(seq 1 "${NUM_TEAMS}"); do
-      TEAM_ID="$(printf '%02d' "$i")"
-      TEAM_NAMESPACE_PREFIX="${TEAM_NAMESPACE_PREFIX}" TEAM_ID="${TEAM_ID}" \
-        envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID}' \
-        < "${REPO_ROOT}/spark-queue/portable/manifests/team-jobs-resourcequota.yaml" | kubectl apply -f -
-    done )
-else
-  warn "onboarding/cluster.env not found — skipping Spark ResourceQuota (run onboarding first)"
-fi
-
-echo ""
-info "Step 4 — Spark queue controller + admission policy..."
+info "Step 3 — Spark queue controller + admission policy..."
 # repo@digest has a colon inside the digest itself, so a plain ${VAR%:*}
 # would wrongly cut at that colon instead of at the (absent) tag — strip
 # at '@' first when present, only fall back to ':' for a tag-form image.
@@ -129,7 +113,7 @@ kubectl rollout status deployment/spark-queue-controller -n "${INFRA_NAMESPACE}"
 envsubst '${SPARK_IMAGE_REPO} ${INFRA_NAMESPACE}' < "${REPO_ROOT}/spark-queue/portable/manifests/spark-job-admission-policy.yaml" | kubectl apply -f -
 
 echo ""
-info "Step 5 — Tekton Dashboard Ingress..."
+info "Step 4 — Tekton Dashboard Ingress..."
 # Applying an Ingress before ingress-nginx's admission webhook is actually
 # reachable fails with "connection refused" — confirmed directly, even
 # when its Endpoints object already looks ready (kube-proxy's own
@@ -151,7 +135,7 @@ until echo "${DASHBOARD_INGRESS_RENDERED}" | kubectl apply -f -; do
 done
 
 echo ""
-info "Step 6 — Tekton Dashboard link..."
+info "Step 5 — Tekton Dashboard link..."
 EXTERNAL_IP="$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)"
 # Test the thing that actually matters — does DASHBOARD_HOST already
 # resolve to something — rather than guessing from which platform this

@@ -3,7 +3,9 @@
 
 Watches Jobs labeled queue=spark across every namespace and admits at most
 MAX_ACTIVE_JOBS at a time by flipping spec.suspend from true to false,
-oldest submission first. Never re-suspends a job once admitted.
+oldest submission first, with at most one admitted per namespace (team) at
+a time regardless of how many cluster-wide slots are free. Never
+re-suspends a job once admitted.
 
 Classification is by the queue=spark label alone, matching
 spark-job-admission-policy.yaml's own design: once a Job wears that
@@ -17,17 +19,19 @@ exclude a legitimately-labeled Job from counting just because it uses a
 different registry prefix or a digest reference, contradicting the
 label-only design the policy itself enforces.
 
-Also excludes a Job from the active count if it's been admitted
-(suspend=false) for longer than STUCK_GRACE_SECONDS with none of its pods
-ever reaching Running/Succeeded (a bad image tag stuck in
-ImagePullBackOff, or a pod stuck Pending because the team's ResourceQuota
-is full) — frees the slot for a waiting Job instead of letting a stuck
-submission hold it for its entire activeDeadlineSeconds window. Doesn't
-touch spec.suspend itself (an immediate resuspend would make it look
-"waiting" again and could get it right back in, right away, since it's
-still the oldest submission) — activeDeadlineSeconds (now required by
-the admission policy) is what actually terminates it, independently of
-this accounting fix.
+A Job that's been admitted (suspend=false) for longer than
+STUCK_GRACE_SECONDS with no pod ever reaching Running/Succeeded (a bad
+image tag stuck in ImagePullBackOff, a retry pod still Pending, an init
+container taking a while) gets force-terminated: its activeDeadlineSeconds
+is patched down to 1, handing termination to Kubernetes' own Job
+controller, which marks it Failed/DeadlineExceeded within moments. This
+closes a real race in an earlier version of this logic, which only
+excluded a stuck Job from the active count without touching it — if its
+pod later did start, it could run for real while already excluded,
+letting a 5th job slip past the cluster-wide cap. Patching the deadline
+instead of simply ignoring the Job means even a pod that starts in that
+exact window gets killed anyway, since the deadline is already in the
+past relative to status.startTime.
 
 Uses a short poll loop rather than a live watch, deliberately: a missed
 watch event would otherwise wedge the queue until the controller restarts,
@@ -52,11 +56,24 @@ log = logging.getLogger("spark-queue-controller")
 
 def is_stuck(job, core_api: "client.CoreV1Api") -> bool:
     """True once a job has had STUCK_GRACE_SECONDS to start a pod and
-    still hasn't — no pod has reached Running or Succeeded. Covers both
-    a bad image tag (ImagePullBackOff) and a pod stuck Pending because
-    the team's ResourceQuota is full, without needing to distinguish
-    which — "never actually started" is the only thing that matters
-    for freeing its slot."""
+    still hasn't — no pod has ever had a container reach Running or
+    Succeeded/terminated. Covers both a bad image tag (ImagePullBackOff)
+    and a pod stuck Pending because the team's ResourceQuota is full,
+    without needing to distinguish which — "never actually started" is
+    the only thing that matters for freeing its slot.
+
+    Checks container-level run history, not just each pod's current
+    phase: a Job with backoffLimit > 0 legitimately retries after a pod
+    failure, and a failed pod's phase is "Failed", not "Running" — so a
+    current-phase-only check would misread a job that already ran once
+    and is correctly retrying as "never started", and this function now
+    feeds a force-termination action (see terminate_stuck_job), not just
+    an accounting exclusion. Once a job has had any pod ever reach
+    Running/terminated, it's permanently exempt from this fast path —
+    a job that runs fine and then hangs forever, or crashes once and
+    whose retry then gets stuck in ImagePullBackOff, is bounded only by
+    the (separately enforced) activeDeadlineSeconds ceiling from then on,
+    same as before this function existed at all."""
     start = job.status.start_time
     if start is None:
         return False
@@ -67,7 +84,31 @@ def is_stuck(job, core_api: "client.CoreV1Api") -> bool:
         job.metadata.namespace,
         label_selector=f"job-name={job.metadata.name}",
     ).items
-    return not any(p.status.phase in ("Running", "Succeeded") for p in pods)
+    for pod in pods:
+        if pod.status.phase == "Succeeded":
+            return False
+        for cs in (pod.status.container_statuses or []):
+            if cs.state.running or cs.state.terminated or (cs.last_state and cs.last_state.terminated):
+                return False
+    return True
+
+
+def terminate_stuck_job(batch_api: "client.BatchV1Api", job) -> None:
+    """Forces a stuck Job to a real terminal state instead of merely
+    excluding it from the active count. Patching activeDeadlineSeconds
+    down to 1 hands termination to Kubernetes' own Job controller, which
+    marks it Failed/DeadlineExceeded within moments — even a pod that
+    starts Running in that exact window gets killed anyway, since the
+    deadline is already in the past relative to status.start_time."""
+    log.warning(
+        "%s/%s stuck (no pod ever reached Running after %ds) — forcing termination",
+        job.metadata.namespace, job.metadata.name, STUCK_GRACE_SECONDS,
+    )
+    batch_api.patch_namespaced_job(
+        name=job.metadata.name,
+        namespace=job.metadata.namespace,
+        body={"spec": {"activeDeadlineSeconds": 1}},
+    )
 
 
 def is_active(job) -> bool:
@@ -89,13 +130,11 @@ def reconcile(batch_api: "client.BatchV1Api", core_api: "client.CoreV1Api") -> N
         if not is_active(job):
             continue
         if is_stuck(job, core_api):
-            log.warning(
-                "%s/%s stuck (admitted %ds+ ago, no pod ever reached Running) — "
-                "freeing its slot; activeDeadlineSeconds will actually terminate it",
-                job.metadata.namespace, job.metadata.name, STUCK_GRACE_SECONDS,
-            )
+            terminate_stuck_job(batch_api, job)
             continue
         active.append(job)
+
+    active_namespaces = {j.metadata.namespace for j in active}
 
     waiting = [j for j in jobs if j.spec.suspend]
     waiting.sort(key=lambda j: j.metadata.creation_timestamp)  # oldest submission first
@@ -103,13 +142,22 @@ def reconcile(batch_api: "client.BatchV1Api", core_api: "client.CoreV1Api") -> N
     free_slots = max(MAX_ACTIVE_JOBS - len(active), 0)
     log.info("active=%d waiting=%d free_slots=%d", len(active), len(waiting), free_slots)
 
-    for job in waiting[:free_slots]:
-        log.info("admitting %s/%s (suspend -> false)", job.metadata.namespace, job.metadata.name)
+    admitted_namespaces = set()
+    admitted = 0
+    for job in waiting:
+        if admitted >= free_slots:
+            break
+        ns = job.metadata.namespace
+        if ns in active_namespaces or ns in admitted_namespaces:
+            continue  # this team already has one running — stays queued
+        log.info("admitting %s/%s (suspend -> false)", ns, job.metadata.name)
         batch_api.patch_namespaced_job(
             name=job.metadata.name,
-            namespace=job.metadata.namespace,
+            namespace=ns,
             body={"spec": {"suspend": False}},
         )
+        admitted_namespaces.add(ns)
+        admitted += 1
 
 
 def main() -> None:
