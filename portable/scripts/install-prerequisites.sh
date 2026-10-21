@@ -149,7 +149,10 @@ resolve_host() {
     dscacheutil -q host -a name "$1" 2>/dev/null | awk '/^ip_address:/{print $2; exit}'
   fi
 }
-RESOLVED_IP="$(resolve_host "${DASHBOARD_HOST}")"
+# || true: a non-resolving host (the normal state on a fresh cluster,
+# before /etc/hosts or DNS is set up) makes getent/dscacheutil exit
+# non-zero, which would otherwise abort the whole script under set -e.
+RESOLVED_IP="$(resolve_host "${DASHBOARD_HOST}")" || true
 
 echo ""
 echo "============================================================"
