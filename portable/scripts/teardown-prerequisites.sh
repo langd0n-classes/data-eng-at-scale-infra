@@ -106,6 +106,14 @@ else
   fail "Tekton Dashboard Ingress"
 fi
 
+echo ""
+info "Removing the Tekton Dashboard NetworkPolicy..."
+if kubectl delete networkpolicy tekton-dashboard-isolation -n tekton-pipelines --ignore-not-found; then
+  ok "Tekton Dashboard NetworkPolicy"
+else
+  fail "Tekton Dashboard NetworkPolicy"
+fi
+
 if [[ "${CLUSTER_WIDE_TEARDOWN:-false}" != "true" ]]; then
   echo ""
   echo "============================================================"

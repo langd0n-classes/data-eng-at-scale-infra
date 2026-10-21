@@ -13,6 +13,11 @@
 # Requires install-tekton.sh to have already run (the Dashboard is a UI over
 # Tekton's own CRDs/API).
 #
+# Also applies tekton-dashboard-networkpolicy.yaml right after the
+# Deployment comes up, before the Ingress step runs later — otherwise the
+# Service would be reachable cluster-wide (bypassing the Ingress's basic
+# auth/TLS) in the gap between the two.
+#
 # Safe to re-run (idempotent — kubectl apply).
 #
 # Usage: install-tekton-dashboard.sh
@@ -33,6 +38,10 @@ echo ""
 echo "Waiting for the Dashboard Deployment to become available..."
 kubectl wait deployment tekton-dashboard -n tekton-pipelines \
   --for=condition=Available --timeout=180s
+
+echo ""
+echo "Restricting the dashboard Service to the ingress-nginx controller only..."
+kubectl apply -f "${REPO_ROOT}/pipeline/portable/manifests/tekton-dashboard-networkpolicy.yaml"
 
 echo ""
 echo "=========================================="

@@ -160,28 +160,40 @@ Error from server (Forbidden): pods "test" is forbidden: violates PodSecurity "b
 
 **3. Test cross-team isolation, for real**
 
+Team namespaces deny any ownerless Pod (`spark-bare-pod-policy`, closes a
+Spark-queue bypass — see `spark-queue/portable/`), so the probe pods here
+need an owner: a Deployment for the web targets, a Job for the clients.
+
 ```bash
 # a small web service in each team namespace, to test reachability against
-kubectl run web-01 --image=nginx:alpine -n team-01 --labels=app=web --port=80 --restart=Never
-kubectl expose pod web-01 -n team-01 --port=80 --name=web-01
-kubectl run web-02 --image=nginx:alpine -n team-02 --labels=app=web --port=80 --restart=Never
-kubectl expose pod web-02 -n team-02 --port=80 --name=web-02
+kubectl create deployment web-01 --image=nginx:alpine -n team-01
+kubectl expose deployment web-01 -n team-01 --port=80
+kubectl create deployment web-02 --image=nginx:alpine -n team-02
+kubectl expose deployment web-02 -n team-02 --port=80
 
 # one client pod per namespace, to run the actual reachability tests from
-kubectl run test-01 --image=busybox:stable -n team-01 --restart=Never --command -- sleep 3600
-kubectl run test-02 --image=busybox:stable -n team-02 --restart=Never --command -- sleep 3600
-kubectl run test-infra --image=busybox:stable -n infra --restart=Never --command -- sleep 3600
+kubectl create job test-01 --image=busybox:stable -n team-01 -- sleep 3600
+kubectl create job test-02 --image=busybox:stable -n team-02 -- sleep 3600
+kubectl create job test-infra --image=busybox:stable -n infra -- sleep 3600
+
+# resolve each Job's actual pod name once, reused through steps 3-3c
+TEST01=$(kubectl get pod -n team-01 -l job-name=test-01 -o jsonpath='{.items[0].metadata.name}')
+TEST02=$(kubectl get pod -n team-02 -l job-name=test-02 -o jsonpath='{.items[0].metadata.name}')
+TESTINFRA=$(kubectl get pod -n infra -l job-name=test-infra -o jsonpath='{.items[0].metadata.name}')
+kubectl wait pod "$TEST01" -n team-01 --for=condition=Ready --timeout=60s
+kubectl wait pod "$TEST02" -n team-02 --for=condition=Ready --timeout=60s
+kubectl wait pod "$TESTINFRA" -n infra --for=condition=Ready --timeout=60s
 
 # same namespace — expect success
-kubectl exec test-01 -n team-01 -- wget -qO- --timeout=4 http://web-01.team-01.svc.cluster.local
+kubectl exec "$TEST01" -n team-01 -- wget -qO- --timeout=4 http://web-01.team-01.svc.cluster.local
 
 # cross-team, both directions — expect blocked
-kubectl exec test-01 -n team-01 -- wget -qO- --timeout=4 http://web-02.team-02.svc.cluster.local
-kubectl exec test-02 -n team-02 -- wget -qO- --timeout=4 http://web-01.team-01.svc.cluster.local
+kubectl exec "$TEST01" -n team-01 -- wget -qO- --timeout=4 http://web-02.team-02.svc.cluster.local
+kubectl exec "$TEST02" -n team-02 -- wget -qO- --timeout=4 http://web-01.team-01.svc.cluster.local
 
 # infra can reach both teams — expect success
-kubectl exec test-infra -n infra -- wget -qO- --timeout=4 http://web-01.team-01.svc.cluster.local
-kubectl exec test-infra -n infra -- wget -qO- --timeout=4 http://web-02.team-02.svc.cluster.local
+kubectl exec "$TESTINFRA" -n infra -- wget -qO- --timeout=4 http://web-01.team-01.svc.cluster.local
+kubectl exec "$TESTINFRA" -n infra -- wget -qO- --timeout=4 http://web-02.team-02.svc.cluster.local
 ```
 ```
 test-01 -> web-01 (own namespace):   <!DOCTYPE html> ... Welcome to nginx!   [REACHED]
@@ -200,7 +212,8 @@ directions.
 nginx proves `team-isolation` works for a plain Service — it can't catch
 a Strimzi listener-specific leak (fixed via `networkPolicyPeers` in
 `kafka/portable/manifests/kafka-template.yaml`). This re-runs the same
-probe against the real thing.
+probe (same `$TEST01`/`$TEST02`/`$TESTINFRA` pods from step 3) against
+the real thing.
 
 ```bash
 bash kafka/portable/prerequisites/install-strimzi.sh   # one-time, skip if already installed
@@ -208,9 +221,9 @@ INFRA_NAMESPACE=infra bash kafka/portable/scripts/deploy.sh team01 team-01
 kubectl wait kafka kafka-team01 -n team-01 --for=condition=Ready --timeout=180s
 
 BOOTSTRAP=kafka-team01-kafka-bootstrap.team-01.svc.cluster.local
-kubectl exec test-01 -n team-01 -- nc -zvw4 "$BOOTSTRAP" 9092      # same ns — expect open
-kubectl exec test-02 -n team-02 -- nc -zvw4 "$BOOTSTRAP" 9092      # cross-team — expect blocked
-kubectl exec test-infra -n infra -- nc -zvw4 "$BOOTSTRAP" 9092     # infra — expect open
+kubectl exec "$TEST01" -n team-01 -- nc -zvw4 "$BOOTSTRAP" 9092      # same ns — expect open
+kubectl exec "$TEST02" -n team-02 -- nc -zvw4 "$BOOTSTRAP" 9092      # cross-team — expect blocked
+kubectl exec "$TESTINFRA" -n infra -- nc -zvw4 "$BOOTSTRAP" 9092     # infra — expect open
 ```
 ```
 test-01 -> kafka-team01:    open                    [REACHED]
@@ -218,14 +231,32 @@ test-02 -> kafka-team01:    Connection timed out     [BLOCKED]
 test-infra -> kafka-team01: open                     [REACHED]
 ```
 
+**3c. Same test, against the Tekton Dashboard**
+
+The dashboard's Service had no NetworkPolicy of its own — reachable
+cluster-wide regardless of the Ingress's basic auth/TLS. Fixed by
+`pipeline/portable/manifests/tekton-dashboard-networkpolicy.yaml`,
+admitting only `ingress-nginx`. Same `$TEST01`/`$TEST02` pods:
+
+```bash
+kubectl exec "$TEST01" -n team-01 -- wget -qO- --timeout=4 http://tekton-dashboard.tekton-pipelines:9097/
+kubectl exec "$TEST02" -n team-02 -- wget -qO- --timeout=4 http://tekton-dashboard.tekton-pipelines:9097/
+```
+```
+test-01 -> tekton-dashboard: wget: download timed out   [BLOCKED]
+test-02 -> tekton-dashboard: wget: download timed out   [BLOCKED]
+```
+
 ```bash
 # cleanup (keep the onboarded namespaces)
 bash kafka/portable/scripts/remove.sh --yes team01 team-01
-kubectl delete pod web-01 test-01 -n team-01 --ignore-not-found
+kubectl delete deployment web-01 -n team-01 --ignore-not-found
 kubectl delete svc web-01 -n team-01 --ignore-not-found
-kubectl delete pod web-02 test-02 -n team-02 --ignore-not-found
+kubectl delete job test-01 -n team-01 --ignore-not-found
+kubectl delete deployment web-02 -n team-02 --ignore-not-found
 kubectl delete svc web-02 -n team-02 --ignore-not-found
-kubectl delete pod test-infra -n infra --ignore-not-found
+kubectl delete job test-02 -n team-02 --ignore-not-found
+kubectl delete job test-infra -n infra --ignore-not-found
 ```
 
 ## Variables
