@@ -1,42 +1,20 @@
 #!/usr/bin/env python3
 """Cluster-wide Spark job queue controller.
 
-Watches Jobs labeled queue=spark across every namespace and admits at most
-MAX_ACTIVE_JOBS at a time by flipping spec.suspend from true to false,
-oldest submission first, with at most one admitted per namespace (team) at
-a time regardless of how many cluster-wide slots are free. Never
-re-suspends a job once admitted.
+Watches Jobs labeled queue=spark and admits up to MAX_ACTIVE_JOBS at a
+time (oldest first, suspend -> false), at most one running per namespace.
 
-Classification is by the queue=spark label alone, matching
-spark-job-admission-policy.yaml's own design: once a Job wears that
-label, it's fully subject to suspend-gating and the 4-slot cap regardless
-of what image it runs — the admission policy already makes the label
-unspoofable (only the controller's own ServiceAccount may add/remove it
-after creation), so there's no need to additionally verify the image
-here too. An earlier version of this controller also filtered by image
-(SPARK_IMAGE_REPO) — removed, since keeping it would now incorrectly
-exclude a legitimately-labeled Job from counting just because it uses a
-different registry prefix or a digest reference, contradicting the
-label-only design the policy itself enforces.
+Classification is label-only, not image-based — the admission policy
+makes the label unspoofable, so checking the image too would only risk
+wrongly excluding a legitimate Job on a different registry/digest.
 
-A Job that's been admitted (suspend=false) for longer than
-STUCK_GRACE_SECONDS with no pod ever reaching Running/Succeeded (a bad
-image tag stuck in ImagePullBackOff, a retry pod still Pending, an init
-container taking a while) gets force-terminated: its activeDeadlineSeconds
-is patched down to 1, handing termination to Kubernetes' own Job
-controller, which marks it Failed/DeadlineExceeded within moments. This
-closes a real race in an earlier version of this logic, which only
-excluded a stuck Job from the active count without touching it — if its
-pod later did start, it could run for real while already excluded,
-letting a 5th job slip past the cluster-wide cap. Patching the deadline
-instead of simply ignoring the Job means even a pod that starts in that
-exact window gets killed anyway, since the deadline is already in the
-past relative to status.startTime.
+A stuck Job (no pod reaches Running within STUCK_GRACE_SECONDS) is
+force-terminated via activeDeadlineSeconds rather than just excluded from
+the count — otherwise a pod that starts moments later could run for real
+while already uncounted, breaking the cluster-wide cap.
 
-Uses a short poll loop rather than a live watch, deliberately: a missed
-watch event would otherwise wedge the queue until the controller restarts,
-and a 5-second poll is cheap enough for this scale (a handful of team
-namespaces) that the simplicity is worth it.
+Polls every few seconds instead of watching, so a missed event can't
+wedge the queue until a restart.
 """
 import logging
 import os
@@ -55,25 +33,14 @@ log = logging.getLogger("spark-queue-controller")
 
 
 def is_stuck(job, core_api: "client.CoreV1Api") -> bool:
-    """True once a job has had STUCK_GRACE_SECONDS to start a pod and
-    still hasn't — no pod has ever had a container reach Running or
-    Succeeded/terminated. Covers both a bad image tag (ImagePullBackOff)
-    and a pod stuck Pending because the team's ResourceQuota is full,
-    without needing to distinguish which — "never actually started" is
-    the only thing that matters for freeing its slot.
+    """True if STUCK_GRACE_SECONDS has passed with no pod ever reaching
+    Running/terminated (bad image tag, or quota-blocked pod).
 
-    Checks container-level run history, not just each pod's current
-    phase: a Job with backoffLimit > 0 legitimately retries after a pod
-    failure, and a failed pod's phase is "Failed", not "Running" — so a
-    current-phase-only check would misread a job that already ran once
-    and is correctly retrying as "never started", and this function now
-    feeds a force-termination action (see terminate_stuck_job), not just
-    an accounting exclusion. Once a job has had any pod ever reach
-    Running/terminated, it's permanently exempt from this fast path —
-    a job that runs fine and then hangs forever, or crashes once and
-    whose retry then gets stuck in ImagePullBackOff, is bounded only by
-    the (separately enforced) activeDeadlineSeconds ceiling from then on,
-    same as before this function existed at all."""
+    Checks run history, not just current phase: a retrying Job's failed
+    pod shows phase="Failed", so a current-phase check would wrongly
+    flag a legitimately-retrying job as stuck. Once any pod has run, the
+    job is exempt from this check for good — a hang after that is bounded
+    only by activeDeadlineSeconds, same as before this function existed."""
     start = job.status.start_time
     if start is None:
         return False
@@ -94,12 +61,9 @@ def is_stuck(job, core_api: "client.CoreV1Api") -> bool:
 
 
 def terminate_stuck_job(batch_api: "client.BatchV1Api", job) -> None:
-    """Forces a stuck Job to a real terminal state instead of merely
-    excluding it from the active count. Patching activeDeadlineSeconds
-    down to 1 hands termination to Kubernetes' own Job controller, which
-    marks it Failed/DeadlineExceeded within moments — even a pod that
-    starts Running in that exact window gets killed anyway, since the
-    deadline is already in the past relative to status.start_time."""
+    """Patches activeDeadlineSeconds to 1, so Kubernetes' own Job
+    controller fails it within moments — safer than just excluding it
+    from the count, which would let a late-starting pod run uncounted."""
     log.warning(
         "%s/%s stuck (no pod ever reached Running after %ds) — forcing termination",
         job.metadata.namespace, job.metadata.name, STUCK_GRACE_SECONDS,

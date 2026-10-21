@@ -1,24 +1,18 @@
 # spark-queue/portable/manifests/team-spark-job-template.yaml
 #
-# The template students actually fill in and submit — same pattern as
-# nifi/team-statefulset-template.yaml: infra provides the template with the
-# queue mechanism's required fields already correct, so a student never
-# needs to understand the queue itself, only their own container image and
-# command.
+# The template students fill in and submit — infra provides the queue's
+# required fields already correct, so a student only needs their own
+# image and command.
 #
-# `spec.suspend: true` and the `queue: spark` label are set here as a
-# convention/convenience — spark-job-admission-policy.yaml is what actually
-# *enforces* both regardless of what gets submitted, so skipping this
-# template doesn't bypass the queue.
+# `suspend`, the `queue: spark` label, and `activeDeadlineSeconds` are set
+# here as a convenience — spark-job-admission-policy.yaml is what actually
+# enforces these (plus parallelism and ttlSecondsAfterFinished bounds), so
+# skipping this template doesn't bypass the queue. `ttlSecondsAfterFinished`
+# cleans up the finished Job object; `activeDeadlineSeconds` kills a hung
+# one so it doesn't hold its cluster-wide slot forever.
 #
-# `ttlSecondsAfterFinished` frees this team's ResourceQuota slot
-# automatically once the Job finishes (success or failure);
-# `activeDeadlineSeconds` force-kills a hung job so it doesn't hold a
-# cluster-wide slot forever. Together these are what "abandoned jobs
-# release their slots" means in practice.
-#
-# Replace SPARK_COMMAND with your actual spark-submit invocation (or
-# whatever your job actually runs) before applying.
+# Replace SPARK_COMMAND with your actual spark-submit invocation before
+# applying.
 #
 # Usage:
 #   envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${SPARK_JOB_NAME} ${SPARK_IMAGE} ${SPARK_COMMAND}' \

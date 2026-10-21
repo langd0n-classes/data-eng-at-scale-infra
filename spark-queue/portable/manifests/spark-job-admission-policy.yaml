@@ -1,73 +1,40 @@
 # spark-queue/portable/manifests/spark-job-admission-policy.yaml
 #
-# Two ValidatingAdmissionPolicies, enforcing what the queue actually
-# needs, not just convention:
+# Two ValidatingAdmissionPolicies:
 #
-# 1. spark-job-queue-policy — matches any Job in a team namespace that
-#    either uses the configured Spark image (checked against both the
-#    `repo:tag` and `repo@digest` forms, and against any registry prefix
-#    — e.g. `docker.io/apache/spark:...` — not just an exact string
-#    match) or carries the `queue: spark` label. A Job matched either way
-#    must have `spec.suspend: true`, the `queue: spark` label, and
-#    `spec.activeDeadlineSeconds` set to between 1 and 7200 — covers the
-#    official Spark image under any reference form, and separately covers
-#    a team's own differently-named image built from Spark via the label
-#    (which can't be detected from the image string, so it depends on the
-#    label being applied — team-spark-job-template.yaml already does).
-#    Also caps `spec.parallelism` at 1 (a single Job can't claim more than
-#    one slot's worth of resources via concurrent pods) and
-#    `spec.ttlSecondsAfterFinished` at 86400 (one day — keeps finished
-#    Jobs from accumulating indefinitely now that there's no per-team
-#    Job-count quota).
-#    Matches both CREATE and UPDATE, and only the queue controller's own
-#    ServiceAccount may change `spec.suspend` or the `queue` label once a
-#    matched Job exists — `edit` RBAC alone can still `kubectl patch` or
-#    relabel an existing Job, but this policy rejects that patch unless
-#    it comes from the controller itself. The activeDeadlineSeconds,
-#    parallelism, and ttlSecondsAfterFinished caps apply identity-agnostic
-#    on both CREATE and UPDATE — including to the controller's own
-#    stuck-job force-termination patch (activeDeadlineSeconds: 1), which
-#    stays comfortably inside the cap, so no identity exemption is needed
-#    there the way it is for suspend/the label.
+# 1. spark-job-queue-policy — matches a Job in a team namespace using the
+#    Spark image (any repo/tag/digest form) or carrying the `queue: spark`
+#    label (covers a team's own differently-named Spark-based image, which
+#    can't be detected from the image string). Requires `suspend: true`,
+#    the label, `activeDeadlineSeconds` in 1-7200, `parallelism <= 1`, and
+#    `ttlSecondsAfterFinished <= 86400`. Only the queue controller's own
+#    ServiceAccount may change `suspend` or the label after creation —
+#    `edit` RBAC alone can still patch/relabel an existing Job, but this
+#    policy blocks that unless it's the controller itself. The other caps
+#    apply to CREATE and UPDATE regardless of identity, including to the
+#    controller's own stuck-job patch (activeDeadlineSeconds: 1), which
+#    stays well inside the cap.
 #
-# 2. spark-bare-pod-policy — Pods can't be "queued" the way Jobs are
-#    (no `suspend` field, they run the instant they're created), so this
-#    denies any Pod with no ownerReferences at all in a team namespace,
-#    regardless of image — not matched by image name. Matching by image
-#    name alone would miss a custom-built image (e.g. `FROM apache/spark`
-#    published under a different name), so this doesn't try to recognize
-#    Spark at all: every legitimate Pod in a team namespace already has
-#    an owner (Kafka via the Strimzi operator, Spark Jobs via
-#    team-spark-job-template.yaml), so a bare Pod has no legitimate
-#    reason to exist there no matter what it runs. Catches a student's
-#    own bare Pod (no owner) and `--deploy-mode cluster`'s externally-
-#    spawned driver Pod (Spark's own client creates it directly, no
-#    Kubernetes controller sets an owner back to anything) with the same
-#    rule, so cluster mode ends up unsupported as a side effect, not a
-#    special case. Legitimate client-mode executors stay allowed —
-#    Spark's own k8s backend sets their owner to the driver Pod (the Job
-#    template's own already-admitted pod), a real, non-empty
-#    ownerReference.
+# 2. spark-bare-pod-policy — denies any ownerless Pod in a team namespace,
+#    regardless of image (a custom-built Spark image wouldn't be caught by
+#    name matching). Every legitimate Pod already has an owner (Kafka via
+#    Strimzi, Spark via the Job template), so a bare Pod has no legitimate
+#    reason to exist. Also catches `--master k8s://`'s externally-spawned
+#    driver Pod the same way, so Spark cluster mode ends up unsupported as
+#    a side effect. Client-mode executors stay allowed — Spark's own k8s
+#    backend sets their owner to the driver Pod.
 #
-# `MutatingAdmissionPolicy` (which could silently fix a non-compliant
-# submission) is not available on this cluster — confirmed directly
-# (`kubectl api-resources` has no `mutatingadmissionpolicy`; it's alpha/
-# beta and not enabled by default here, and may not be enabled on every
-# cluster this repo targets either). `ValidatingAdmissionPolicy` is GA
-# and always available, so both policies reject a non-compliant
-# submission outright instead — arguably a better fit anyway: it forces
-# the actual template to be used rather than silently rewriting what a
-# student submitted.
+# `MutatingAdmissionPolicy` isn't available on this cluster (alpha/beta,
+# not enabled) — both policies reject non-compliant submissions outright
+# instead of silently rewriting them.
 #
 # Usage:
 #   SPARK_IMAGE_REPO="${SPARK_IMAGE%%@*}" \
 #   envsubst '${SPARK_IMAGE_REPO} ${INFRA_NAMESPACE}' \
 #   < spark-queue/portable/manifests/spark-job-admission-policy.yaml | kubectl apply -f -
 #
-# Required vars: SPARK_IMAGE_REPO (used by spark-job-queue-policy only —
-# must match exactly what team-spark-job-template.yaml is filled in with),
-# INFRA_NAMESPACE (builds the controller's full ServiceAccount identity,
-# e.g. system:serviceaccount:infra:spark-queue-controller)
+# Required vars: SPARK_IMAGE_REPO (policy 1 only, must match
+# team-spark-job-template.yaml), INFRA_NAMESPACE
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -91,9 +58,8 @@ spec:
   validations:
     - expression: "request.operation != 'CREATE' || object.spec.suspend == true"
       message: >-
-        Spark Jobs must be submitted via spark-queue/portable/manifests/team-spark-job-template.yaml,
-        which sets spec.suspend: true so the queue controller can admit it
-        when a cluster-wide slot is free.
+        Use spark-queue/portable/manifests/team-spark-job-template.yaml —
+        it sets spec.suspend: true so the queue controller can admit it.
     - expression: >-
         request.operation != 'CREATE' ||
         (has(object.metadata.labels) && 'queue' in object.metadata.labels && object.metadata.labels['queue'] == 'spark')
@@ -105,24 +71,14 @@ spec:
         object.spec.activeDeadlineSeconds > 0 &&
         object.spec.activeDeadlineSeconds <= 7200
       message: >-
-        Spark Jobs must set spec.activeDeadlineSeconds between 1 and 7200
-        (team-spark-job-template.yaml already does) — otherwise an abandoned
-        job can hold its cluster-wide slot forever, or a job can claim more
-        runtime than the template allows.
+        spec.activeDeadlineSeconds must be between 1 and 7200
+        (team-spark-job-template.yaml already does this).
     - expression: "!has(object.spec.parallelism) || object.spec.parallelism <= 1"
-      message: >-
-        Spark Jobs must not set spec.parallelism above 1 — a single Job
-        spinning up multiple pods at once would claim more than one
-        cluster-wide slot's worth of resources while still counting as a
-        single queued job.
+      message: "spec.parallelism must not exceed 1."
     - expression: >-
         !has(object.spec.ttlSecondsAfterFinished) ||
         object.spec.ttlSecondsAfterFinished <= 86400
-      message: >-
-        Spark Jobs must not set spec.ttlSecondsAfterFinished above 86400
-        (one day) — otherwise finished Jobs can accumulate in a team
-        namespace indefinitely, now that there's no longer a per-team
-        Job-count quota.
+      message: "spec.ttlSecondsAfterFinished must not exceed 86400 (one day)."
     - expression: >-
         request.operation != 'UPDATE' ||
         request.userInfo.username == 'system:serviceaccount:${INFRA_NAMESPACE}:spark-queue-controller' ||
@@ -161,9 +117,9 @@ spec:
   validations:
     - expression: "has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0"
       message: >-
-        Bare Pods aren't allowed in team namespaces — submit Spark jobs via
-        spark-queue/portable/manifests/team-spark-job-template.yaml; anything
-        else needs a Job/Deployment/StatefulSet to own its Pods.
+        Bare Pods aren't allowed in team namespaces — Spark jobs go through
+        team-spark-job-template.yaml; anything else needs a Job/Deployment/
+        StatefulSet to own its Pods.
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
