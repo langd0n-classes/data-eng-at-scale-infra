@@ -4,12 +4,14 @@
 # required fields already correct, so a student only needs their own
 # image and command.
 #
-# `suspend`, the `queue: spark` label, and `activeDeadlineSeconds` are set
-# here as a convenience — spark-job-admission-policy.yaml is what actually
-# enforces these (plus parallelism and ttlSecondsAfterFinished bounds), so
-# skipping this template doesn't bypass the queue. `ttlSecondsAfterFinished`
-# cleans up the finished Job object; `activeDeadlineSeconds` kills a hung
-# one so it doesn't hold its cluster-wide slot forever.
+# `suspend`, the `queue: spark` label, `activeDeadlineSeconds`, and
+# `parallelism` are set here as a convenience — spark-job-admission-policy.yaml
+# is what actually enforces all of these (plus the ttlSecondsAfterFinished
+# bound), so skipping this template doesn't bypass the queue.
+# `ttlSecondsAfterFinished` cleans up the finished Job object;
+# `activeDeadlineSeconds` kills a hung one so it doesn't hold its
+# cluster-wide slot forever; `parallelism: 1` keeps one Job to one pod,
+# so it can't claim more than its fair share of a queue slot.
 #
 # Replace SPARK_COMMAND with your actual spark-submit invocation before
 # applying.
@@ -30,6 +32,7 @@ metadata:
     queue: spark
 spec:
   suspend: true
+  parallelism: 1
   ttlSecondsAfterFinished: 3600
   activeDeadlineSeconds: 7200
   backoffLimit: 2
