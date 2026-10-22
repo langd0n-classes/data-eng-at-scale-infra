@@ -209,7 +209,7 @@ class EventGenerator:
     """Generates synthetic health events with outbreak scheduling."""
 
     SYMPTOMS = [
-        'fever', 'headache', 'fatigue', 'uncontrollable_hiccups',
+        'toasty_ears', 'brain_fizz', 'sleepy_socks', 'uncontrollable_hiccups',
         'temporary_purple_toenails', 'sudden_craving_for_pickles',
         'spontaneous_sneezing_fits', 'mild_grumpiness',
         'excessive_yawning', 'random_giggling', 'wobbly_knees', 'dramatic_sighing'
@@ -379,8 +379,8 @@ class EventGenerator:
             'region': _region,
             'visit_type': _visit_type,
             'primary_complaint': random.choice(self.SYMPTOMS),
-            'temperature_f': _temp_f,
-            'diagnosis_code': f"ICD{random.randint(100, 999)}",
+            'toastiness_level': _temp_f,
+            'diagnosis_code': f"ZDX{random.randint(100, 999)}",
             'prescribed_medication': random.random() < 0.35,
             'follow_up_required': random.random() < 0.25,
             'available_beds': available_beds,
@@ -441,8 +441,8 @@ class EventGenerator:
             'admission_reason': random.choice(self.SYMPTOMS),
             'suspected_pathogen': PATHOGEN_NAME,
             'severity': _severity,
-            'temperature_f': round(random.triangular(_lo, _hi, _mode), 1),
-            'oxygen_level': _o2,
+            'toastiness_level': round(random.triangular(_lo, _hi, _mode), 1),
+            'fizz_level': _o2,
             'expected_los_days': min(21, max(1, round(random.expovariate(_los_rate)))),
             'available_beds': available_beds,
         }
@@ -490,7 +490,7 @@ class EventGenerator:
             'healthcare_provider_id': f"HP{random.randint(100, 999)}",
             'lot_number': f"LOT{random.randint(1000, 9999)}",
             'adverse_reaction': adverse,
-            'adverse_reaction_type': random.choice(['mild_soreness', 'fever', 'fatigue', 'allergic_reaction']) if adverse else None,
+            'adverse_reaction_type': random.choice(['mild_soreness', 'toasty_ears', 'sleepy_socks', 'sparkly_sneezes']) if adverse else None,
         }
 
     def generate_emergency_incident(self) -> dict:
@@ -582,7 +582,7 @@ class EventGenerator:
         else:
             _age = random.randint(65, 85)
 
-        bmi = round(random.triangular(17.0, 45.0, 27.5), 1)
+        bounce_index = round(random.triangular(17.0, 45.0, 27.5), 1)
 
         # Age-group appropriate blood pressure ranges
         if _age < 18:
@@ -595,17 +595,17 @@ class EventGenerator:
             bp_systolic = random.randint(120, 170)
             bp_diastolic = random.randint(70, 100)
 
-        cholesterol = round(random.triangular(150, 300, 195))
+        glitter_level = round(random.triangular(150, 300, 195))
 
-        _smoking_status = random.choices(['never', 'former', 'current'], weights=[60, 25, 15])[0]
-        _diabetes_status = random.choices(['none', 'pre_diabetic', 'type_2'], weights=[70, 20, 10])[0]
-        _smoking_penalty = {'never': 0.0, 'former': 0.5, 'current': 1.5}.get(_smoking_status, 0.0)
-        _diabetes_penalty = {'none': 0.0, 'pre_diabetic': 0.5, 'type_2': 1.0}.get(_diabetes_status, 0.0)
+        _kazoo_habit = random.choices(['never', 'former', 'current'], weights=[60, 25, 15])[0]
+        _sprinkle_sensitivity = random.choices(['none', 'mild', 'high'], weights=[70, 20, 10])[0]
+        _kazoo_penalty = {'never': 0.0, 'former': 0.5, 'current': 1.5}.get(_kazoo_habit, 0.0)
+        _sprinkle_penalty = {'none': 0.0, 'mild': 0.5, 'high': 1.0}.get(_sprinkle_sensitivity, 0.0)
         _health_score = max(1, min(10, round(
-            10 - abs(bmi - 22) * 0.15
+            10 - abs(bounce_index - 22) * 0.15
             - max(0, _age - 30) * 0.03
-            - _smoking_penalty
-            - _diabetes_penalty
+            - _kazoo_penalty
+            - _sprinkle_penalty
             + random.gauss(0, 1)
         )))
 
@@ -621,13 +621,13 @@ class EventGenerator:
             'patient_id': f"P{random.randint(10000, 99999)}",
             'age': _age,
             'region': _region,
-            'bmi': bmi,
-            'blood_pressure_systolic': bp_systolic,
-            'blood_pressure_diastolic': bp_diastolic,
-            'heart_rate_bpm': random.randint(55, 100),
-            'cholesterol_total': cholesterol,
-            'smoking_status': _smoking_status,
-            'diabetes_status': _diabetes_status,
+            'bounce_index': bounce_index,
+            'wobble_pressure_high': bp_systolic,
+            'wobble_pressure_low': bp_diastolic,
+            'hops_per_minute': random.randint(55, 100),
+            'glitter_level': glitter_level,
+            'kazoo_habit': _kazoo_habit,
+            'sprinkle_sensitivity': _sprinkle_sensitivity,
             'overall_health_score': _health_score,
             'last_checkup_days_ago': random.randint(0, 730),
         }
