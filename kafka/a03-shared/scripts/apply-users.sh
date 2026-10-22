@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Create or update the A03 team logins team01..teamNN and the staff login.
+# Create or update the A03 team logins and the staff login.
+# team00 is the staff reference team; team01..teamNN are the student teams.
 # Usage: apply-users.sh [team_count]   (default 10)
 set -euo pipefail
 
@@ -9,7 +10,7 @@ TEAM_COUNT="${1:-10}"
 
 kubectl apply -f "${BASE_DIR}/staff-user.yaml"
 
-for i in $(seq 1 "${TEAM_COUNT}"); do
+for i in $(seq 0 "${TEAM_COUNT}"); do
   TEAM="$(printf 'team%02d' "${i}")"
   export TEAM
   envsubst '${TEAM}' < "${BASE_DIR}/users.yaml.tmpl" | kubectl apply -f -

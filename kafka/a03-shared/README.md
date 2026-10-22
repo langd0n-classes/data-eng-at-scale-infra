@@ -4,6 +4,7 @@ One Kafka broker for all A03 teams, reachable from outside the cluster.
 Each team has a SCRAM-SHA-512 login over TLS.
 A team login can create, use, and delete only topics and consumer groups
 whose names start with its team name and a dot, such as `team03.events.raw`.
+`team00` is the staff reference team; it has the same limits as a student team.
 
 This broker is separate from the per-team final-project brokers.
 
