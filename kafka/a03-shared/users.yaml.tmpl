@@ -1,0 +1,39 @@
+# One A03 team login. scripts/apply-users.sh renders this file once per team.
+# Variables: TEAM (for example team03).
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaUser
+metadata:
+  name: ${TEAM}
+  namespace: a03-kafka
+  labels:
+    strimzi.io/cluster: a03
+spec:
+  authentication:
+    type: scram-sha-512
+  authorization:
+    type: simple
+    acls:
+      - resource:
+          type: topic
+          name: ${TEAM}.
+          patternType: prefix
+        operations:
+          - Create
+          - Delete
+          - Describe
+          - DescribeConfigs
+          - AlterConfigs
+          - Read
+          - Write
+      - resource:
+          type: group
+          name: ${TEAM}.
+          patternType: prefix
+        operations:
+          - Describe
+          - Read
+          - Delete
+  quotas:
+    producerByteRate: 1048576
+    consumerByteRate: 2097152
+    requestPercentage: 25
