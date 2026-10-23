@@ -14,6 +14,12 @@ BOOTSTRAP_HOST="$(kubectl get kafka "${CLUSTER}" -n "${NS}" \
   -o jsonpath='{.status.listeners[?(@.name=="external")].addresses[0].host}')"
 BOOTSTRAP_PORT="$(kubectl get kafka "${CLUSTER}" -n "${NS}" \
   -o jsonpath='{.status.listeners[?(@.name=="external")].addresses[0].port}')"
+# The first alternative name, when set, is the public DNS name.
+BOOTSTRAP_NAME="$(kubectl get kafka "${CLUSTER}" -n "${NS}" \
+  -o jsonpath='{.spec.kafka.listeners[?(@.name=="external")].configuration.bootstrap.alternativeNames[0]}')"
+if [ -n "${BOOTSTRAP_NAME}" ]; then
+  BOOTSTRAP_HOST="${BOOTSTRAP_NAME}"
+fi
 if [ -z "${BOOTSTRAP_HOST}" ]; then
   echo "ERROR: the external listener has no address yet." >&2
   exit 1

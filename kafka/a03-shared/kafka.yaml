@@ -73,6 +73,15 @@ spec:
         tls: true
         authentication:
           type: scram-sha-512
+        # DNS names for the load balancers. Brokers are lettered: node 0 is
+        # kafka-a, node 1 would be kafka-b. The names go in the certificate.
+        configuration:
+          bootstrap:
+            alternativeNames:
+              - kafka.ds551.langd0n.com
+          brokers:
+            - broker: 0
+              advertisedHost: kafka-a.ds551.langd0n.com
     authorization:
       type: simple
     config:

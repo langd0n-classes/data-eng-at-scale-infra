@@ -30,6 +30,14 @@ bash scripts/apply-users.sh 10
 The two load balancers can take several minutes on a new cluster.
 The broker pod starts after both have an address.
 
+## DNS Names
+
+Students connect to `kafka.ds551.langd0n.com:9094`, an A record for the
+bootstrap load balancer. Each broker has its own load balancer and a lettered
+name: node 0 is `kafka-a.ds551.langd0n.com`, node 1 would be `kafka-b`.
+`kafka.yaml` puts these names in the broker certificate and advertises them.
+If a load balancer address changes, update its A record.
+
 ## Give a Team Its Login
 
 ```bash
