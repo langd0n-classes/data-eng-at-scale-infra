@@ -144,6 +144,14 @@ Processed a total of 3 messages
 kubectl delete pod kafka-consumer-test -n team-01 --ignore-not-found
 ```
 
+**OVHcloud MKS (managed cloud):** validated at real scale — one
+Deployment emitting continuously to all 15 teams' Kafka for hours, not
+just 1. Also confirmed the self-healing reconnect path live: a node drain
+evicted this Deployment and 7 teams' Kafka brokers at the same moment; 6
+reconnected inside their own startup retry window, 1 didn't and stayed
+missing from emission until the background reconnect worker picked it back
+up on its next 60s pass — no pod restart needed.
+
 ## Cleanup
 
 ```bash

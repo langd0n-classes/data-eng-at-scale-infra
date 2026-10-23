@@ -51,7 +51,7 @@ cloud-provider-kind `v0.11.1`.
 
 Uses the generic "cloud" provider manifest (not Kind's NodePort-specific
 one), so the controller's Service is a real `type: LoadBalancer` — matching
-item 9's requirement and how this will actually behave on a real cloud
+item 9's requirement and how this will actually behave on a managed cloud
 later.
 
 ```bash
@@ -73,12 +73,12 @@ start yourself (needs root, can't be done non-interactively):
   sudo bash ingress/portable/prerequisites/install-cloud-provider-kind.sh
 ```
 The script actually polls for up to 90s (checking every 5s) before
-reporting anything, rather than a single check — a real cloud's own
+reporting anything, rather than a single check — a managed cloud's own
 LoadBalancer can take a similar amount of time to provision, so a bare
 check could falsely report "stuck" on an otherwise-fine cluster. The
 message itself also only shows the Kind-specific instructions on Kind
 (detected from `kubectl config current-context`'s own `kind-*` prefix) —
-on a real cloud cluster it instead says this is likely just normal
+on a managed cloud cluster it instead says this is likely just normal
 provisioning delay, or, if it never resolves, that the cluster may have
 no LoadBalancer implementation installed at all (e.g. bare-metal with no
 MetalLB).
@@ -226,6 +226,11 @@ with binding 'team-ingress-host-policy-binding' denied request: Every Ingress ho
 namespace must start with that namespace's own name (e.g. "team-01" or "team-01.<anything>") —
 claiming another hostname, including the shared dashboard's, isn't allowed.
 ```
+
+**OVHcloud MKS (managed cloud):** real external IP from Octavia,
+host-takeover denied (same error), and the `ExternalName`-backend bypass
+confirmed closed — a curl through the real LB returned `503`, not the
+other team's content.
 
 ## Cleanup
 

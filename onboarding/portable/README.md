@@ -247,6 +247,39 @@ test-01 -> tekton-dashboard: wget: download timed out   [BLOCKED]
 test-02 -> tekton-dashboard: wget: download timed out   [BLOCKED]
 ```
 
+**OVHcloud MKS (managed cloud, 2026-10-22):** steps 3/3b/3c re-run against
+real `team-01`/`team-02`/`infra` — all results identical to Kind above.
+CNI differs though: Kind uses pure Calico, OVH Free-plan MKS uses **Canal**
+(Flannel for the data-plane overlay, Calico only for policy enforcement —
+confirmed via `canal-*` pods each running both a `calico-node` and a
+`kube-flannel` container). Enforcement *behavior* verified equivalent;
+the CNI *stack* is not the same.
+
+**3d. `LoadBalancer`/`NodePort` Service quota, confirmed on OVHcloud MKS**
+
+`06-team-resourcequota.yaml` caps both at zero per team namespace — a
+team can't expose a Service directly, bypassing the shared ingress:
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Service
+metadata: { name: lb-quota-test, namespace: team-01 }
+spec: { type: LoadBalancer, selector: { app: web-01 }, ports: [{ port: 80 }] }
+EOF
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Service
+metadata: { name: nodeport-quota-test, namespace: team-01 }
+spec: { type: NodePort, selector: { app: web-01 }, ports: [{ port: 80 }] }
+EOF
+```
+```
+Error from server (Forbidden): services "lb-quota-test" is forbidden: exceeded quota: team-quota, requested: services.loadbalancers=1, used: services.loadbalancers=0, limited: services.loadbalancers=0
+Error from server (Forbidden): services "nodeport-quota-test" is forbidden: exceeded quota: team-quota, requested: services.nodeports=1, used: services.nodeports=0, limited: services.nodeports=0
+```
+Both rejected, as designed.
+
 ```bash
 # cleanup (keep the onboarded namespaces)
 bash kafka/portable/scripts/remove.sh --yes team01 team-01

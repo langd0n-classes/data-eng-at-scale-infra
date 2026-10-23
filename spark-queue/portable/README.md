@@ -332,6 +332,10 @@ demo-job-2   false
 demo-job-3   true
 ```
 
+**OVHcloud MKS (managed cloud):** full walkthrough (steps 1–8)
+re-run against real `team-01`/5 throwaway `spark-test-N` namespaces —
+every result identical to Kind above.
+
 ## Variables
 
 | Variable | Default | Description |

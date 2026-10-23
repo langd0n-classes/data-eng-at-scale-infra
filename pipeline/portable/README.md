@@ -198,7 +198,7 @@ just your machine, not usable by anyone else:
 echo "${EXTERNAL_IP} ${DASHBOARD_HOST}" | sudo tee -a /etc/hosts
 ```
 
-On a real cloud cluster (EKS, GKE, AKS, OVHcloud, any managed Kubernetes),
+On a managed cloud cluster (EKS, GKE, AKS, OVHcloud, or similar),
 skip `/etc/hosts` entirely — `ingress-nginx-controller`'s `LoadBalancer`
 already has a real, routable public IP there, so instead create a real DNS
 A record pointing `DASHBOARD_HOST` at that IP. Once that record exists,
@@ -322,6 +322,12 @@ kubectl logs -n infra -l app=event-generator --tail=3   # confirm it's actually 
 Both teams' Kafka independently confirmed to receive real events (same
 consume-from-topic check as `event-generator/portable/README.md`, repeated
 for `team-02`).
+
+**OVHcloud MKS (managed cloud, 2026-10-22):** `deploy-pipeline.sh` run for 3
+teams via `portable/scripts/` (this component's orchestrated entry point,
+not the manual Task/Pipeline steps above) — all 3 teams' Kafka `Ready`,
+event generator `Running`, PipelineRun `Completed` in 46s, real Cinder PVC
+provisioning included.
 
 **6. Idempotency** — re-run step 3 a second time with no changes:
 

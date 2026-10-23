@@ -152,6 +152,15 @@ All four `scripts/` commands are safe to re-run — `deploy.sh` is idempotent
 by construction (`kubectl apply`), the others use `--ignore-not-found` /
 existence checks throughout.
 
+**OVHcloud MKS (managed cloud):** validated across a real 15-team
+run. PVCs bind on `csi-cinder-high-speed-gen2` (10Gi each, matches step 1's
+StorageClass check). Produce/consume confirmed via the real event-generator
+pipeline, not a one-off test message — sustained Kafka traffic across 15
+brokers for hours. Data survival (step 5's intent) confirmed more strongly
+than a manual restart: a real node drain evicted 7 teams' brokers at once,
+and every PVC reattached to its rescheduled pod as the same object, data
+intact.
+
 ## Variables
 
 | Variable | Default | Description |

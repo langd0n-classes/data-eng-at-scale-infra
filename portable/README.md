@@ -310,3 +310,46 @@ event-generator   1/1   1   1   43s
 ── Latest PipelineRun ──
 deploy-all-teams-run-20261004-180506   True   Completed   20s   1s
 ```
+
+## OVH validation
+
+The OVH adapter (`providers/ovh.env`) has been validated on an OVHcloud
+MKS cluster prior to merge, covering each item requested in review:
+
+- **StorageClass** — confirmed as `csi-cinder-high-speed-gen2` (the
+  cluster's own default), matching `providers/ovh.env`.
+- **LoadBalancer behavior** — `ingress-nginx-controller` received an
+  external IP from Octavia automatically. The Tekton Dashboard was
+  reachable through it with valid TLS and basic auth, verified from an
+  external machine via `curl`, not `kubectl exec`.
+- **NetworkPolicy enforcement check** — confirmed that a deny-all-ingress
+  policy is genuinely enforced, matching the Kind result. The CNI
+  differs (OVH's Free plan uses Canal; Kind uses pure Calico), but
+  enforcement behavior is equivalent.
+- **Isolation tests** — all 9 reachability probes (5 same/cross-namespace,
+  3 Kafka, 2 Tekton Dashboard) matched the expected reached/blocked
+  outcome exactly; the shared-ingress host-takeover and `ExternalName`
+  backend bypass were each confirmed denied; and direct `LoadBalancer`/
+  `NodePort` Service creation in a team namespace was confirmed rejected
+  by quota.
+- **Queue tests** — the full 8-step Spark queue walkthrough (compliant
+  job, evasion rejected, non-Spark job unaffected, 4-slot cluster-wide
+  cap, cancellation freeing a slot, stuck-job force-termination, retry
+  correctly not misclassified as stuck, one-job-per-team queueing) ran
+  against real namespaces, with every result matching the documented
+  expectation.
+
+Full per-item evidence is recorded alongside the Kind results in each
+component's own README: `providers/README.md`,
+`onboarding/portable/README.md`, `ingress/portable/README.md`, and
+`spark-queue/portable/README.md`.
+
+Separately, the complete orchestration cycle described above has also
+been run end to end on a 15-team deployment on the same cluster type:
+`install-prerequisites.sh` → staged `deploy-pipeline.sh` reruns
+(10 → 13 → 15 teams) → the full workload, retention, isolation,
+snapshot, and node-recovery test suite → full teardown, with
+`status-platform.sh` reporting correctly at every team count throughout.
+Two issues were identified and fixed at the source in the process: a
+Kafka `PodDisruptionBudget` selector that matched no pods, and
+`event-generator` permanently dropping a team after a connection race.

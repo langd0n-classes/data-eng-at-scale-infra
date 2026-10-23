@@ -16,12 +16,19 @@ for those. Any other command that reads `STORAGE_CLASS` directly
 
 ## What's in here
 
-- **`kind.env`** — the only real, validated file. Nothing to change
-  for local Kind testing. Kind needs two things beyond its two
-  settings: `cloud-provider-kind` running (Kind has no LoadBalancer of
-  its own) and Calico installed (Kind's default CNI doesn't enforce
+- **`kind.env`** — validated locally. Nothing to change for local Kind
+  testing. Kind needs two things beyond its two settings:
+  `cloud-provider-kind` running (Kind has no LoadBalancer of its own)
+  and Calico installed (Kind's default CNI doesn't enforce
   NetworkPolicy) — both covered in `onboarding/portable/README.md` and
   `ingress/portable/README.md`.
+- **`ovh.env`** — validated on a managed OVHcloud MKS cluster (Free plan,
+  `US-EAST-VA-1`, `b2-30` nodes, Kubernetes 1.34.6): `STORAGE_CLASS`
+  (`csi-cinder-high-speed-gen2`) provisions real Cinder-backed PVCs;
+  `LoadBalancer` gets a real external IP from Octavia automatically, no
+  extra component needed; `check-networkpolicy.sh` confirmed Canal CNI
+  (the Free plan's default) genuinely enforces NetworkPolicy, same as
+  Kind's Calico.
 - **`TEMPLATE.env.example`** — copy this for a real cluster (see
   below). No values are asserted in it on purpose.
 - **`lib/check-networkpolicy.sh`** — the actual automated
