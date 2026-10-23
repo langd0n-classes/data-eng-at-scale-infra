@@ -109,8 +109,6 @@ spec:
       value: "${TOPIC_SUFFIX}"
     - name: REGIONS
       value: "${REGIONS}"
-    - name: TEAM_BOOTSTRAP_SERVERS
-      value: "${TEAM_BOOTSTRAP_SERVERS}"
   workspaces:
     - name: source
       volumeClaimTemplate:

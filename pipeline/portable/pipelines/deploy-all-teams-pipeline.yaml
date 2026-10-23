@@ -149,9 +149,6 @@ spec:
       default: ""
     - name: REGIONS
       type: string
-    - name: TEAM_BOOTSTRAP_SERVERS
-      description: team_id=bootstrap_server,team_id=bootstrap_server,...
-      type: string
     - name: KAFKA_BOOTSTRAP_SERVERS
       type: string
       default: ""
@@ -187,7 +184,67 @@ spec:
         - name: IMAGE
           value: $(params.EVENT_GENERATOR_IMAGE)
         - name: CONFIG_VALUES
-          value: "$(params.EVENT_RATE_PER_SEC)|$(params.TOPIC_PREFIX)|$(params.TOPIC_SUFFIX)|$(params.TOPIC)|$(params.REGIONS)|$(params.TEAM_BOOTSTRAP_SERVERS)|$(params.KAFKA_BOOTSTRAP_SERVERS)"
+          value: "$(params.EVENT_RATE_PER_SEC)|$(params.TOPIC_PREFIX)|$(params.TOPIC_SUFFIX)|$(params.TOPIC)|$(params.REGIONS)|$(params.KAFKA_BOOTSTRAP_SERVERS)"
+        - name: TEAM1_NAME
+          value: $(params.TEAM1_NAME)
+        - name: TEAM1_NAMESPACE
+          value: $(params.TEAM1_NAMESPACE)
+        - name: TEAM2_NAME
+          value: $(params.TEAM2_NAME)
+        - name: TEAM2_NAMESPACE
+          value: $(params.TEAM2_NAMESPACE)
+        - name: TEAM3_NAME
+          value: $(params.TEAM3_NAME)
+        - name: TEAM3_NAMESPACE
+          value: $(params.TEAM3_NAMESPACE)
+        - name: TEAM4_NAME
+          value: $(params.TEAM4_NAME)
+        - name: TEAM4_NAMESPACE
+          value: $(params.TEAM4_NAMESPACE)
+        - name: TEAM5_NAME
+          value: $(params.TEAM5_NAME)
+        - name: TEAM5_NAMESPACE
+          value: $(params.TEAM5_NAMESPACE)
+        - name: TEAM6_NAME
+          value: $(params.TEAM6_NAME)
+        - name: TEAM6_NAMESPACE
+          value: $(params.TEAM6_NAMESPACE)
+        - name: TEAM7_NAME
+          value: $(params.TEAM7_NAME)
+        - name: TEAM7_NAMESPACE
+          value: $(params.TEAM7_NAMESPACE)
+        - name: TEAM8_NAME
+          value: $(params.TEAM8_NAME)
+        - name: TEAM8_NAMESPACE
+          value: $(params.TEAM8_NAMESPACE)
+        - name: TEAM9_NAME
+          value: $(params.TEAM9_NAME)
+        - name: TEAM9_NAMESPACE
+          value: $(params.TEAM9_NAMESPACE)
+        - name: TEAM10_NAME
+          value: $(params.TEAM10_NAME)
+        - name: TEAM10_NAMESPACE
+          value: $(params.TEAM10_NAMESPACE)
+        - name: TEAM11_NAME
+          value: $(params.TEAM11_NAME)
+        - name: TEAM11_NAMESPACE
+          value: $(params.TEAM11_NAMESPACE)
+        - name: TEAM12_NAME
+          value: $(params.TEAM12_NAME)
+        - name: TEAM12_NAMESPACE
+          value: $(params.TEAM12_NAMESPACE)
+        - name: TEAM13_NAME
+          value: $(params.TEAM13_NAME)
+        - name: TEAM13_NAMESPACE
+          value: $(params.TEAM13_NAMESPACE)
+        - name: TEAM14_NAME
+          value: $(params.TEAM14_NAME)
+        - name: TEAM14_NAMESPACE
+          value: $(params.TEAM14_NAMESPACE)
+        - name: TEAM15_NAME
+          value: $(params.TEAM15_NAME)
+        - name: TEAM15_NAMESPACE
+          value: $(params.TEAM15_NAMESPACE)
 
     - name: deploy-kafka-team1
       taskRef:
@@ -532,7 +589,7 @@ spec:
         - name: REGIONS
           value: $(params.REGIONS)
         - name: TEAM_BOOTSTRAP_SERVERS
-          value: $(params.TEAM_BOOTSTRAP_SERVERS)
+          value: $(tasks.check-event-generator-changed.results.team_bootstrap_servers)
         - name: KAFKA_BOOTSTRAP_SERVERS
           value: $(params.KAFKA_BOOTSTRAP_SERVERS)
       workspaces:

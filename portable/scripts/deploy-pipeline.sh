@@ -29,29 +29,9 @@ if [[ ! -f "${REPO_ROOT}/config.env" ]]; then
 fi
 source "${REPO_ROOT}/config.env"
 
-# Generated here from TEAM{N}_NAME/TEAM{N}_NAMESPACE (N=1..15) rather than
-# trusted from config.env directly — those are the exact vars that already
-# drive which teams deploy-all-teams-pipeline.yaml deploys (same
-# blank-or-"skip" convention it uses for an unused slot), so this can never
-# drift out of sync with what's actually deployed the way a separately
-# hand-maintained TEAM_BOOTSTRAP_SERVERS string could (and did).
-TEAM_BOOTSTRAP_SERVERS=""
-for i in $(seq 1 15); do
-  name_var="TEAM${i}_NAME"
-  ns_var="TEAM${i}_NAMESPACE"
-  team_name="${!name_var:-}"
-  team_ns="${!ns_var:-}"
-  if [[ -z "${team_name}" || "${team_name}" == "skip" || -z "${team_ns}" || "${team_ns}" == "skip" ]]; then
-    continue
-  fi
-  entry="${team_name}=kafka-${team_name}-kafka-bootstrap.${team_ns}.svc.cluster.local:9092"
-  TEAM_BOOTSTRAP_SERVERS="${TEAM_BOOTSTRAP_SERVERS:+${TEAM_BOOTSTRAP_SERVERS},}${entry}"
-done
-export TEAM_BOOTSTRAP_SERVERS
-if [[ -z "${TEAM_BOOTSTRAP_SERVERS}" ]]; then
-  echo "ERROR: no teams configured — every TEAM{N}_NAME/TEAM{N}_NAMESPACE in config.env is blank or 'skip'."
-  exit 1
-fi
+# TEAM_BOOTSTRAP_SERVERS is computed in-cluster by check-redeploy-needed-task.yaml
+# from TEAM{N}_NAME/TEAM{N}_NAMESPACE — not built here, so there's nothing for
+# a shortcut invocation to get wrong.
 
 # Same provider override as install-prerequisites.sh — must be sourced
 # here too, independently, since this runs as its own later invocation

@@ -46,11 +46,103 @@ spec:
       description: Pipe-delimited runtime config values folded into the hash too, so a config-only change (not just the image) still triggers a redeploy
       type: string
       default: ""
+    - name: TEAM1_NAME
+      type: string
+      default: ""
+    - name: TEAM1_NAMESPACE
+      type: string
+      default: ""
+    - name: TEAM2_NAME
+      type: string
+      default: ""
+    - name: TEAM2_NAMESPACE
+      type: string
+      default: ""
+    - name: TEAM3_NAME
+      type: string
+      default: ""
+    - name: TEAM3_NAMESPACE
+      type: string
+      default: ""
+    - name: TEAM4_NAME
+      type: string
+      default: ""
+    - name: TEAM4_NAMESPACE
+      type: string
+      default: ""
+    - name: TEAM5_NAME
+      type: string
+      default: ""
+    - name: TEAM5_NAMESPACE
+      type: string
+      default: ""
+    - name: TEAM6_NAME
+      type: string
+      default: ""
+    - name: TEAM6_NAMESPACE
+      type: string
+      default: ""
+    - name: TEAM7_NAME
+      type: string
+      default: ""
+    - name: TEAM7_NAMESPACE
+      type: string
+      default: ""
+    - name: TEAM8_NAME
+      type: string
+      default: ""
+    - name: TEAM8_NAMESPACE
+      type: string
+      default: ""
+    - name: TEAM9_NAME
+      type: string
+      default: ""
+    - name: TEAM9_NAMESPACE
+      type: string
+      default: ""
+    - name: TEAM10_NAME
+      type: string
+      default: ""
+    - name: TEAM10_NAMESPACE
+      type: string
+      default: ""
+    - name: TEAM11_NAME
+      type: string
+      default: ""
+    - name: TEAM11_NAMESPACE
+      type: string
+      default: ""
+    - name: TEAM12_NAME
+      type: string
+      default: ""
+    - name: TEAM12_NAMESPACE
+      type: string
+      default: ""
+    - name: TEAM13_NAME
+      type: string
+      default: ""
+    - name: TEAM13_NAMESPACE
+      type: string
+      default: ""
+    - name: TEAM14_NAME
+      type: string
+      default: ""
+    - name: TEAM14_NAMESPACE
+      type: string
+      default: ""
+    - name: TEAM15_NAME
+      type: string
+      default: ""
+    - name: TEAM15_NAMESPACE
+      type: string
+      default: ""
   results:
     - name: changed
       description: "\"true\" if a redeploy is needed, \"false\" to skip"
     - name: hash
       description: The newly computed digest+config hash, for the deploy Task to stamp on the Deployment
+    - name: team_bootstrap_servers
+      description: Computed from TEAM{N}_NAME/TEAM{N}_NAMESPACE, for deploy-event-generator to consume
   volumes:
     - name: ghcr-auth
       secret:
@@ -95,11 +187,87 @@ spec:
           value: $(params.DEPLOYMENT_NAME)
         - name: NAMESPACE
           value: $(params.NAMESPACE)
+        - name: TEAM1_NAME
+          value: $(params.TEAM1_NAME)
+        - name: TEAM1_NAMESPACE
+          value: $(params.TEAM1_NAMESPACE)
+        - name: TEAM2_NAME
+          value: $(params.TEAM2_NAME)
+        - name: TEAM2_NAMESPACE
+          value: $(params.TEAM2_NAMESPACE)
+        - name: TEAM3_NAME
+          value: $(params.TEAM3_NAME)
+        - name: TEAM3_NAMESPACE
+          value: $(params.TEAM3_NAMESPACE)
+        - name: TEAM4_NAME
+          value: $(params.TEAM4_NAME)
+        - name: TEAM4_NAMESPACE
+          value: $(params.TEAM4_NAMESPACE)
+        - name: TEAM5_NAME
+          value: $(params.TEAM5_NAME)
+        - name: TEAM5_NAMESPACE
+          value: $(params.TEAM5_NAMESPACE)
+        - name: TEAM6_NAME
+          value: $(params.TEAM6_NAME)
+        - name: TEAM6_NAMESPACE
+          value: $(params.TEAM6_NAMESPACE)
+        - name: TEAM7_NAME
+          value: $(params.TEAM7_NAME)
+        - name: TEAM7_NAMESPACE
+          value: $(params.TEAM7_NAMESPACE)
+        - name: TEAM8_NAME
+          value: $(params.TEAM8_NAME)
+        - name: TEAM8_NAMESPACE
+          value: $(params.TEAM8_NAMESPACE)
+        - name: TEAM9_NAME
+          value: $(params.TEAM9_NAME)
+        - name: TEAM9_NAMESPACE
+          value: $(params.TEAM9_NAMESPACE)
+        - name: TEAM10_NAME
+          value: $(params.TEAM10_NAME)
+        - name: TEAM10_NAMESPACE
+          value: $(params.TEAM10_NAMESPACE)
+        - name: TEAM11_NAME
+          value: $(params.TEAM11_NAME)
+        - name: TEAM11_NAMESPACE
+          value: $(params.TEAM11_NAMESPACE)
+        - name: TEAM12_NAME
+          value: $(params.TEAM12_NAME)
+        - name: TEAM12_NAMESPACE
+          value: $(params.TEAM12_NAMESPACE)
+        - name: TEAM13_NAME
+          value: $(params.TEAM13_NAME)
+        - name: TEAM13_NAMESPACE
+          value: $(params.TEAM13_NAMESPACE)
+        - name: TEAM14_NAME
+          value: $(params.TEAM14_NAME)
+        - name: TEAM14_NAMESPACE
+          value: $(params.TEAM14_NAMESPACE)
+        - name: TEAM15_NAME
+          value: $(params.TEAM15_NAME)
+        - name: TEAM15_NAMESPACE
+          value: $(params.TEAM15_NAMESPACE)
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+
+        # Computed here, not passed in as a param.
+        TEAM_BOOTSTRAP_SERVERS=""
+        for i in $(seq 1 15); do
+          name_var="TEAM${i}_NAME"
+          ns_var="TEAM${i}_NAMESPACE"
+          team_name="${!name_var:-}"
+          team_ns="${!ns_var:-}"
+          if [[ -z "${team_name}" || "${team_name}" == "skip" || -z "${team_ns}" || "${team_ns}" == "skip" ]]; then
+            continue
+          fi
+          entry="${team_name}=kafka-${team_name}-kafka-bootstrap.${team_ns}.svc.cluster.local:9092"
+          TEAM_BOOTSTRAP_SERVERS="${TEAM_BOOTSTRAP_SERVERS:+${TEAM_BOOTSTRAP_SERVERS},}${entry}"
+        done
+        echo -n "${TEAM_BOOTSTRAP_SERVERS}" > "$(results.team_bootstrap_servers.path)"
+
         DIGEST="$(cat /scratch/digest.txt)"
-        NEW_HASH="$(printf '%s' "${DIGEST}${CONFIG_VALUES}" | sha256sum | awk '{print $1}')"
+        NEW_HASH="$(printf '%s' "${DIGEST}${CONFIG_VALUES}${TEAM_BOOTSTRAP_SERVERS}" | sha256sum | awk '{print $1}')"
         PREV_HASH="$(kubectl get deployment "${DEPLOYMENT_NAME}" -n "${NAMESPACE}" -o jsonpath='{.metadata.annotations.source-hash}' 2>/dev/null || true)"
 
         echo -n "${NEW_HASH}" > "$(results.hash.path)"
