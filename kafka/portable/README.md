@@ -49,7 +49,8 @@ cd kafka/portable
 **1. Create a cluster** *(Kind shown; substitute your own cluster/context for k3s, EKS, etc. — requires the `kind` CLI and Docker or Podman installed)*
 
 ```bash
-kind create cluster --name strimzi-portable --image kindest/node:v1.34.11
+source ../../portable/versions.env   # KIND_NODE_IMAGE pin
+kind create cluster --name strimzi-portable --image "${KIND_NODE_IMAGE}"
 kubectl get storageclass
 ```
 ```
@@ -151,6 +152,15 @@ All four `scripts/` commands are safe to re-run — `deploy.sh` is idempotent
 by construction (`kubectl apply`), the others use `--ignore-not-found` /
 existence checks throughout.
 
+**OVHcloud MKS (managed cloud):** validated across a real 15-team
+run. PVCs bind on `csi-cinder-high-speed-gen2` (10Gi each, matches step 1's
+StorageClass check). Produce/consume confirmed via the real event-generator
+pipeline, not a one-off test message — sustained Kafka traffic across 15
+brokers for hours. Data survival (step 5's intent) confirmed more strongly
+than a manual restart: a real node drain evicted 7 teams' brokers at once,
+and every PVC reattached to its rescheduled pod as the same object, data
+intact.
+
 ## Variables
 
 | Variable | Default | Description |
@@ -160,6 +170,7 @@ existence checks throughout.
 | `STORAGE_CLASS` | `standard` | Falls back to `config.env`'s value if set, then this default |
 | `VOLUME_SIZE` | `2Gi` | Falls back to `config.env`'s value if set, then this default |
 | `STRIMZI_OPERATOR_NAMESPACE` | `strimzi-system` | Falls back to `config.env`'s value if set, then this default |
+| `INFRA_NAMESPACE` | `infra` | Scopes the Kafka listener's own `networkPolicyPeers` (team isolation) |
 
 `scripts/deploy.sh` and `scripts/reset-data.sh` source the repo-root
 `config.env` for the first two if it exists (same convention as

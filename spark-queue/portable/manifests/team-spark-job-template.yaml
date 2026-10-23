@@ -1,0 +1,50 @@
+# spark-queue/portable/manifests/team-spark-job-template.yaml
+#
+# The template students fill in and submit — infra provides the queue's
+# required fields already correct, so a student only needs their own
+# image and command.
+#
+# `suspend`, the `queue: spark` label, `activeDeadlineSeconds`, and
+# `parallelism` are set here as a convenience — spark-job-admission-policy.yaml
+# is what actually enforces all of these (plus the ttlSecondsAfterFinished
+# bound), so skipping this template doesn't bypass the queue.
+# `ttlSecondsAfterFinished` cleans up the finished Job object;
+# `activeDeadlineSeconds` kills a hung one so it doesn't hold its
+# cluster-wide slot forever; `parallelism: 1` keeps one Job to one pod,
+# so it can't claim more than its fair share of a queue slot.
+#
+# Replace SPARK_COMMAND with your actual spark-submit invocation before
+# applying.
+#
+# Usage:
+#   envsubst '${TEAM_NAMESPACE_PREFIX} ${TEAM_ID} ${SPARK_JOB_NAME} ${SPARK_IMAGE} ${SPARK_COMMAND}' \
+#   < spark-queue/portable/manifests/team-spark-job-template.yaml | kubectl apply -f -
+#
+# Required vars: TEAM_NAMESPACE_PREFIX, TEAM_ID, SPARK_JOB_NAME, SPARK_IMAGE, SPARK_COMMAND
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${SPARK_JOB_NAME}
+  namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+  labels:
+    app: data-eng-infra
+    team: team-${TEAM_ID}
+    queue: spark
+spec:
+  suspend: true
+  parallelism: 1
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 7200
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        queue: spark
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: spark
+          image: ${SPARK_IMAGE}
+          command: ["/bin/sh", "-c"]
+          args:
+            - ${SPARK_COMMAND}

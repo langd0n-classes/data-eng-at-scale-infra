@@ -10,7 +10,7 @@
 #   export TEAM_NAME=team01
 #   export TEAM_NAMESPACE=team-01
 #   export STORAGE_CLASS=standard
-#   export VOLUME_SIZE=2Gi
+#   export VOLUME_SIZE=10Gi
 #   envsubst < kafka-nodepool-template.yaml | kubectl apply -f -
 apiVersion: kafka.strimzi.io/v1beta2
 kind: KafkaNodePool

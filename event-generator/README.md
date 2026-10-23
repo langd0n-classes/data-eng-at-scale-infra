@@ -2,6 +2,8 @@
 
 Synthetic data producer that generates realistic event streams and publishes them to Kafka topics for testing, demos, and learning.
 
+For a `kubectl`-only deployment variant (Kind/k3s, no OpenShift ImageStream/BuildConfig required), see [portable/README.md](portable/README.md).
+
 ## What It Does
 
 Produces synthetic health events with outbreak-aware scheduling, published to per-team

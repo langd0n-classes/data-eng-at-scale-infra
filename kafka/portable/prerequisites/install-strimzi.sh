@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # kafka/portable/prerequisites/install-strimzi.sh
 #
-# Cluster-admin, one-time script: installs the Strimzi 0.51.0 Cluster Operator
-# cluster-wide (watches all namespaces) so any newly-created team namespace can
+# Cluster-admin, one-time script: installs the Strimzi Cluster Operator
+# (version pinned in portable/versions.env) cluster-wide (watches all
+# namespaces) so any newly-created team namespace can
 # receive a Ready Kafka CR without a per-team operator install — mirrors how
 # the OpenShift path installs Strimzi via OperatorHub "All namespaces" mode.
 #
@@ -24,7 +25,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
-STRIMZI_VERSION="0.51.0"
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/portable/versions.env"
 CLI_OPERATOR_NAMESPACE="${1:-}"
 if [ -f "${REPO_ROOT}/config.env" ]; then
   source "${REPO_ROOT}/config.env"

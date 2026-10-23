@@ -1,0 +1,48 @@
+# ingress/portable/manifests/team-ingress-host-policy.yaml
+#
+# edit RBAC lets a team set spec.rules[].host to anything — ingress-nginx
+# merges rules for the same host across namespaces, so nothing stops a
+# team claiming another team's hostname or the shared dashboard's.
+# Restricts every host in a team namespace to that namespace's own name
+# or a subdomain of it — keyed off the Ingress's own namespace, so it
+# needs no separate config value to stay in sync with.
+#
+# Usage: kubectl apply -f ingress/portable/manifests/team-ingress-host-policy.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: team-ingress-host-policy
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["networking.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["ingresses"]
+  validations:
+    - expression: >-
+        has(object.spec.rules) && object.spec.rules.size() > 0 &&
+        object.spec.rules.all(r,
+          has(r.host) && r.host != '' &&
+          (r.host == object.metadata.namespace ||
+           r.host.startsWith(object.metadata.namespace + '.'))
+        )
+      message: >-
+        Every Ingress host in a team namespace must start with that
+        namespace's own name (e.g. "team-01" or "team-01.<anything>") —
+        claiming another hostname, including the shared dashboard's,
+        isn't allowed.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: team-ingress-host-policy-binding
+spec:
+  policyName: team-ingress-host-policy
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - key: team
+          operator: Exists

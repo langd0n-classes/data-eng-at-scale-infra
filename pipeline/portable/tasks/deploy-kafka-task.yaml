@@ -1,0 +1,50 @@
+# pipeline/portable/tasks/deploy-kafka-task.yaml
+#
+# kubectl-wraps kafka/portable/scripts/deploy.sh from a git-cloned copy of
+# this repo, so a team's PipelineRun deploys its own Kafka the exact same
+# way kafka/portable/README.md's validation walkthrough already proved
+# works, rather than duplicating that script's logic here. Assumes the
+# Strimzi operator is already installed cluster-wide (a one-time
+# prerequisite, done outside Tekton — see kafka/portable/prerequisites/).
+#
+# Defined once in the infra namespace (shared, per this repo's own
+# namespace convention) and referenced from the deploy-all-teams pipeline
+# via Tekton's `cluster` resolver.
+#
+# Usage:
+#   source config.env && envsubst '${KUBECTL_CLI_IMAGE}' \
+#   < pipeline/portable/tasks/deploy-kafka-task.yaml | kubectl apply -f - -n infra
+#
+# Required vars: KUBECTL_CLI_IMAGE
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-kafka
+  namespace: infra
+  labels:
+    app: data-eng-infra
+spec:
+  params:
+    - name: TEAM_NAME
+      description: Team identifier, e.g. team01
+      type: string
+    - name: TEAM_NAMESPACE
+      description: Team namespace, e.g. team-01
+      type: string
+    - name: STORAGE_CLASS
+      type: string
+    - name: VOLUME_SIZE
+      type: string
+  workspaces:
+    - name: source
+      description: Git-cloned copy of this repo
+  steps:
+    - name: deploy-kafka
+      image: ${KUBECTL_CLI_IMAGE}
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        bash kafka/portable/scripts/deploy.sh \
+          "$(params.TEAM_NAME)" "$(params.TEAM_NAMESPACE)" \
+          "$(params.STORAGE_CLASS)" "$(params.VOLUME_SIZE)"
