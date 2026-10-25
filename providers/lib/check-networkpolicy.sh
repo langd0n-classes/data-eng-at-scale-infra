@@ -7,10 +7,13 @@
 # nothing — this catches exactly that, on any cluster, before onboarding
 # proceeds.
 #
-# Creates a disposable namespace with two pods and a deny-all-ingress
-# NetworkPolicy, confirms the blocked pod genuinely can't reach the
-# other, then deletes the namespace. Aborts with a clear error if traffic
-# wasn't actually blocked.
+# Creates a disposable namespace with two pods, probes connectivity
+# once with no policy applied (must succeed — a failure there means the
+# test setup is broken, not that NetworkPolicy is enforced), then applies
+# a deny-all-ingress NetworkPolicy and probes again (must now fail).
+# Only that sequence counts as proof of enforcement — a probe that fails
+# for an unrelated reason (DNS, image pull, timing) is never read as
+# enforcement working.
 #
 # Cleanup is explicit at every return path, not a `trap ... RETURN` —
 # confirmed directly that `RETURN` traps are unreliable on macOS's
@@ -38,6 +41,24 @@ check_networkpolicy_enforcement() {
   kubectl run np-check-client --image=busybox:stable -n "${ns}" \
     --restart=Never --command -- sleep 60 >/dev/null
 
+  if ! kubectl wait pod np-check-server np-check-client -n "${ns}" \
+      --for=condition=Ready --timeout=60s >/dev/null 2>&1; then
+    echo "ERROR: NetworkPolicy enforcement check couldn't even start (test pods never became Ready) — investigate before continuing." >&2
+    _np_check_cleanup
+    return 1
+  fi
+
+  # Baseline probe, before any policy exists — a failure here means the test
+  # setup itself is broken (DNS, image pull, timing), not that NetworkPolicy
+  # is enforced. Without this, a flaky probe below would be misread as proof
+  # of enforcement.
+  if ! kubectl exec np-check-client -n "${ns}" -- \
+      wget -qO- --timeout=4 http://np-check-server >/dev/null 2>&1; then
+    echo "ERROR: NetworkPolicy enforcement check couldn't even start (baseline connectivity, with no policy applied yet, already failed) — investigate before continuing." >&2
+    _np_check_cleanup
+    return 1
+  fi
+
   kubectl apply -n "${ns}" -f - >/dev/null <<'EOF'
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -51,13 +72,6 @@ spec:
     - Ingress
   ingress: []
 EOF
-
-  if ! kubectl wait pod np-check-server np-check-client -n "${ns}" \
-      --for=condition=Ready --timeout=60s >/dev/null 2>&1; then
-    echo "ERROR: NetworkPolicy enforcement check couldn't even start (test pods never became Ready) — investigate before continuing." >&2
-    _np_check_cleanup
-    return 1
-  fi
 
   if kubectl exec np-check-client -n "${ns}" -- \
       wget -qO- --timeout=4 http://np-check-server >/dev/null 2>&1; then
