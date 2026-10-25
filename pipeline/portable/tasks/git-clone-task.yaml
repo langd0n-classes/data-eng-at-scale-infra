@@ -35,7 +35,7 @@ spec:
       description: Where the cloned source lands
   steps:
     - name: clone
-      image: alpine/git:2.47.2
+      image: alpine/git:2.47.2@sha256:062a01ad7a0eb17cff382bc5e26086b4d710e56dfdfdf001109a49b6d9bd378c
       script: |
         #!/bin/sh
         set -eu

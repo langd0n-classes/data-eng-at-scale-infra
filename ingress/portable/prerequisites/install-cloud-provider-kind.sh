@@ -34,7 +34,9 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CPK_VERSION="0.11.1"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/portable/versions.env"
 BIN_DIR="${SCRIPT_DIR}/.bin"
 BIN_PATH="${BIN_DIR}/cloud-provider-kind"
 PID_FILE="${BIN_DIR}/cloud-provider-kind.pid"
