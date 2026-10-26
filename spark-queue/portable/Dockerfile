@@ -16,5 +16,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY scripts/queue-controller.py .
 
+# Run as a non-root UID — the controller only needs Kubernetes API access
+# (via its own ServiceAccount token), never OS-level root.
+RUN useradd --no-create-home --uid 1000 controller && chown -R controller:controller /app
+USER controller
+
 # Run the controller
 CMD ["python", "queue-controller.py"]
