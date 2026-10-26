@@ -43,12 +43,15 @@ fail() { echo "  ✗ FAILED: $* — see error above"; FAILURES=$((FAILURES + 1))
 
 confirm() {
   local prompt="$1"
+  local ctx
+  ctx="$(kubectl config current-context 2>/dev/null || echo 'UNKNOWN')"
   if [[ "${FORCE:-false}" == "true" ]]; then
     echo "  (FORCE=true — skipping prompt: ${prompt})"
+    echo "  Current context: ${ctx}"
     return 0
   fi
-  read -r -p "${prompt} (y/N): " answer
-  [[ "$answer" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
+  read -r -p "${prompt} (current context: ${ctx}) (y/N): " answer
+  [[ "$answer" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
 }
 
 echo "============================================================"
@@ -60,7 +63,11 @@ confirm "This will permanently delete every team's Kafka, the event generator, a
 
 echo ""
 info "Removing each team's Kafka (CR, KafkaNodePool, PDB, PVCs)..."
-for ns in $(kubectl get namespace -l app=data-eng-infra --no-headers -o custom-columns=:.metadata.name 2>/dev/null); do
+if ! ns_list="$(kubectl get namespace -l app=data-eng-infra --no-headers -o custom-columns=:.metadata.name 2>&1)"; then
+  fail "could not list namespaces — check cluster connectivity / current context (${ns_list})"
+  ns_list=""
+fi
+for ns in ${ns_list}; do
   for kafka_cr in $(kubectl get kafka -n "${ns}" -o name 2>/dev/null); do
     team_name="${kafka_cr#kafka.kafka.strimzi.io/kafka-}"
     if bash "${REPO_ROOT}/kafka/portable/scripts/remove.sh" --yes "${team_name}" "${ns}"; then
@@ -103,7 +110,12 @@ kubectl delete clusterrolebinding pipeline-namespaces-reader-binding --ignore-no
 kubectl delete clusterrole pipeline-namespaces-reader --ignore-not-found || rbac_ok=false
 kubectl delete role pipeline-runner-role -n "${INFRA_NAMESPACE}" --ignore-not-found || rbac_ok=false
 kubectl delete rolebinding pipeline-runner-binding -n "${INFRA_NAMESPACE}" --ignore-not-found || rbac_ok=false
-for ns in $(kubectl get namespace -l app=data-eng-infra --no-headers -o custom-columns=:.metadata.name 2>/dev/null); do
+if ! ns_list="$(kubectl get namespace -l app=data-eng-infra --no-headers -o custom-columns=:.metadata.name 2>&1)"; then
+  echo "  could not list namespaces — check cluster connectivity / current context (${ns_list})" >&2
+  rbac_ok=false
+  ns_list=""
+fi
+for ns in ${ns_list}; do
   kubectl delete role pipeline-runner-role -n "${ns}" --ignore-not-found || rbac_ok=false
   kubectl delete rolebinding pipeline-runner-binding -n "${ns}" --ignore-not-found || rbac_ok=false
 done

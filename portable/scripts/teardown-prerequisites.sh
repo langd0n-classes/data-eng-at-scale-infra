@@ -59,12 +59,15 @@ fail() { echo "  ✗ FAILED: $* — see error above"; FAILURES=$((FAILURES + 1))
 
 confirm() {
   local prompt="$1"
+  local ctx
+  ctx="$(kubectl config current-context 2>/dev/null || echo 'UNKNOWN')"
   if [[ "${FORCE:-false}" == "true" ]]; then
     echo "  (FORCE=true — skipping prompt: ${prompt})"
+    echo "  Current context: ${ctx}"
     return 0
   fi
-  read -r -p "${prompt} (y/N): " answer
-  [[ "$answer" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
+  read -r -p "${prompt} (current context: ${ctx}) (y/N): " answer
+  [[ "$answer" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
 }
 
 echo "============================================================"
@@ -79,7 +82,11 @@ info "Removing onboarded namespaces (team-*, ${INFRA_NAMESPACE}) — cascades Ka
 # finalizer — confirmed directly: --wait=true and --timeout=0s are kubectl delete's
 # own defaults) — a stuck Calico-related delete hung exactly this way earlier in
 # this same validation, with no error, just silence, until manually killed
-for ns in $(kubectl get namespace -l app=data-eng-infra --no-headers -o custom-columns=:.metadata.name 2>/dev/null); do
+if ! ns_list="$(kubectl get namespace -l app=data-eng-infra --no-headers -o custom-columns=:.metadata.name 2>&1)"; then
+  fail "could not list namespaces — check cluster connectivity / current context (${ns_list})"
+  ns_list=""
+fi
+for ns in ${ns_list}; do
   if kubectl delete namespace "${ns}" --ignore-not-found --timeout=60s; then
     ok "${ns}"
   else
