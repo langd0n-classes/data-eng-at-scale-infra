@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - feature/portable-fall-platform
     paths:
       - event-generator/Dockerfile
       - event-generator/src/**

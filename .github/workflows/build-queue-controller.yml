@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - feature/portable-fall-platform
     paths:
       - spark-queue/portable/Dockerfile
       - spark-queue/portable/requirements.txt
