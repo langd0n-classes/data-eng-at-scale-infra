@@ -9,6 +9,8 @@ Two tools for operating the classroom infrastructure:
 
 **ChatOps** (Slack `/infra` command) exposes `ops.sh`-equivalent operations without needing a terminal — see [chatops/README.md](../chatops/README.md).
 
+For a `kubectl`-only variant (Kind/k3s, no OpenShift Pipelines operator required), see [portable/README.md](portable/README.md).
+
 ---
 
 ## Prerequisites

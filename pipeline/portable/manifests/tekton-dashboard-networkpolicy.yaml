@@ -1,0 +1,32 @@
+# pipeline/portable/manifests/tekton-dashboard-networkpolicy.yaml
+#
+# The dashboard Service has no isolation of its own — any pod in any
+# namespace can reach it directly, bypassing the Ingress's basic auth and
+# TLS entirely. Restricts ingress to only the ingress-nginx controller.
+#
+# podSelector matches the Service's own selector exactly (not the
+# simpler `app: tekton-dashboard` label also present) — if a future
+# dashboard version ever drops these labels, the Service breaks too
+# (zero endpoints), instead of this policy silently matching nothing
+# while the Service keeps serving traffic unprotected.
+#
+# Usage: kubectl apply -f pipeline/portable/manifests/tekton-dashboard-networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tekton-dashboard-isolation
+  namespace: tekton-pipelines
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: dashboard
+      app.kubernetes.io/instance: default
+      app.kubernetes.io/name: dashboard
+      app.kubernetes.io/part-of: tekton-dashboard
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx

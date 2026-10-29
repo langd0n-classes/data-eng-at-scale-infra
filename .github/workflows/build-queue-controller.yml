@@ -1,0 +1,37 @@
+name: Build and push spark-queue-controller
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - spark-queue/portable/Dockerfile
+      - spark-queue/portable/requirements.txt
+      - spark-queue/portable/scripts/queue-controller.py
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: spark-queue/portable
+          file: spark-queue/portable/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/langd0n-classes/spark-queue-controller:latest
+            ghcr.io/langd0n-classes/spark-queue-controller:${{ github.sha }}

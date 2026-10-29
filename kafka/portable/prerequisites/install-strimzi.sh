@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # kafka/portable/prerequisites/install-strimzi.sh
 #
-# Cluster-admin, one-time script: installs the Strimzi 0.51.0 Cluster Operator
-# cluster-wide (watches all namespaces) so any newly-created team namespace can
+# Cluster-admin, one-time script: installs the Strimzi Cluster Operator
+# (version pinned in portable/versions.env) cluster-wide (watches all
+# namespaces) so any newly-created team namespace can
 # receive a Ready Kafka CR without a per-team operator install — mirrors how
 # the OpenShift path installs Strimzi via OperatorHub "All namespaces" mode.
 #
@@ -24,7 +25,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
-STRIMZI_VERSION="0.51.0"
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/portable/versions.env"
 CLI_OPERATOR_NAMESPACE="${1:-}"
 if [ -f "${REPO_ROOT}/config.env" ]; then
   source "${REPO_ROOT}/config.env"
@@ -69,6 +71,27 @@ if ! grep -A1 -- '- name: STRIMZI_NAMESPACE' \
   | grep -q 'value: "\*"'; then
   echo "ERROR: could not set STRIMZI_NAMESPACE to \"*\" in the Strimzi ${STRIMZI_VERSION} bundle." >&2
   echo "The operator would watch only ${OPERATOR_NAMESPACE}. Update the patch for this release." >&2
+  exit 1
+fi
+
+echo "Setting STRIMZI_OPERATOR_NAMESPACE_LABELS (restricts generated NetworkPolicies to the real operator namespace)..."
+# Without this, every Kafka CR's generated NetworkPolicy admits the operator
+# via `namespaceSelector: {}` (matches ANY namespace) + a podSelector on the
+# `strimzi.io/kind: cluster-operator` label alone — any team (full `edit` in
+# their own namespace) could forge a pod with that label and reach another
+# team's Kafka. kubernetes.io/metadata.name is immutable and automatically
+# kept in sync with the namespace's real name, so it can't be forged.
+perl -0777 -pi -e \
+  's/(- name: STRIMZI_OPERATOR_NAMESPACE\n\s+valueFrom:\n\s+fieldRef:\n\s+fieldPath: metadata\.namespace\n)/$1            - name: STRIMZI_OPERATOR_NAMESPACE_LABELS\n              value: "kubernetes.io\/metadata.name='"${OPERATOR_NAMESPACE}"'"\n/' \
+  install/cluster-operator/060-Deployment-strimzi-cluster-operator.yaml
+
+echo "Verifying STRIMZI_OPERATOR_NAMESPACE_LABELS patch:"
+grep -A1 STRIMZI_OPERATOR_NAMESPACE_LABELS install/cluster-operator/060-Deployment-strimzi-cluster-operator.yaml
+if ! grep -A1 -- '- name: STRIMZI_OPERATOR_NAMESPACE_LABELS' \
+  install/cluster-operator/060-Deployment-strimzi-cluster-operator.yaml \
+  | grep -q "value: \"kubernetes.io/metadata.name=${OPERATOR_NAMESPACE}\""; then
+  echo "ERROR: could not set STRIMZI_OPERATOR_NAMESPACE_LABELS in the Strimzi ${STRIMZI_VERSION} bundle." >&2
+  echo "Generated NetworkPolicies would admit a forged cluster-operator-labeled pod from any namespace. Update the patch for this release." >&2
   exit 1
 fi
 

@@ -807,6 +807,24 @@ class EventGenerator:
                 logger.error(f"Error in emission loop: {e}")
                 time.sleep(1)
 
+    def reconnect_missing_teams_worker(self):
+        """Every 60s, retries any team still missing from self.producers.
+
+        connect_all_kafka() only tries once, at startup — this is what lets
+        a team recover later without a pod restart.
+        """
+        while self.running:
+            time.sleep(60)
+            if not TEAM_KAFKA_MAPPING:
+                continue
+            missing = [t for t in TEAM_KAFKA_MAPPING if t not in self.producers]
+            for team_id in missing:
+                logger.info(f"Retrying previously-failed Kafka connection for {team_id}...")
+                producer = self.connect_kafka_for_team(team_id, TEAM_KAFKA_MAPPING[team_id])
+                if producer:
+                    self.producers[team_id] = producer
+                    logger.info(f"Recovered Kafka connection for {team_id} — resuming emission to it")
+
     def start(self):
         """Start the event generator."""
         if not self.connect_all_kafka():
@@ -822,6 +840,10 @@ class EventGenerator:
         # Start EmitThread (drains pool to Kafka)
         Thread(target=self.emit_thread_worker, daemon=True).start()
         logger.info("EmitThread started (continuous emission at variable pace)")
+
+        # Start ReconnectThread (retries teams skipped at startup)
+        Thread(target=self.reconnect_missing_teams_worker, daemon=True).start()
+        logger.info("ReconnectThread started (retries any team skipped at startup, every 60s)")
 
         return True
 

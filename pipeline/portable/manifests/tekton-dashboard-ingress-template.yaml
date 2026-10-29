@@ -1,0 +1,50 @@
+# pipeline/portable/manifests/tekton-dashboard-ingress-template.yaml
+#
+# Exposes the read-only Tekton Dashboard through the shared ingress-nginx
+# controller installed by ingress/portable/ — the portable equivalent of an
+# OpenShift Route (item 5), routed through the one ingress-controller
+# LoadBalancer Service required by item 9 (no per-component LoadBalancer).
+#
+# Usage:
+#   envsubst '${DASHBOARD_HOST}' \
+#   < pipeline/portable/manifests/tekton-dashboard-ingress-template.yaml | kubectl apply -f -
+#
+# Required vars: DASHBOARD_HOST — a hostname routed to the ingress-nginx
+# LoadBalancer's external IP (e.g. via /etc/hosts on Kind, or real DNS on a
+# cloud cluster).
+#
+# Requires two Secrets to already exist in this same namespace
+# (tekton-pipelines) — never created by any script, same manual posture
+# as ghcr-pull-secret (see portable/README.md's "Before you start"):
+#   - tekton-dashboard-auth: an Opaque Secret with a single `auth` key
+#     holding an htpasswd-format (bcrypt) line — basic-auth credential.
+#   - tekton-dashboard-tls: a kubernetes.io/tls Secret — a cert/key pair
+#     whose SAN matches DASHBOARD_HOST.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tekton-dashboard
+  namespace: tekton-pipelines
+  labels:
+    app: tekton-dashboard
+  annotations:
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: tekton-dashboard-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Tekton Dashboard - Authorized Staff Only"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ${DASHBOARD_HOST}
+      secretName: tekton-dashboard-tls
+  rules:
+    - host: ${DASHBOARD_HOST}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: tekton-dashboard
+                port:
+                  number: 9097
