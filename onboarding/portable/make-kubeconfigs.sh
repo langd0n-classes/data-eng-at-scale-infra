@@ -30,15 +30,24 @@ OUT_DIR="${1:?Usage: make-kubeconfigs.sh OUTPUT_DIR}"
 source "${ONBOARDING_DIR}/cluster.env"
 FIRST_TEAM="${FIRST_TEAM:-0}"
 
-# Refuse an output directory that Git would track. The directory may not
-# exist yet, so check from its nearest existing ancestor.
+# Refuse any output file that Git would track. The directory may not exist
+# yet, so check from its nearest existing ancestor, and check every file
+# this script writes: an ignore rule can exclude one file from a pattern.
 OUT_DIR="$(realpath -m "${OUT_DIR}")"
 PROBE="${OUT_DIR}"
 while [[ ! -d "${PROBE}" ]]; do PROBE="$(dirname "${PROBE}")"; done
-if git -C "${PROBE}" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-   && ! git -C "${PROBE}" check-ignore -q "${OUT_DIR}/probe.kubeconfig"; then
-  echo "ERROR: ${OUT_DIR} is inside a Git working tree and is not ignored." >&2
-  exit 1
+OUT_FILES=("${OUT_DIR}/staff.kubeconfig")
+for i in $(seq "${FIRST_TEAM}" "${NUM_TEAMS}"); do
+  OUT_FILES+=("${OUT_DIR}/${TEAM_NAMESPACE_PREFIX}-$(printf '%02d' "$i").kubeconfig")
+done
+if git -C "${PROBE}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  for f in "${OUT_FILES[@]}"; do
+    if git -C "${PROBE}" ls-files --error-unmatch "${f}" >/dev/null 2>&1 \
+       || ! git -C "${PROBE}" check-ignore -q --no-index "${f}"; then
+      echo "ERROR: Git would track ${f}." >&2
+      exit 1
+    fi
+  done
 fi
 mkdir -p "${OUT_DIR}"
 chmod 700 "${OUT_DIR}"
