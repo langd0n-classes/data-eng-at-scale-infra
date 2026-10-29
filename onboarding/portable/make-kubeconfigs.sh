@@ -30,16 +30,26 @@ OUT_DIR="${1:?Usage: make-kubeconfigs.sh OUTPUT_DIR}"
 source "${ONBOARDING_DIR}/cluster.env"
 FIRST_TEAM="${FIRST_TEAM:-0}"
 
-if git -C "${OUT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-   && ! git -C "${OUT_DIR}" check-ignore -q "${OUT_DIR}"; then
+# Refuse an output directory that Git would track. The directory may not
+# exist yet, so check from its nearest existing ancestor.
+OUT_DIR="$(realpath -m "${OUT_DIR}")"
+PROBE="${OUT_DIR}"
+while [[ ! -d "${PROBE}" ]]; do PROBE="$(dirname "${PROBE}")"; done
+if git -C "${PROBE}" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+   && ! git -C "${PROBE}" check-ignore -q "${OUT_DIR}/probe.kubeconfig"; then
   echo "ERROR: ${OUT_DIR} is inside a Git working tree and is not ignored." >&2
   exit 1
 fi
 mkdir -p "${OUT_DIR}"
 chmod 700 "${OUT_DIR}"
 
-SERVER="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
-CA_DATA="$(kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')"
+# --flatten embeds the CA even when the current kubeconfig points at a file.
+SERVER="$(kubectl config view --minify --raw --flatten -o jsonpath='{.clusters[0].cluster.server}')"
+CA_DATA="$(kubectl config view --minify --raw --flatten -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')"
+if [[ -z "${CA_DATA}" ]]; then
+  echo "ERROR: the current kubeconfig has no cluster CA to embed." >&2
+  exit 1
+fi
 
 ensure_token_secret() {
   local ns="$1" sa="$2"
@@ -67,8 +77,11 @@ write_kubeconfig() {
   local file="$1" name="$2" ns="$3" sa="$4"
   local token
   token="$(kubectl get secret "${sa}-token" -n "${ns}" -o jsonpath='{.data.token}' | base64 -d)"
-  umask 077
-  cat > "${file}" <<EOF
+  # Write a new 0600 file and move it into place, so a rewrite never keeps
+  # the mode of an older, more open file.
+  local tmp
+  tmp="$(umask 077 && mktemp "${file}.XXXXXX")"
+  cat > "${tmp}" <<EOF
 apiVersion: v1
 kind: Config
 clusters:
@@ -88,6 +101,8 @@ contexts:
       namespace: ${5:-${ns}}
 current-context: ${name}
 EOF
+  chmod 600 "${tmp}"
+  mv -f "${tmp}" "${file}"
 }
 
 # Staff ServiceAccount and its bindings.
