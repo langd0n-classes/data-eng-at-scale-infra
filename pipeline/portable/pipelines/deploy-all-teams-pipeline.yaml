@@ -263,6 +263,10 @@ spec:
           value: $(params.STORAGE_CLASS)
         - name: VOLUME_SIZE
           value: $(params.VOLUME_SIZE)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
       workspaces:
         - name: source
           workspace: source
@@ -284,6 +288,10 @@ spec:
           value: $(params.STORAGE_CLASS)
         - name: VOLUME_SIZE
           value: $(params.VOLUME_SIZE)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
       workspaces:
         - name: source
           workspace: source
@@ -305,6 +313,10 @@ spec:
           value: $(params.STORAGE_CLASS)
         - name: VOLUME_SIZE
           value: $(params.VOLUME_SIZE)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
       workspaces:
         - name: source
           workspace: source
@@ -326,6 +338,10 @@ spec:
           value: $(params.STORAGE_CLASS)
         - name: VOLUME_SIZE
           value: $(params.VOLUME_SIZE)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
       workspaces:
         - name: source
           workspace: source
@@ -347,6 +363,10 @@ spec:
           value: $(params.STORAGE_CLASS)
         - name: VOLUME_SIZE
           value: $(params.VOLUME_SIZE)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
       workspaces:
         - name: source
           workspace: source
@@ -368,6 +388,10 @@ spec:
           value: $(params.STORAGE_CLASS)
         - name: VOLUME_SIZE
           value: $(params.VOLUME_SIZE)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
       workspaces:
         - name: source
           workspace: source
@@ -389,6 +413,10 @@ spec:
           value: $(params.STORAGE_CLASS)
         - name: VOLUME_SIZE
           value: $(params.VOLUME_SIZE)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
       workspaces:
         - name: source
           workspace: source
@@ -410,6 +438,10 @@ spec:
           value: $(params.STORAGE_CLASS)
         - name: VOLUME_SIZE
           value: $(params.VOLUME_SIZE)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
       workspaces:
         - name: source
           workspace: source
@@ -431,6 +463,10 @@ spec:
           value: $(params.STORAGE_CLASS)
         - name: VOLUME_SIZE
           value: $(params.VOLUME_SIZE)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
       workspaces:
         - name: source
           workspace: source
@@ -452,6 +488,10 @@ spec:
           value: $(params.STORAGE_CLASS)
         - name: VOLUME_SIZE
           value: $(params.VOLUME_SIZE)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
       workspaces:
         - name: source
           workspace: source
@@ -473,6 +513,10 @@ spec:
           value: $(params.STORAGE_CLASS)
         - name: VOLUME_SIZE
           value: $(params.VOLUME_SIZE)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
       workspaces:
         - name: source
           workspace: source
@@ -494,6 +538,10 @@ spec:
           value: $(params.STORAGE_CLASS)
         - name: VOLUME_SIZE
           value: $(params.VOLUME_SIZE)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
       workspaces:
         - name: source
           workspace: source
@@ -515,6 +563,10 @@ spec:
           value: $(params.STORAGE_CLASS)
         - name: VOLUME_SIZE
           value: $(params.VOLUME_SIZE)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
       workspaces:
         - name: source
           workspace: source
@@ -536,6 +588,10 @@ spec:
           value: $(params.STORAGE_CLASS)
         - name: VOLUME_SIZE
           value: $(params.VOLUME_SIZE)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
       workspaces:
         - name: source
           workspace: source
@@ -557,6 +613,10 @@ spec:
           value: $(params.STORAGE_CLASS)
         - name: VOLUME_SIZE
           value: $(params.VOLUME_SIZE)
+        - name: TOPIC_PREFIX
+          value: $(params.TOPIC_PREFIX)
+        - name: TOPIC_SUFFIX
+          value: $(params.TOPIC_SUFFIX)
       workspaces:
         - name: source
           workspace: source

@@ -35,7 +35,7 @@ SKIP_RBAC=false
 TEAMS_ONLY=false
 INFRA_ONLY=false
 DRY_RUN=false
-FROM_TEAM=1
+FROM_TEAM=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -79,6 +79,10 @@ fi
 
 source "$CONFIG_FILE"
 
+# Team numbers run from FIRST_TEAM to NUM_TEAMS. The default first team is
+# 00, the staff reference team, which staff use to test the student
+# experience. --from-team overrides it for one run.
+FROM_TEAM="${FROM_TEAM:-${FIRST_TEAM:-0}}"
 ONBOARDING_NUM_TEAMS="${NUM_TEAMS}"
 
 # Provider-specific values (StorageClass, LoadBalancer behavior, the
@@ -247,6 +251,11 @@ if [[ "$INFRA_ONLY" == "false" ]]; then
         INFRA_ADMIN_GROUP='${INFRA_ADMIN_GROUP}' TEAM_GROUP_SUFFIX='${TEAM_GROUP_SUFFIX}' \
         envsubst '\${TEAM_NAMESPACE_PREFIX} \${TEAM_ID} \${INFRA_ADMIN_GROUP} \${TEAM_GROUP_SUFFIX}' \
         < '${ONBOARDING_DIR}/portable/manifests/09-team-rbac.yaml' | kubectl apply -f -"
+
+      run "TEAM_NAMESPACE_PREFIX='${TEAM_NAMESPACE_PREFIX}' TEAM_ID='${TEAM_ID}' \
+        TEAM_GROUP_SUFFIX='${TEAM_GROUP_SUFFIX}' \
+        envsubst '\${TEAM_NAMESPACE_PREFIX} \${TEAM_ID} \${TEAM_GROUP_SUFFIX}' \
+        < '${ONBOARDING_DIR}/portable/manifests/11-team-kafka-role.yaml' | kubectl apply -f -"
     fi
 
     run "TEAM_NAMESPACE_PREFIX='${TEAM_NAMESPACE_PREFIX}' TEAM_ID='${TEAM_ID}' INFRA_NAMESPACE='${INFRA_NAMESPACE}' \

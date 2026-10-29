@@ -35,6 +35,18 @@ spec:
       type: string
     - name: VOLUME_SIZE
       type: string
+    - name: TOPIC_PREFIX
+      description: Raw topic name prefix, as the event generator uses it
+      type: string
+      default: "events."
+    - name: TOPIC_SUFFIX
+      description: Raw topic name suffix, as the event generator uses it
+      type: string
+      default: ".raw"
+    - name: KAFKA_CLI_IMAGE
+      description: Image with the Kafka command-line tools, matching the broker
+      type: string
+      default: quay.io/strimzi/kafka:0.51.0-kafka-4.2.0
   workspaces:
     - name: source
       description: Git-cloned copy of this repo
@@ -48,3 +60,26 @@ spec:
         bash kafka/portable/scripts/deploy.sh \
           "$(params.TEAM_NAME)" "$(params.TEAM_NAMESPACE)" \
           "$(params.STORAGE_CLASS)" "$(params.VOLUME_SIZE)"
+    # The team's raw topic keeps every event for the whole term: later
+    # project phases read the team's full history. The broker default
+    # (24 hours or 100 MB) still applies to topics that teams create.
+    # Runs after the Kafka is Ready, and is safe to repeat: it creates the
+    # topic when it is missing and sets its retention either way.
+    - name: raw-topic-retention
+      image: $(params.KAFKA_CLI_IMAGE)
+      env:
+        - name: KAFKA_HEAP_OPTS
+          value: "-Xmx256m"
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        BOOTSTRAP="kafka-$(params.TEAM_NAME)-kafka-bootstrap.$(params.TEAM_NAMESPACE).svc:9092"
+        TOPIC="$(params.TOPIC_PREFIX)$(params.TEAM_NAME)$(params.TOPIC_SUFFIX)"
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server "${BOOTSTRAP}" \
+          --create --if-not-exists --topic "${TOPIC}" --partitions 1 \
+          --config retention.ms=-1 --config retention.bytes=-1
+        /opt/kafka/bin/kafka-configs.sh --bootstrap-server "${BOOTSTRAP}" \
+          --alter --entity-type topics --entity-name "${TOPIC}" \
+          --add-config retention.ms=-1,retention.bytes=-1
+        /opt/kafka/bin/kafka-configs.sh --bootstrap-server "${BOOTSTRAP}" \
+          --describe --entity-type topics --entity-name "${TOPIC}"

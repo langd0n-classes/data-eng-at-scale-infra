@@ -107,9 +107,11 @@ whisker     True        False         False
 **2. Onboard your team namespaces + infra**
 
 (Assumes `onboarding/cluster.env` is already set up — see "Note on
-config.env" near the top of this file. The example below uses
-`NUM_TEAMS=2`; set it to however many teams you actually want and the same
-two commands create that many `team-NN` namespaces instead.)
+config.env" near the top of this file. Team namespaces run from
+`FIRST_TEAM` to `NUM_TEAMS`, inclusive. `FIRST_TEAM` defaults to `0`:
+`team-00` is the staff reference team, where staff test the student
+experience and keep the reference solution. The example below uses
+`NUM_TEAMS=2`, which creates `team-00`, `team-01`, and `team-02`.)
 
 ```bash
 bash onboarding/portable/apply-onboarding.sh --dry-run   # preview commands, no changes
@@ -118,6 +120,7 @@ bash onboarding/portable/apply-onboarding.sh             # actually create every
 ```
 Namespaces created:
    infra
+   team-00
    team-01
    team-02
 ```
@@ -327,6 +330,30 @@ identity provider wired up by default, and every command above ran as the
 cluster-admin kubeconfig user) — this is a known limitation of the local
 proof, not a gap in the RBAC manifests themselves, which are identical in
 shape to the already-working OpenShift ones.
+
+## Team and Staff Kubeconfigs
+
+On a cluster whose authentication cannot assert group membership, give each
+team a kubeconfig for its namespace's `team-workload` ServiceAccount, and
+give staff one kubeconfig for every team namespace:
+
+```bash
+bash onboarding/portable/make-kubeconfigs.sh OUTPUT_DIR
+```
+
+The script writes `team-NN.kubeconfig` for each team and
+`staff.kubeconfig`, with mode `0600`.
+It refuses an `OUTPUT_DIR` that Git would track.
+Each file holds a long-lived token: share each team's file with that team
+only.
+
+- A team kubeconfig has `edit` and the `team-kafka` Role in the team's
+  namespace, and nothing outside it.
+- The staff kubeconfig has `edit` and the `team-kafka` Role in every team
+  namespace, and `edit` in the infra namespace.
+- To revoke a token, delete its Secret, for example
+  `kubectl delete secret team-workload-token -n team-03`, then run the
+  script again to issue a new one.
 
 ## Cleanup
 
