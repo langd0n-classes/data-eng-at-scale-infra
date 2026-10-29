@@ -251,6 +251,11 @@ if [[ "$INFRA_ONLY" == "false" ]]; then
         INFRA_ADMIN_GROUP='${INFRA_ADMIN_GROUP}' TEAM_GROUP_SUFFIX='${TEAM_GROUP_SUFFIX}' \
         envsubst '\${TEAM_NAMESPACE_PREFIX} \${TEAM_ID} \${INFRA_ADMIN_GROUP} \${TEAM_GROUP_SUFFIX}' \
         < '${ONBOARDING_DIR}/portable/manifests/09-team-rbac.yaml' | kubectl apply -f -"
+
+      run "TEAM_NAMESPACE_PREFIX='${TEAM_NAMESPACE_PREFIX}' TEAM_ID='${TEAM_ID}' \
+        TEAM_GROUP_SUFFIX='${TEAM_GROUP_SUFFIX}' \
+        envsubst '\${TEAM_NAMESPACE_PREFIX} \${TEAM_ID} \${TEAM_GROUP_SUFFIX}' \
+        < '${ONBOARDING_DIR}/portable/manifests/11-team-kafka-role.yaml' | kubectl apply -f -"
     fi
 
     run "TEAM_NAMESPACE_PREFIX='${TEAM_NAMESPACE_PREFIX}' TEAM_ID='${TEAM_ID}' INFRA_NAMESPACE='${INFRA_NAMESPACE}' \

@@ -1,0 +1,35 @@
+# Lets a team manage Kafka topics and read its Kafka's status in its own
+# namespace. The built-in `edit` ClusterRole does not cover Strimzi
+# resources. Restarting the team's broker needs only `delete pods`, which
+# `edit` already grants.
+#
+# Variables: TEAM_NAMESPACE_PREFIX, TEAM_ID, TEAM_GROUP_SUFFIX
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: team-kafka
+  namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+rules:
+  - apiGroups: ["kafka.strimzi.io"]
+    resources: ["kafkatopics"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["kafka.strimzi.io"]
+    resources: ["kafkas", "kafkanodepools"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: team-kafka
+  namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+subjects:
+  - kind: Group
+    name: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}-${TEAM_GROUP_SUFFIX}
+    apiGroup: rbac.authorization.k8s.io
+  - kind: ServiceAccount
+    name: team-workload
+    namespace: ${TEAM_NAMESPACE_PREFIX}-${TEAM_ID}
+roleRef:
+  kind: Role
+  name: team-kafka
+  apiGroup: rbac.authorization.k8s.io
