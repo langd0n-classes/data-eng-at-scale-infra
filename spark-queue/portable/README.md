@@ -43,11 +43,9 @@ admit their own 4.
 **Submission is validated, not just conventional** — one policy rejects a
 Job using the Spark image or the `queue: spark` label unless it already
 has `suspend: true`, the label, `activeDeadlineSeconds` in 1-7200,
-`parallelism <= 1`, and `ttlSecondsAfterFinished <= 86400`. Nothing
-rejects an ownerless Pod: students use `kubectl run` for one-off checks.
-A Spark run started from a bare Pod or with `spark-submit --master k8s://`
-is therefore not queued; the course instructions tell teams to start every
-Spark run from the Job template and not to use `--master k8s://`.
+`parallelism <= 1`, and `ttlSecondsAfterFinished <= 86400`. A Spark run
+started from a bare Pod or with `spark-submit --master k8s://` bypasses the
+queue; the course instructions require the Job template.
 
 ## Before you start: update config.env
 

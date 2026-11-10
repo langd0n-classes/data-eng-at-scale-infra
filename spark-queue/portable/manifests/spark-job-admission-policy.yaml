@@ -13,10 +13,8 @@
 # controller's own stuck-job patch (activeDeadlineSeconds: 1), which stays
 # well inside the cap.
 #
-# There is no policy against ownerless Pods: students use `kubectl run` for
-# one-off checks. A Spark run started from a bare Pod or with
-# `--master k8s://` is not queued; the course rules ask teams to use the
-# Job template instead.
+# A Spark run started from a bare Pod or with `--master k8s://` bypasses
+# the queue; the course instructions require the Job template.
 #
 # `MutatingAdmissionPolicy` isn't available on this cluster (alpha/beta,
 # not enabled) — both policies reject non-compliant submissions outright
