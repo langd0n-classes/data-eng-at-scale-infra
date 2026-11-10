@@ -152,7 +152,8 @@ prompt for a sudo password mid-run, and can't leave a daemon running
 past its own exit). See `ingress/portable/README.md` for more.
 
 > Students submit Spark jobs using
-> `spark-queue/portable/manifests/team-spark-job-template.yaml` — it
+> `spark-queue/portable/manifests/team-spark-job-template.yaml` (course
+> team repositories carry their own version as `spark/job.yaml`) — it
 > already sets the three things required together for a Spark job to be
 > accepted and actually run: an image matching `SPARK_IMAGE` from
 > `config.env`, `spec.suspend: true`, and the `queue: spark` label. A
