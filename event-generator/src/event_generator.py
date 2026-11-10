@@ -62,14 +62,14 @@ SYMPTOM_BURDEN_DECAY = max(0.001, min(0.9999, float(os.getenv('SYMPTOM_BURDEN_DE
 # Share of sent events that break the event contract, so that teams can test
 # their quarantine and error handling on live data. 0 turns it off.
 def _bad_event_rate() -> float:
-    raw = os.getenv('BAD_EVENT_RATE', '0.005')
+    raw = os.getenv('BAD_EVENT_RATE', '0.0175')
     try:
         rate = float(raw)
     except ValueError:
         rate = float('nan')
     if not 0.0 <= rate <= 1.0:  # also rejects NaN
-        logger.warning(f"BAD_EVENT_RATE={raw!r} is not a number from 0 to 1; using 0.005")
-        rate = 0.005
+        logger.warning(f"BAD_EVENT_RATE={raw!r} is not a number from 0 to 1; using 0.0175")
+        rate = 0.0175
     return rate
 
 
