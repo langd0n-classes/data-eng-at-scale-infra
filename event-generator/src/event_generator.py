@@ -61,7 +61,19 @@ SYMPTOM_BURDEN_DECAY = max(0.001, min(0.9999, float(os.getenv('SYMPTOM_BURDEN_DE
 
 # Share of sent events that break the event contract, so that teams can test
 # their quarantine and error handling on live data. 0 turns it off.
-BAD_EVENT_RATE = max(0.0, min(1.0, float(os.getenv('BAD_EVENT_RATE', '0.005'))))
+def _bad_event_rate() -> float:
+    raw = os.getenv('BAD_EVENT_RATE', '0.005')
+    try:
+        rate = float(raw)
+    except ValueError:
+        rate = float('nan')
+    if not 0.0 <= rate <= 1.0:  # also rejects NaN
+        logger.warning(f"BAD_EVENT_RATE={raw!r} is not a number from 0 to 1; using 0.005")
+        rate = 0.005
+    return rate
+
+
+BAD_EVENT_RATE = _bad_event_rate()
 BAD_EVENT_KINDS = ['not_json', 'missing_field', 'wrong_type', 'unknown_type',
                    'out_of_range', 'bad_timestamp']
 
@@ -177,7 +189,7 @@ def make_bad_event(event: dict):
         text = json.dumps(bad)
         return text[:random.randint(1, len(text) - 1)].encode('utf-8')
     if kind == 'missing_field':
-        del bad[random.choice(['event_type', 'timestamp', 'region'])]
+        bad.pop(random.choice(['event_type', 'timestamp', 'region']), None)
     elif kind == 'wrong_type':
         bad['age'] = random.choice(['N/A', 'unknown', 'forty'])
     elif kind == 'unknown_type':

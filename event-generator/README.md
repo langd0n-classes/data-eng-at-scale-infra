@@ -375,6 +375,7 @@ All configuration is done via `config.env`. Key settings:
 | `BASE_BEDS` | Hospital bed capacity for pressure model | `500` |
 | `BED_PRESSURE_FACTOR` | Symptom burden effect on available beds | `0.8` |
 | `SYMPTOM_BURDEN_DECAY` | Exponential decay rate for symptom burden | `0.995` |
+| `BAD_EVENT_RATE` | Share of sent events that break the event contract (bad JSON, missing field, wrong type, unknown `event_type`, out-of-range age, bad timestamp); `0` turns it off. To change it on a running cluster, add the key to the generator ConfigMap and restart the Deployment | `0.005` |
 
 **Topic naming pattern:**
 - Multi-team: `${TOPIC_PREFIX}${TEAM_ID}${TOPIC_SUFFIX}` → `events.team01.raw`
