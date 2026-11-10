@@ -132,8 +132,7 @@ next.
 **5. Confirm a real Ingress in a team namespace actually routes traffic**
 
 Requires `onboarding/portable/` already applied (team namespaces + their
-NetworkPolicy must exist first). Team namespaces deny any ownerless Pod
-(`spark-bare-pod-policy`), so the web target needs an owner, and the
+NetworkPolicy must exist first). The web target is a Deployment, and the
 host must start with the namespace's own name
 (`team-ingress-host-policy`, below) — a throwaway Deployment, Service,
 and Ingress in `team-01`:

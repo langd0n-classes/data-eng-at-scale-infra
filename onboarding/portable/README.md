@@ -163,9 +163,7 @@ Error from server (Forbidden): pods "test" is forbidden: violates PodSecurity "b
 
 **3. Test cross-team isolation, for real**
 
-Team namespaces deny any ownerless Pod (`spark-bare-pod-policy`, closes a
-Spark-queue bypass — see `spark-queue/portable/`), so the probe pods here
-need an owner: a Deployment for the web targets, a Job for the clients.
+The probes use a Deployment for the web targets and a Job for the clients.
 
 ```bash
 # a small web service in each team namespace, to test reachability against

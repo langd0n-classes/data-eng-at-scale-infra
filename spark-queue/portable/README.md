@@ -43,10 +43,11 @@ admit their own 4.
 **Submission is validated, not just conventional** — one policy rejects a
 Job using the Spark image or the `queue: spark` label unless it already
 has `suspend: true`, the label, `activeDeadlineSeconds` in 1-7200,
-`parallelism <= 1`, and `ttlSecondsAfterFinished <= 86400`. A second
-policy rejects any ownerless Pod in a team namespace regardless of image
-— covers a custom-built Spark image and `spark-submit --master k8s://`'s
-ownerless driver Pod, both of which would otherwise dodge the queue.
+`parallelism <= 1`, and `ttlSecondsAfterFinished <= 86400`. Nothing
+rejects an ownerless Pod: students use `kubectl run` for one-off checks.
+A Spark run started from a bare Pod or with `spark-submit --master k8s://`
+is therefore not queued; the course instructions tell teams to start every
+Spark run from the Job template and not to use `--master k8s://`.
 
 ## Before you start: update config.env
 
@@ -86,8 +87,6 @@ envsubst '${SPARK_IMAGE_REPO} ${INFRA_NAMESPACE}' < spark-queue/portable/manifes
 deployment.apps/spark-queue-controller condition met
 validatingadmissionpolicy.admissionregistration.k8s.io/spark-job-queue-policy created
 validatingadmissionpolicybinding.admissionregistration.k8s.io/spark-job-queue-policy-binding created
-validatingadmissionpolicy.admissionregistration.k8s.io/spark-bare-pod-policy created
-validatingadmissionpolicybinding.admissionregistration.k8s.io/spark-bare-pod-policy-binding created
 ```
 
 **2. A compliant Job runs**
@@ -125,9 +124,9 @@ EOF
 ```
 ```
 The jobs "evasion-test" is invalid: : ValidatingAdmissionPolicy 'spark-job-queue-policy'
-with binding 'spark-job-queue-policy-binding' denied request: Use
-spark-queue/portable/manifests/team-spark-job-template.yaml — it sets
-spec.suspend: true so the queue controller can admit it.
+with binding 'spark-job-queue-policy-binding' denied request: Spark Jobs
+must set spec.suspend: true so the queue controller can admit them. Start
+from the Spark Job template (spark/job.yaml in a team repository).
 ```
 
 **4. A non-Spark Job in the same namespace is unaffected**

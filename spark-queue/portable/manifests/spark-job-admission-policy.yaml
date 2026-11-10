@@ -1,28 +1,22 @@
 # spark-queue/portable/manifests/spark-job-admission-policy.yaml
 #
-# Two ValidatingAdmissionPolicies:
+# One ValidatingAdmissionPolicy, spark-job-queue-policy. It matches a Job in
+# a team namespace using the Spark image (any repo/tag/digest form) or
+# carrying the `queue: spark` label (covers a team's own differently-named
+# Spark-based image, which can't be detected from the image string).
+# Requires `suspend: true`, the label, `activeDeadlineSeconds` in 1-7200,
+# `parallelism <= 1`, and `ttlSecondsAfterFinished <= 86400`. Only the queue
+# controller's own ServiceAccount may change `suspend` or the label after
+# creation — `edit` RBAC alone can still patch/relabel an existing Job, but
+# this policy blocks that unless it's the controller itself. The other caps
+# apply to CREATE and UPDATE regardless of identity, including to the
+# controller's own stuck-job patch (activeDeadlineSeconds: 1), which stays
+# well inside the cap.
 #
-# 1. spark-job-queue-policy — matches a Job in a team namespace using the
-#    Spark image (any repo/tag/digest form) or carrying the `queue: spark`
-#    label (covers a team's own differently-named Spark-based image, which
-#    can't be detected from the image string). Requires `suspend: true`,
-#    the label, `activeDeadlineSeconds` in 1-7200, `parallelism <= 1`, and
-#    `ttlSecondsAfterFinished <= 86400`. Only the queue controller's own
-#    ServiceAccount may change `suspend` or the label after creation —
-#    `edit` RBAC alone can still patch/relabel an existing Job, but this
-#    policy blocks that unless it's the controller itself. The other caps
-#    apply to CREATE and UPDATE regardless of identity, including to the
-#    controller's own stuck-job patch (activeDeadlineSeconds: 1), which
-#    stays well inside the cap.
-#
-# 2. spark-bare-pod-policy — denies any ownerless Pod in a team namespace,
-#    regardless of image (a custom-built Spark image wouldn't be caught by
-#    name matching). Every legitimate Pod already has an owner (Kafka via
-#    Strimzi, Spark via the Job template), so a bare Pod has no legitimate
-#    reason to exist. Also catches `--master k8s://`'s externally-spawned
-#    driver Pod the same way, so Spark cluster mode ends up unsupported as
-#    a side effect. Client-mode executors stay allowed — Spark's own k8s
-#    backend sets their owner to the driver Pod.
+# There is no policy against ownerless Pods: students use `kubectl run` for
+# one-off checks. A Spark run started from a bare Pod or with
+# `--master k8s://` is not queued; the course rules ask teams to use the
+# Job template instead.
 #
 # `MutatingAdmissionPolicy` isn't available on this cluster (alpha/beta,
 # not enabled) — both policies reject non-compliant submissions outright
@@ -33,7 +27,7 @@
 #   envsubst '${SPARK_IMAGE_REPO} ${INFRA_NAMESPACE}' \
 #   < spark-queue/portable/manifests/spark-job-admission-policy.yaml | kubectl apply -f -
 #
-# Required vars: SPARK_IMAGE_REPO (policy 1 only, must match
+# Required vars: SPARK_IMAGE_REPO (must match
 # team-spark-job-template.yaml), INFRA_NAMESPACE
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -58,21 +52,22 @@ spec:
   validations:
     - expression: "request.operation != 'CREATE' || object.spec.suspend == true"
       message: >-
-        Use spark-queue/portable/manifests/team-spark-job-template.yaml —
-        it sets spec.suspend: true so the queue controller can admit it.
+        Spark Jobs must set spec.suspend: true so the queue controller can
+        admit them. Start from the Spark Job template (spark/job.yaml in a
+        team repository).
     - expression: >-
         request.operation != 'CREATE' ||
         (has(object.metadata.labels) && 'queue' in object.metadata.labels && object.metadata.labels['queue'] == 'spark')
       message: >-
-        Spark Jobs must carry the 'queue: spark' label — use
-        spark-queue/portable/manifests/team-spark-job-template.yaml.
+        Spark Jobs must carry the 'queue: spark' label. Start from the
+        Spark Job template (spark/job.yaml in a team repository).
     - expression: >-
         has(object.spec.activeDeadlineSeconds) &&
         object.spec.activeDeadlineSeconds > 0 &&
         object.spec.activeDeadlineSeconds <= 7200
       message: >-
         spec.activeDeadlineSeconds must be between 1 and 7200
-        (team-spark-job-template.yaml already does this).
+        (the Spark Job template already does this).
     - expression: "!has(object.spec.parallelism) || object.spec.parallelism <= 1"
       message: "spec.parallelism must not exceed 1."
     - expression: >-
@@ -95,38 +90,6 @@ metadata:
   name: spark-job-queue-policy-binding
 spec:
   policyName: spark-job-queue-policy
-  validationActions: ["Deny"]
-  matchResources:
-    namespaceSelector:
-      matchExpressions:
-        - key: team
-          operator: Exists
----
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingAdmissionPolicy
-metadata:
-  name: spark-bare-pod-policy
-spec:
-  failurePolicy: Fail
-  matchConstraints:
-    resourceRules:
-      - apiGroups: [""]
-        apiVersions: ["v1"]
-        operations: ["CREATE"]
-        resources: ["pods"]
-  validations:
-    - expression: "has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0"
-      message: >-
-        Bare Pods aren't allowed in team namespaces — Spark jobs go through
-        team-spark-job-template.yaml; anything else needs a Job/Deployment/
-        StatefulSet to own its Pods.
----
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingAdmissionPolicyBinding
-metadata:
-  name: spark-bare-pod-policy-binding
-spec:
-  policyName: spark-bare-pod-policy
   validationActions: ["Deny"]
   matchResources:
     namespaceSelector:
