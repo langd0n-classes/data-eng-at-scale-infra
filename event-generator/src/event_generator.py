@@ -753,6 +753,10 @@ class EventGenerator:
                 else:  # baseline
                     sleep_time = random.uniform(_base_sleep * 2.0, _base_sleep * 4.0)
 
+                # Stamp the event when it is sent. The refill thread builds a
+                # 6-hour batch at once, so a build-time stamp put every event
+                # in a batch at the same moment.
+                event['timestamp'] = datetime.now(timezone.utc).isoformat()
                 event['source'] = 'event-generator'
                 event['schema_version'] = '1.0'
 
