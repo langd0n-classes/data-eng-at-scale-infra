@@ -59,6 +59,12 @@ BASE_BEDS = max(1, int(os.getenv('BASE_BEDS', '500')))
 BED_PRESSURE_FACTOR = max(0.01, float(os.getenv('BED_PRESSURE_FACTOR', '0.8')))
 SYMPTOM_BURDEN_DECAY = max(0.001, min(0.9999, float(os.getenv('SYMPTOM_BURDEN_DECAY', '0.995'))))
 
+# Share of sent events that break the event contract, so that teams can test
+# their quarantine and error handling on live data. 0 turns it off.
+BAD_EVENT_RATE = max(0.0, min(1.0, float(os.getenv('BAD_EVENT_RATE', '0.005'))))
+BAD_EVENT_KINDS = ['not_json', 'missing_field', 'wrong_type', 'unknown_type',
+                   'out_of_range', 'bad_timestamp']
+
 # Parse team bootstrap servers from environment
 TEAM_KAFKA_MAPPING = {}
 team_bootstrap_env = os.getenv('TEAM_BOOTSTRAP_SERVERS', '')
@@ -159,6 +165,30 @@ def baseline_event_weights() -> dict:
     }
 
 
+def make_bad_event(event: dict):
+    """Return a copy of the event that breaks the contract in one way.
+
+    Returns bytes for an event that is not valid JSON, and a dict otherwise.
+    The bad event carries no marker: a consumer must find it by validation.
+    """
+    kind = random.choice(BAD_EVENT_KINDS)
+    bad = dict(event)
+    if kind == 'not_json':
+        text = json.dumps(bad)
+        return text[:random.randint(1, len(text) - 1)].encode('utf-8')
+    if kind == 'missing_field':
+        del bad[random.choice(['event_type', 'timestamp', 'region'])]
+    elif kind == 'wrong_type':
+        bad['age'] = random.choice(['N/A', 'unknown', 'forty'])
+    elif kind == 'unknown_type':
+        bad['event_type'] = random.choice(['symptom_reprot', 'clinic visit', 'lab_result', 'TEST'])
+    elif kind == 'out_of_range':
+        bad['age'] = random.choice([-7, -1, 212, 999])
+    else:  # bad_timestamp
+        bad['timestamp'] = random.choice(['yesterday', '2026-13-45T25:61:00Z', 'not a time', ''])
+    return bad
+
+
 def normalize_weights(weights: dict) -> dict:
     """Normalize weights to sum to 1.0."""
     total = sum(weights.values())
@@ -243,7 +273,8 @@ class EventGenerator:
             try:
                 producer = KafkaProducer(
                     bootstrap_servers=[bootstrap_server],
-                    value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+                    # Bytes pass through unchanged: make_bad_event sends broken JSON.
+                    value_serializer=lambda v: v if isinstance(v, bytes) else json.dumps(v).encode('utf-8'),
                     acks='all',
                     retries=3,
                     max_in_flight_requests_per_connection=1
@@ -727,6 +758,7 @@ class EventGenerator:
         """Emit thread: drains pool to Kafka at variable pace based on outbreak profile."""
         logger.info(f"Starting emission to {len(self.producers)} teams")
         event_count = 0
+        bad_count = 0
         failed_sends = {}
         _burden_cap = BASE_BEDS / BED_PRESSURE_FACTOR
         _last_burden_decay_time = time.monotonic()
@@ -760,6 +792,13 @@ class EventGenerator:
                 event['source'] = 'event-generator'
                 event['schema_version'] = '1.0'
 
+                # Every team gets the same value, so a bad event is the same
+                # for all teams.
+                value = event
+                if BAD_EVENT_RATE and random.random() < BAD_EVENT_RATE:
+                    value = make_bad_event(event)
+                    bad_count += 1
+
                 # Send to all teams
                 for team_id, producer in self.producers.items():
                     if team_id == 'shared':
@@ -776,7 +815,7 @@ class EventGenerator:
                         failed_sends.pop(tid, None)
 
                     try:
-                        producer.send(topic, value=event).add_callback(_on_success).add_errback(_on_error)
+                        producer.send(topic, value=value).add_callback(_on_success).add_errback(_on_error)
                     except Exception as e:
                         _on_error(e)
 
@@ -803,7 +842,7 @@ class EventGenerator:
                         except Exception as e:
                             logger.error(f"Flush error: {e}")
                     team_names = ', '.join(sorted(self.producers.keys()))
-                    logger.info(f"[EMIT] Produced {event_count} events → teams: [{team_names}]")
+                    logger.info(f"[EMIT] Produced {event_count} events ({bad_count} bad) → teams: [{team_names}]")
 
                 time.sleep(sleep_time)
 
