@@ -32,6 +32,8 @@ from threading import Thread, Lock
 from flask import Flask
 from waitress import serve
 from kafka import KafkaProducer, KafkaConsumer, TopicPartition
+from kafka.admin import KafkaAdminClient, NewTopic
+from kafka.errors import TopicAlreadyExistsError
 
 # Configure logging
 logging.basicConfig(
@@ -354,6 +356,29 @@ class KafkaStateStore:
         self.topic = topic
         self.get_producer = get_producer  # callable -> KafkaProducer or None
 
+    def ensure_topic(self):
+        """Create the topic as compacted if it does not exist. Best effort; never raises.
+
+        An existing topic is left as it is (see README: staff must set cleanup.policy=compact on it).
+        """
+        admin = None
+        try:
+            admin = KafkaAdminClient(bootstrap_servers=[self.bootstrap])
+            admin.create_topics([NewTopic(self.topic, num_partitions=1, replication_factor=1,
+                                          topic_configs={'cleanup.policy': 'compact'})])
+            logger.info(f"[LABELS] Created compacted topic {self.topic}")
+        except TopicAlreadyExistsError:
+            pass
+        except Exception as e:
+            logger.warning(f"[LABELS] Could not create {self.topic} as compacted ({e}); the first write "
+                           f"creates it with the broker defaults. See README for the topic config.")
+        finally:
+            if admin is not None:
+                try:
+                    admin.close()
+                except Exception:
+                    pass
+
     def load(self):
         """Return (states, released). states: {hour_dt: (profile, affected_tuple)}; released: {(team, hour_dt)}."""
         states, released = {}, set()
@@ -415,11 +440,14 @@ class KafkaStateStore:
 class LabelService:
     """Records the state of each UTC hour and releases its labels after a delay.
 
-    Mid-hour rule: the state of an hour is the state at the half hour. tick()
-    records the first state it sees at or after HH:30:00 and never changes it.
-    The generator applies a schedule change at its own refill time, so the state
-    can change inside an hour; the half-hour state is the state that held at the
-    midpoint of the hour, which is the state that held for most of the hour
+    The state fed to tick() is the state of the events being emitted (the tag of the
+    newest event taken from the FIFO pool), not the generator's current state, which
+    runs ahead of the emitted events by the pool depth.
+
+    Mid-hour rule: the state of an hour is the emitted state at the half hour. tick()
+    records the first state it sees at or after HH:30:00 and never changes it. The
+    emitted state can change inside an hour; the half-hour state is the state that held
+    at the midpoint of the hour, which is the state that held for most of the hour
     whenever the hour has one change.
 
     Restart safety: every recorded state and every release is also written to
@@ -444,10 +472,30 @@ class LabelService:
         self.loaded = store is None         # with no store there is nothing to load
         self._unsaved_states = set()
         self._unsaved_released = []         # [(team, hour_dt, released_at)]
+        self._topic_checked = False
+        self.max_unsaved = 2000             # bound when the state team's Kafka never accepts writes
+
+    def _cap_unsaved(self):
+        """Drop the oldest unsaved entries past max_unsaved, with a warning. They stay valid in memory."""
+        if len(self._unsaved_states) > self.max_unsaved:
+            drop = sorted(self._unsaved_states)[:len(self._unsaved_states) - self.max_unsaved]
+            self._unsaved_states.difference_update(drop)
+            logger.warning(f"[LABELS] State topic unwritable: dropped {len(drop)} unsaved hour states "
+                           f"(a restart now would lose them)")
+        if len(self._unsaved_released) > self.max_unsaved:
+            n = len(self._unsaved_released) - self.max_unsaved
+            self._unsaved_released = self._unsaved_released[n:]
+            logger.warning(f"[LABELS] State topic unwritable: dropped {n} unsaved release markers "
+                           f"(a restart now could re-send those hours)")
 
     def ensure_loaded(self) -> bool:
         if self.loaded:
             return True
+        if not self._topic_checked:
+            self._topic_checked = True
+            ensure = getattr(self.store, 'ensure_topic', None)
+            if ensure:
+                ensure()
         try:
             states, released = self.store.load()
         except Exception as e:
@@ -530,6 +578,7 @@ class LabelService:
         sent = self.release_due(now)
         if self.loaded:
             self._flush_unsaved()
+        self._cap_unsaved()
         return sent
 
 
@@ -565,7 +614,8 @@ class EventGenerator:
         self.event_pool = queue.Queue(maxsize=EVENT_POOL_SIZE)
         self.state = OutbreakState()
         self.state_lock = Lock()
-        self.state_initialized = False  # True once the first refill has set the real state
+        # (profile, affected_regions tuple) of the newest event taken from the pool; None until one is.
+        self.emitted_state = None
         self.labels = self._build_label_service()
 
     def _build_label_service(self) -> LabelService:
@@ -586,32 +636,54 @@ class EventGenerator:
         return LabelService(store, REGIONS, LABEL_DELAY_HOURS, self.send_labels,
                             lambda: list(self.producers.keys()))
 
+    def _fill_pool(self, count: int):
+        """Generate `count` events and queue them, each tagged with the state it was generated under.
+
+        The pool is FIFO and is drained at the emit pace, so the events being emitted
+        can be several hours older than self.state. The tag (profile, affected tuple)
+        travels with the event but is never part of the emitted JSON; the emit thread
+        copies it into self.emitted_state, and labels follow that.
+        """
+        with self.state_lock:
+            tag = (self.state.profile, tuple(self.state.affected_regions))
+        for _ in range(count):
+            event = self.generate_event()
+            try:
+                self.event_pool.put((tag, event), block=False)
+            except queue.Full:
+                logger.warning("[REFILL] Event pool full, dropping event")
+                break
+
     def send_labels(self, team_id: str, messages: list) -> bool:
-        """Send one hour of labels to one team. Labels are never passed through make_bad_event."""
+        """Send one hour of labels to one team. True only if every message was acknowledged.
+
+        Labels are never passed through make_bad_event.
+        """
         producer = self.producers.get(team_id)
         if producer is None:
             return False
         topic = label_topic(team_id)
         try:
-            for key, value in messages:
-                producer.send(topic, key=key.encode('utf-8'), value=value)
+            futures = [producer.send(topic, key=key.encode('utf-8'), value=value) for key, value in messages]
             producer.flush(timeout=15)
+            for future in futures:
+                if future is not None:
+                    future.get(timeout=15)  # raises if the send failed
             return True
         except Exception as e:
             logger.error(f"[LABELS] Could not send labels to {team_id}: {e}")
             return False
 
     def label_thread_worker(self):
-        """Every LABEL_TICK_SECONDS: record the hour's state at HH:30, release labels that are due."""
+        """Every LABEL_TICK_SECONDS: record the emitted state at HH:30, release labels that are due."""
         while self.running:
             time.sleep(LABEL_TICK_SECONDS)
-            if not self.state_initialized:
+            emitted = self.emitted_state
+            if emitted is None:  # no event has been emitted yet
                 continue
             try:
-                with self.state_lock:
-                    profile = self.state.profile
-                    affected = list(self.state.affected_regions)
-                self.labels.tick(datetime.now(timezone.utc), profile, affected)
+                profile, affected = emitted
+                self.labels.tick(datetime.now(timezone.utc), profile, list(affected))
             except Exception as e:
                 logger.error(f"Error in label loop: {e}", exc_info=True)
 
@@ -1081,13 +1153,17 @@ class EventGenerator:
                                 self.state.affected_regions = restored
                                 logger.info(f"[REFILL] Restored affected regions after restart: {restored}")
                             else:
+                                if not self.labels.loaded:
+                                    logger.warning(
+                                        "[REFILL] The state topic could not be replayed, so affected regions are "
+                                        "sampled anew. If this is a restart in the middle of an outbreak, the "
+                                        "labels for the hours before the restart and the events after it can disagree.")
                                 k = min(random.randint(2, 4), len(REGIONS))
                                 self.state.affected_regions = random.sample(REGIONS, k)
                     else:
                         self.state.affected_regions = []
                         self.state.symptom_burden = 0.0
                 _was_active = is_active
-                self.state_initialized = True
 
                 with self.state_lock:
                     _logged_regions = list(self.state.affected_regions)
@@ -1100,13 +1176,7 @@ class EventGenerator:
                 batch_size = max(0, EVENT_POOL_REFILL_THRESHOLD - self.event_pool.qsize())
                 if batch_size > 0:
                     logger.info(f"[REFILL] Generating {batch_size} events...")
-                    for _ in range(batch_size):
-                        event = self.generate_event()
-                        try:
-                            self.event_pool.put(event, block=False)
-                        except queue.Full:
-                            logger.warning("[REFILL] Event pool full, dropping event")
-                            break
+                    self._fill_pool(batch_size)
                     logger.info(f"[REFILL] Pool now has {self.event_pool.qsize()}/{EVENT_POOL_SIZE} events")
 
             except Exception as e:
@@ -1126,11 +1196,13 @@ class EventGenerator:
             try:
                 # Get event from pool (wait max 5s)
                 try:
-                    event = self.event_pool.get(timeout=5)
+                    tag, event = self.event_pool.get(timeout=5)
                 except queue.Empty:
                     logger.warning("[EMIT] Pool empty; waiting for RefillThread to catch up")
                     time.sleep(1)
                     continue
+                # The state this event was generated under: labels follow it.
+                self.emitted_state = tag
 
                 # Determine pace based on profile
                 with self.state_lock:
