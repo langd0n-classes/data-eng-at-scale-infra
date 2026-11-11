@@ -57,7 +57,8 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-        bash kafka/portable/scripts/deploy.sh \
+        # The raw-topic-retention step below sets the retention.
+        SKIP_RAW_TOPIC_RETENTION=1 bash kafka/portable/scripts/deploy.sh \
           "$(params.TEAM_NAME)" "$(params.TEAM_NAMESPACE)" \
           "$(params.STORAGE_CLASS)" "$(params.VOLUME_SIZE)"
     # The team's raw topic keeps every event for the whole term: later

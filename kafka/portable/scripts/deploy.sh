@@ -79,7 +79,13 @@ kubectl wait kafka "kafka-${TEAM_NAME}" \
 # per partition) still applies to topics that teams create. The Kafka tools
 # run in a separate pod: running them inside the 2 GiB broker pod can get it
 # killed. Safe to repeat: it creates the topic when it is missing and sets
-# its retention either way.
+# its retention either way. The Tekton deploy task sets the retention in a
+# step of its own and sets SKIP_RAW_TOPIC_RETENTION=1 here: its service
+# account cannot attach to a pod.
+if [ "${SKIP_RAW_TOPIC_RETENTION:-0}" = "1" ]; then
+  echo ""
+  echo "Skipping the raw topic retention step (SKIP_RAW_TOPIC_RETENTION=1)."
+else
 echo ""
 echo "Setting unlimited retention on ${RAW_TOPIC}..."
 RETENTION_POD="raw-retention-${TEAM_NAME}"
@@ -99,6 +105,7 @@ kubectl -n "${TEAM_NAMESPACE}" run "${RETENTION_POD}" --rm -i --restart=Never \
       --add-config retention.ms=-1,retention.bytes=-1
     /opt/kafka/bin/kafka-configs.sh --bootstrap-server "$B" \
       --describe --entity-type topics --entity-name "$T"'
+fi
 
 echo ""
 echo "=========================================="
