@@ -25,6 +25,7 @@ class RecordingProducer:
 
 def test_labels_go_to_the_team_topic_and_state_to_team00(monkeypatch):
     monkeypatch.setattr(eg, 'TEAM_KAFKA_MAPPING', {'team00': 'k0:9092', 'team01': 'k1:9092'})
+    monkeypatch.setattr(eg, 'ensure_unlimited_topics', lambda bootstrap, topics: True)
     gen = eg.EventGenerator()
     assert gen.labels.store.bootstrap == 'k0:9092'
     assert gen.labels.store.topic == 'staff.outbreak_state'

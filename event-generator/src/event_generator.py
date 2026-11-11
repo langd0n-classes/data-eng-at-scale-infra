@@ -32,7 +32,7 @@ from threading import Thread, Lock
 from flask import Flask
 from waitress import serve
 from kafka import KafkaProducer, KafkaConsumer, TopicPartition
-from kafka.admin import KafkaAdminClient, NewTopic
+from kafka.admin import KafkaAdminClient, NewTopic, ConfigResource, ConfigResourceType
 from kafka.errors import TopicAlreadyExistsError
 
 # Configure logging
@@ -341,6 +341,47 @@ def label_topic(team_id: str) -> str:
     return f"{TOPIC_PREFIX}{team_id}{LABEL_TOPIC_SUFFIX}"
 
 
+# Team brokers default to log.retention.hours=24 and log.retention.bytes=100 MB per partition,
+# and auto-create topics. The history and label topics must stay readable for the whole term,
+# so they get the same unlimited retention as the raw topic (deploy-kafka-task.yaml).
+UNLIMITED_RETENTION = {'retention.ms': '-1', 'retention.bytes': '-1'}
+
+
+def ensure_unlimited_topics(bootstrap: str, topics) -> bool:
+    """Create each topic if missing (1 partition, unlimited retention); set unlimited retention on one that exists.
+
+    Uses the Kafka admin client; no CLI in a broker. Returns True only if every topic is done.
+    Never raises. For an existing topic, alter_configs sets the topic's overrides to exactly these
+    two; these topics are owned by this tool, so nothing else is expected on them.
+    """
+    admin = None
+    try:
+        admin = KafkaAdminClient(bootstrap_servers=[bootstrap])
+        existing = set(admin.list_topics())
+        for topic in topics:
+            if topic not in existing:
+                try:
+                    admin.create_topics([NewTopic(topic, num_partitions=1, replication_factor=1,
+                                                  topic_configs=dict(UNLIMITED_RETENTION))])
+                    logger.info(f"[TOPICS] Created {topic} with unlimited retention")
+                    continue
+                except TopicAlreadyExistsError:
+                    pass  # created in between: fall through and set the retention
+            admin.alter_configs([ConfigResource(ConfigResourceType.TOPIC, topic,
+                                                configs=dict(UNLIMITED_RETENTION))])
+            logger.info(f"[TOPICS] Set unlimited retention on {topic}")
+        return True
+    except Exception as e:
+        logger.warning(f"[TOPICS] Could not set up {list(topics)} with unlimited retention: {e}")
+        return False
+    finally:
+        if admin is not None:
+            try:
+                admin.close()
+            except Exception:
+                pass
+
+
 class KafkaStateStore:
     """Durable per-hour state and released-hour markers, in one staff topic.
 
@@ -616,6 +657,8 @@ class EventGenerator:
         self.state_lock = Lock()
         # (profile, affected_regions tuple) of the newest event taken from the pool; None until one is.
         self.emitted_state = None
+        self._topics_ready = set()   # teams whose label topic has unlimited retention
+        self._topic_failures = {}
         self.labels = self._build_label_service()
 
     def _build_label_service(self) -> LabelService:
@@ -654,6 +697,27 @@ class EventGenerator:
                 logger.warning("[REFILL] Event pool full, dropping event")
                 break
 
+    def _ensure_label_topic(self, team_id: str) -> bool:
+        """Make sure the team's label topic exists with unlimited retention before the first send.
+
+        Runs in the label thread only. A failure holds the labels (they are retried on the next
+        tick) rather than letting the broker auto-create the topic with 24 h retention.
+        """
+        if team_id in self._topics_ready:
+            return True
+        bootstrap = SINGLE_BOOTSTRAP if team_id == 'shared' else TEAM_KAFKA_MAPPING.get(team_id)
+        if not bootstrap:
+            self._topics_ready.add(team_id)  # nothing to configure through
+            return True
+        if ensure_unlimited_topics(bootstrap, [label_topic(team_id)]):
+            self._topics_ready.add(team_id)
+            return True
+        n = self._topic_failures[team_id] = self._topic_failures.get(team_id, 0) + 1
+        if n == 1 or n % 20 == 0:
+            logger.warning(f"[LABELS] Labels for {team_id} are held until {label_topic(team_id)} has "
+                           f"unlimited retention (attempt {n}). Set retention.ms=-1 and retention.bytes=-1 by hand if this persists.")
+        return False
+
     def send_labels(self, team_id: str, messages: list) -> bool:
         """Send one hour of labels to one team. True only if every message was acknowledged.
 
@@ -662,6 +726,8 @@ class EventGenerator:
         producer = self.producers.get(team_id)
         if producer is None:
             return False
+        if not self._ensure_label_topic(team_id):
+            return False  # labels wait; event streaming is not affected
         topic = label_topic(team_id)
         try:
             futures = [producer.send(topic, key=key.encode('utf-8'), value=value) for key, value in messages]

@@ -469,6 +469,25 @@ history. If retention is shorter than the delay, a restart loses the states of h
 pending, and those hours get no label. Without compaction and with infinite retention the topic grows by
 about 24 + 24 x teams records a day, which is small.
 
+### Retention of the history and label topics
+
+The team brokers default to `log.retention.hours=24` and `log.retention.bytes=104857600` (100 MB per
+partition) and auto-create topics. The raw topic is set to `retention.ms=-1`, `retention.bytes=-1` by the Kafka
+deploy task. `events.<team>.history` (about 300 MB) and `events.<team>.outbreak_status` get the same
+unlimited retention, so students can re-read both for the rest of the term:
+
+- `backfill_history.py` creates each topic it writes (1 partition, `retention.ms=-1`, `retention.bytes=-1`) or,
+  if it exists, sets both to `-1`, before it writes anything, through the Kafka admin client (no CLI in a
+  broker). If that fails it writes nothing and exits 1. `--no-topic-setup` skips the step; then set the two
+  configs yourself.
+- The live generator does the same for `events.<team>.outbreak_status` before its first label send to each team.
+  If it fails, the labels for that team are held and retried on the next tick (15 s) with a warning in the log;
+  event streaming is not affected. If it keeps failing, set the two configs by hand.
+- For an existing topic, the admin `alter_configs` call sets the topic's overrides to exactly these two. Other
+  overrides on these tool-owned topics are not expected.
+- Topics that students create (for example their decisions topic) keep the broker default: 24 hours and
+  100 MB per partition.
+
 ### Labeled history (staff, on demand, one team)
 
 `backfill_history.py` is in the same image. It simulates the generator over a past UTC range

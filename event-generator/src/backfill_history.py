@@ -19,8 +19,9 @@ Usage (inside the event-generator image):
   python backfill_history.py --team team01                  # last 14 days before 2026-11-09T00:00:00Z
   python backfill_history.py --team team01 --dry-run        # simulate, print counts, write nothing
 
-Topics are created the way the generator already relies on: the first send
-creates a missing topic if the broker allows auto-creation. See README.md.
+Before writing, both topics are created if missing, or set, to 1 partition and
+retention.ms=-1, retention.bytes=-1 (the broker defaults of 24 h and 100 MB would
+truncate them), through the Kafka admin client. See README.md.
 """
 
 import argparse
@@ -235,6 +236,8 @@ def main(argv=None) -> int:
     ap.add_argument('--seed', type=int, default=DEFAULT_SEED)
     ap.add_argument('--batch-size', type=int, default=DEFAULT_BATCH, help="events per producer flush")
     ap.add_argument('--bootstrap', help="Kafka bootstrap server; default from TEAM_BOOTSTRAP_SERVERS")
+    ap.add_argument('--no-topic-setup', action='store_true',
+                    help="do not create the topics or set their retention (set retention.ms=-1 and retention.bytes=-1 yourself)")
     ap.add_argument('--dry-run', action='store_true', help="simulate and print, write nothing")
     args = ap.parse_args(argv)
 
@@ -255,6 +258,12 @@ def main(argv=None) -> int:
         bootstrap = args.bootstrap or TEAM_KAFKA_MAPPING.get(args.team)
         if not bootstrap:
             ap.error(f"no bootstrap server for {args.team}: set TEAM_BOOTSTRAP_SERVERS or pass --bootstrap")
+        topics = [label_topic(args.team)] + ([] if args.labels_from else [history_topic(args.team)])
+        if not args.no_topic_setup and not eg.ensure_unlimited_topics(bootstrap, topics):
+            logger.error("Could not set unlimited retention on %s; nothing was written. Fix the Kafka admin "
+                         "access, set retention.ms=-1 and retention.bytes=-1 by hand, or pass --no-topic-setup.",
+                         topics)
+            return 1
         producer = EventGenerator.connect_kafka_for_team(None, args.team, bootstrap)
         if producer is None:
             logger.error("Could not connect to Kafka")
