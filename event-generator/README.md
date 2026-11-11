@@ -377,9 +377,137 @@ All configuration is done via `config.env`. Key settings:
 | `SYMPTOM_BURDEN_DECAY` | Exponential decay rate for symptom burden | `0.995` |
 | `BAD_EVENT_RATE` | Share of sent events that break the event contract (bad JSON, missing field, wrong type, unknown `event_type`, out-of-range age, bad timestamp); `0` turns it off. To change it on a running cluster, add the key to the generator ConfigMap and restart the Deployment | `0.0175` |
 
+| `LABEL_DELAY_HOURS` | Hours after a UTC hour ends before its labels are released to `events.<team>.outbreak_status`. Not in the ConfigMap template; add the key by hand and restart the Deployment | `12` |
+| `LABEL_STATE_TEAM` | Team whose Kafka holds the staff-only state topic (must be a key of `TEAM_BOOTSTRAP_SERVERS`) | `team00` |
+| `LABEL_STATE_TOPIC` | Name of the staff-only state topic | `staff.outbreak_state` |
+
 **Topic naming pattern:**
 - Multi-team: `${TOPIC_PREFIX}${TEAM_ID}${TOPIC_SUFFIX}` → `events.team01.raw`
 - Single cluster: `${TOPIC_PREFIX}${TOPIC_SUFFIX}` → `events.raw`
+
+---
+
+## Outbreak Labels and Labeled History
+
+Students train a model that decides LOW, WATCH, or ALERT per region per hour. They get
+the ground truth late, on `events.<team>.outbreak_status`, and labeled history to train
+a first model on `events.<team>.history`.
+
+### Delayed labels (live)
+
+One JSON message per region per completed UTC hour, key = region:
+
+```json
+{"region": "Boston", "hour": "2026-11-09T14:00:00Z", "status": "ALERT", "released_at": "2026-11-10T03:00:04Z"}
+```
+
+`hour` is the start of the hour. Labels for an hour are released `LABEL_DELAY_HOURS` after
+the hour ends. Labels never carry bad events (`BAD_EVENT_RATE` does not apply to them).
+
+**Rule** (`label_status()` in `event_generator.py`): ALERT if the generator's profile for
+the hour was `outbreak` and the region was in `affected_regions`; WATCH if the profile was
+`winddown` and the region was in `affected_regions`; LOW otherwise.
+
+**Mid-hour rule.** The live state changes only when the refill thread runs (every 6 hours,
+not at the schedule boundary). The label uses the state the generator actually used, and
+for an hour it is the state at the half hour (HH:30): the first state the label thread sees at
+or after HH:30 is recorded and kept for the hour.
+
+**Restart safety.** The label thread writes each hour's state (`hour`, `profile`,
+`affected_regions`) and each release (`team`, `hour`) to `staff.outbreak_state` in the Kafka of
+`LABEL_STATE_TEAM` (`team00`). Students cannot read it, because each team only has access to its
+own Kafka. At startup the generator replays that topic: pending hours stay pending, released hours
+are not released again, and an outbreak that was running keeps its `affected_regions`. Nothing is
+released until the replay succeeds. If the pod dies between sending labels and writing the
+release marker, that hour is sent again. Consumers must upsert on `(region, hour)`. An hour in
+which the generator was down for the whole second half has no label. Run one replica.
+
+The topic is created by the first write, like the other topics (broker auto-creation). If
+`LABEL_STATE_TEAM` is not in `TEAM_BOOTSTRAP_SERVERS`, state is kept in memory only and a
+restart loses pending labels; the log says so.
+
+### Labeled history (staff, on demand, one team)
+
+`backfill_history.py` is in the same image. It simulates the generator over a past UTC range
+with a simulated clock and a fixed seed, and writes to one team's Kafka:
+
+- `events.<team>.history`: the events (same schema, same pacing and distributions as live, no bad events)
+- `events.<team>.outbreak_status`: the label of every region-hour in the range, `released_at` = time of the run
+
+Defaults: the 14 days ending `2026-11-09T00:00:00Z` (about 980,000 events at 1.5 events/s), seed 551.
+The simulation does not depend on the team, so the same seed and range give every team identical
+events and labels. It does not read or write `staff.outbreak_state` or `events.<team>.raw`.
+`REGIONS`, `EVENT_RATE_PER_SEC`, and the bed-pressure settings come from the same environment as the
+generator, so run it with the generator's ConfigMap. The simulation applies the schedule (Mon/Thu 09:00)
+exactly at the hour; it does not copy the 6-hourly lag of the live state. Running it twice writes the
+data twice. It sends in batches (flush every 5000 events) and prints progress per day.
+
+As a one-off Job in the cluster, using the image of the running Deployment (`TEAM` is one team id;
+on OpenShift remove the `imagePullSecrets` lines):
+
+```bash
+source config.env
+TEAM=team01
+IMAGE=$(kubectl get deployment ${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE} \
+  -o jsonpath='{.spec.template.spec.containers[0].image}')
+cat <<EOF | kubectl apply -f -
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: history-${TEAM}
+  namespace: ${INFRA_NAMESPACE}
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: history
+          image: ${IMAGE}
+          command: ["python", "backfill_history.py", "--team", "${TEAM}"]
+          envFrom:
+            - configMapRef:
+                name: ${EVENT_GENERATOR_NAME}-config
+          resources:
+            requests: {memory: 256Mi, cpu: 200m}
+            limits: {memory: 1Gi, cpu: 1}
+EOF
+kubectl logs -f job/history-${TEAM} -n ${INFRA_NAMESPACE}
+```
+
+Options: `--start`, `--end` (UTC, hour boundaries, end exclusive), `--days`, `--seed`, `--batch-size`,
+`--bootstrap`, and `--dry-run` (simulate and print counts, write nothing). The topics are created by the
+first write if the broker allows auto-creation; otherwise create them first (see "Topics not created
+automatically").
+
+### Labels from a supplied state list (staff, one-off repair)
+
+To write labels for past hours after a gap, for example hours the live generator ran before this feature
+existed, give the real state history as a file and run:
+
+```bash
+python backfill_history.py --team team01 --labels-from states.json \
+  --start 2026-11-10T02:00:00Z --end 2026-11-11T14:00:00Z
+```
+
+This writes labels only (no events) to `events.<team>.outbreak_status`, with `released_at` = time of the run.
+`--start` and `--end` are required. `states.json`:
+
+```json
+[
+  {"from_time": "2026-11-10T01:37:00Z", "profile": "winddown", "affected_regions": ["Boston", "NYC"]},
+  {"from_time": "2026-11-11T01:37:00Z", "profile": "baseline", "affected_regions": []}
+]
+```
+
+CSV works too: header `from_time,profile,affected_regions`, regions separated by `;`. A row holds from its
+`from_time` until the next row. Each hour takes the state in force at its half hour, as in the live rule.
+Hours before the first row are skipped and reported. Regions must be in `REGIONS`. Use `--dry-run` first.
+Run it as the Job above with `command: ["python", "backfill_history.py", "--team", "team01", "--labels-from", ...]`
+and the file in a ConfigMap mounted into the pod.
 
 ---
 
@@ -594,6 +722,7 @@ kubectl delete deployment/${EVENT_GENERATOR_NAME} configmap/${EVENT_GENERATOR_NA
 event-generator/
 ├── src/                      # Python source code
 │   ├── event_generator.py    # Main application (outbreak scheduler + Kafka producer)
+│   ├── backfill_history.py   # Staff command: labeled history and label repair for one team
 │   ├── check_events.py       # Diagnostic script (run via oc exec)
 │   └── requirements.txt      # Python dependencies
 ├── k8s/                      # Kubernetes manifests
