@@ -38,6 +38,11 @@ TEAM_NAMESPACE="${_TEAM_NAMESPACE_ARG}"
 STORAGE_CLASS="${CLI_STORAGE_CLASS:-${STORAGE_CLASS:-standard}}"
 VOLUME_SIZE="${CLI_VOLUME_SIZE:-${VOLUME_SIZE:-10Gi}}"
 INFRA_NAMESPACE="${INFRA_NAMESPACE:-infra}"
+TOPIC_PREFIX="${TOPIC_PREFIX:-events.}"
+TOPIC_SUFFIX="${TOPIC_SUFFIX:-.raw}"
+# Matches the KAFKA_CLI_IMAGE default in pipeline/portable/tasks/deploy-kafka-task.yaml.
+KAFKA_CLI_IMAGE="${KAFKA_CLI_IMAGE:-quay.io/strimzi/kafka:0.51.0-kafka-4.2.0}"
+RAW_TOPIC="${TOPIC_PREFIX}${TEAM_NAME}${TOPIC_SUFFIX}"
 
 echo "=========================================="
 echo "Deploying Kafka for ${TEAM_NAME} (portable)"
@@ -68,6 +73,32 @@ kubectl wait kafka "kafka-${TEAM_NAME}" \
   -n "${TEAM_NAMESPACE}" \
   --for=condition=Ready \
   --timeout=300s
+
+# The team's raw topic keeps every event for the whole term: later project
+# phases read the team's full history. The broker default (24 hours, 100 MB
+# per partition) still applies to topics that teams create. The Kafka tools
+# run in a separate pod: running them inside the 2 GiB broker pod can get it
+# killed. Safe to repeat: it creates the topic when it is missing and sets
+# its retention either way.
+echo ""
+echo "Setting unlimited retention on ${RAW_TOPIC}..."
+RETENTION_POD="raw-retention-${TEAM_NAME}"
+BOOTSTRAP="kafka-${TEAM_NAME}-kafka-bootstrap.${TEAM_NAMESPACE}.svc:9092"
+kubectl -n "${TEAM_NAMESPACE}" delete pod "${RETENTION_POD}" --ignore-not-found >/dev/null
+kubectl -n "${TEAM_NAMESPACE}" run "${RETENTION_POD}" --rm -i --restart=Never \
+  --image="${KAFKA_CLI_IMAGE}" \
+  --env=KAFKA_HEAP_OPTS=-Xmx256m \
+  --env="B=${BOOTSTRAP}" --env="T=${RAW_TOPIC}" \
+  --command -- bash -c '
+    set -euo pipefail
+    /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$B" \
+      --create --if-not-exists --topic "$T" --partitions 1 \
+      --config retention.ms=-1 --config retention.bytes=-1
+    /opt/kafka/bin/kafka-configs.sh --bootstrap-server "$B" \
+      --alter --entity-type topics --entity-name "$T" \
+      --add-config retention.ms=-1,retention.bytes=-1
+    /opt/kafka/bin/kafka-configs.sh --bootstrap-server "$B" \
+      --describe --entity-type topics --entity-name "$T"'
 
 echo ""
 echo "=========================================="
