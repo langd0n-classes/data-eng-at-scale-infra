@@ -54,6 +54,8 @@ class Prod:
 def test_pool_items_carry_the_generation_state_and_emitted_json_is_unchanged(monkeypatch):
     monkeypatch.setattr(eg, 'TEAM_KAFKA_MAPPING', {})
     monkeypatch.setattr(eg, 'EVENT_RATE_PER_SEC', 100.0)
+    # Live sends some bad events on purpose (a missing field, say); this test checks clean ones.
+    monkeypatch.setattr(eg, 'BAD_EVENT_RATE', 0.0)
     gen = eg.EventGenerator()
     gen.state.profile, gen.state.affected_regions = 'outbreak', ['Boston']
     gen._fill_pool(3)

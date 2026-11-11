@@ -485,6 +485,11 @@ unlimited retention, so students can re-read both for the rest of the term:
   event streaming is not affected. If it keeps failing, set the two configs by hand.
 - For an existing topic, the admin `alter_configs` call sets the topic's overrides to exactly these two. Other
   overrides on these tool-owned topics are not expected.
+- Every create and alter response is checked for error codes (kafka-python 2.0.2 does not raise them for
+  `alter_configs`), and the topic's config is read back; the step counts as done only if `retention.ms` and
+  `retention.bytes` both read `-1`. The whole call is limited to 60 seconds, because the admin client can wait
+  for good on an unreachable broker; a timeout counts as a failure. The same limit applies to the creation of
+  the compacted state topic at startup, so a broker that does not answer cannot hold up the generator.
 - Topics that students create (for example their decisions topic) keep the broker default: 24 hours and
   100 MB per partition.
 

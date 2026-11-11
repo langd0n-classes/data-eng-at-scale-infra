@@ -34,6 +34,7 @@ from waitress import serve
 from kafka import KafkaProducer, KafkaConsumer, TopicPartition
 from kafka.admin import KafkaAdminClient, NewTopic, ConfigResource, ConfigResourceType
 from kafka.errors import TopicAlreadyExistsError
+import kafka.errors as kafka_errors
 
 # Configure logging
 logging.basicConfig(
@@ -347,29 +348,81 @@ def label_topic(team_id: str) -> str:
 UNLIMITED_RETENTION = {'retention.ms': '-1', 'retention.bytes': '-1'}
 
 
-def ensure_unlimited_topics(bootstrap: str, topics) -> bool:
-    """Create each topic if missing (1 partition, unlimited retention); set unlimited retention on one that exists.
+TOPIC_EXISTS_CODE = 36        # TOPIC_ALREADY_EXISTS
+ENSURE_TOPICS_TIMEOUT = 60.0  # seconds for the whole call; the admin client has no overall timeout
+_ensure_inflight = {}         # (bootstrap, topics) -> worker thread of a call that timed out
 
-    Uses the Kafka admin client; no CLI in a broker. Returns True only if every topic is done.
-    Never raises. For an existing topic, alter_configs sets the topic's overrides to exactly these
-    two; these topics are owned by this tool, so nothing else is expected on them.
+
+def _error_name(code: int) -> str:
+    try:
+        return f"{kafka_errors.for_code(code).__name__} ({code})"
+    except Exception:
+        return f"error code {code}"
+
+
+def _check_topic_errors(response, what: str, allow_exists: bool = False) -> bool:
+    """Check the per-topic error codes of a CreateTopics response.
+
+    kafka-python 2.0.2 raises for some of these and returns the response for others, so both
+    are handled. Returns True if the topic already exists (code 36, when allowed); raises on any
+    other non-zero code.
     """
+    exists = False
+    for entry in (getattr(response, 'topic_errors', None) or []):
+        code, message = entry[1], (entry[2] if len(entry) > 2 else None)
+        if code == 0:
+            continue
+        if code == TOPIC_EXISTS_CODE and allow_exists:
+            exists = True
+            continue
+        raise RuntimeError(f"{what}: {_error_name(code)} {message or ''}".strip())
+    return exists
+
+
+def _check_resource_errors(response, what: str):
+    """Check the per-resource error codes of an AlterConfigs response (not raised by kafka-python 2.0.2)."""
+    for entry in (getattr(response, 'resources', None) or []):
+        code, message = entry[0], entry[1]
+        if code != 0:
+            raise RuntimeError(f"{what}: {_error_name(code)} {message or ''}".strip())
+
+
+def _retention_is_unlimited(admin, topic: str) -> bool:
+    """Read the topic's config back and check that both retention settings are -1."""
+    for response in admin.describe_configs([ConfigResource(ConfigResourceType.TOPIC, topic)]):
+        for res in response.resources:
+            code, message, name, entries = res[0], res[1], res[3], res[4]
+            if name != topic:
+                continue
+            if code != 0:
+                raise RuntimeError(f"describe {topic}: {_error_name(code)} {message or ''}".strip())
+            values = {e[0]: e[1] for e in entries}
+            return all(str(values.get(k)) == v for k, v in UNLIMITED_RETENTION.items())
+    return False
+
+
+def _ensure_unlimited_topics(bootstrap: str, topics) -> bool:
     admin = None
     try:
-        admin = KafkaAdminClient(bootstrap_servers=[bootstrap])
+        admin = KafkaAdminClient(bootstrap_servers=[bootstrap], api_version=(2, 5, 0),
+                                 request_timeout_ms=30000, api_version_auto_timeout_ms=10000)
         existing = set(admin.list_topics())
         for topic in topics:
-            if topic not in existing:
+            needs_alter = topic in existing
+            if not needs_alter:
                 try:
-                    admin.create_topics([NewTopic(topic, num_partitions=1, replication_factor=1,
-                                                  topic_configs=dict(UNLIMITED_RETENTION))])
-                    logger.info(f"[TOPICS] Created {topic} with unlimited retention")
-                    continue
+                    response = admin.create_topics([NewTopic(topic, num_partitions=1, replication_factor=1,
+                                                             topic_configs=dict(UNLIMITED_RETENTION))])
+                    needs_alter = _check_topic_errors(response, f"create {topic}", allow_exists=True)
                 except TopicAlreadyExistsError:
-                    pass  # created in between: fall through and set the retention
-            admin.alter_configs([ConfigResource(ConfigResourceType.TOPIC, topic,
-                                                configs=dict(UNLIMITED_RETENTION))])
-            logger.info(f"[TOPICS] Set unlimited retention on {topic}")
+                    needs_alter = True  # raised by kafka-python 2.0.2 for code 36
+            if needs_alter:
+                response = admin.alter_configs([ConfigResource(ConfigResourceType.TOPIC, topic,
+                                                               configs=dict(UNLIMITED_RETENTION))])
+                _check_resource_errors(response, f"alter {topic}")
+            if not _retention_is_unlimited(admin, topic):
+                raise RuntimeError(f"{topic}: retention.ms and retention.bytes are not both -1 on read-back")
+            logger.info(f"[TOPICS] {topic} has unlimited retention")
         return True
     except Exception as e:
         logger.warning(f"[TOPICS] Could not set up {list(topics)} with unlimited retention: {e}")
@@ -380,6 +433,39 @@ def ensure_unlimited_topics(bootstrap: str, topics) -> bool:
                 admin.close()
             except Exception:
                 pass
+
+
+def ensure_unlimited_topics(bootstrap: str, topics, timeout: float = None) -> bool:
+    """Create each topic if missing (1 partition, unlimited retention); set unlimited retention on one that exists.
+
+    Uses the Kafka admin client; no CLI in a broker. Returns True only if every topic was created or
+    altered without an error code AND a read-back shows retention.ms and retention.bytes both -1.
+    Never raises. The admin client can block for good on an unreachable broker, so the work runs in
+    a daemon thread and a call that exceeds `timeout` (default ENSURE_TOPICS_TIMEOUT) counts as a
+    failure. A timed-out call still running blocks a new call for the same topics (also a failure),
+    so threads do not pile up. For an existing topic, alter_configs sets the topic's overrides to
+    exactly these two; these topics are owned by this tool, so nothing else is expected on them.
+    """
+    timeout = ENSURE_TOPICS_TIMEOUT if timeout is None else timeout
+    key = (bootstrap, tuple(topics))
+    previous = _ensure_inflight.get(key)
+    if previous is not None and previous.is_alive():
+        logger.warning(f"[TOPICS] An earlier attempt for {list(topics)} is still running; not starting another")
+        return False
+    result = [False]
+
+    def work():
+        result[0] = _ensure_unlimited_topics(bootstrap, topics)
+
+    worker = Thread(target=work, daemon=True)
+    _ensure_inflight[key] = worker
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        logger.warning(f"[TOPICS] Setting up {list(topics)} timed out after {timeout:.0f}s")
+        return False
+    _ensure_inflight.pop(key, None)
+    return result[0]
 
 
 class KafkaStateStore:
@@ -402,23 +488,33 @@ class KafkaStateStore:
 
         An existing topic is left as it is (see README: staff must set cleanup.policy=compact on it).
         """
-        admin = None
-        try:
-            admin = KafkaAdminClient(bootstrap_servers=[self.bootstrap])
-            admin.create_topics([NewTopic(self.topic, num_partitions=1, replication_factor=1,
-                                          topic_configs={'cleanup.policy': 'compact'})])
-            logger.info(f"[LABELS] Created compacted topic {self.topic}")
-        except TopicAlreadyExistsError:
-            pass
-        except Exception as e:
-            logger.warning(f"[LABELS] Could not create {self.topic} as compacted ({e}); the first write "
-                           f"creates it with the broker defaults. See README for the topic config.")
-        finally:
-            if admin is not None:
-                try:
-                    admin.close()
-                except Exception:
-                    pass
+        def work():
+            admin = None
+            try:
+                admin = KafkaAdminClient(bootstrap_servers=[self.bootstrap], api_version=(2, 5, 0),
+                                         request_timeout_ms=30000, api_version_auto_timeout_ms=10000)
+                response = admin.create_topics([NewTopic(self.topic, num_partitions=1, replication_factor=1,
+                                                         topic_configs={'cleanup.policy': 'compact'})])
+                if not _check_topic_errors(response, f"create {self.topic}", allow_exists=True):
+                    logger.info(f"[LABELS] Created compacted topic {self.topic}")
+            except TopicAlreadyExistsError:
+                pass
+            except Exception as e:
+                logger.warning(f"[LABELS] Could not create {self.topic} as compacted ({e}); the first write "
+                               f"creates it with the broker defaults. See README for the topic config.")
+            finally:
+                if admin is not None:
+                    try:
+                        admin.close()
+                    except Exception:
+                        pass
+
+        # The admin client can block for good on an unreachable broker; never hold up startup.
+        worker = Thread(target=work, daemon=True)
+        worker.start()
+        worker.join(ENSURE_TOPICS_TIMEOUT)
+        if worker.is_alive():
+            logger.warning(f"[LABELS] Creating {self.topic} timed out after {ENSURE_TOPICS_TIMEOUT:.0f}s")
 
     def load(self):
         """Return (states, released). states: {hour_dt: (profile, affected_tuple)}; released: {(team, hour_dt)}."""
