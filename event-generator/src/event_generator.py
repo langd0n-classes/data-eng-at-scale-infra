@@ -112,6 +112,45 @@ LABEL_STATE_TOPIC = os.getenv('LABEL_STATE_TOPIC', 'staff.outbreak_state')
 LABEL_STATE_TEAM = os.getenv('LABEL_STATE_TEAM', 'team00')
 LABEL_TICK_SECONDS = 15
 
+
+def _env_prob(name: str, default: float) -> float:
+    value = _env_float(name, default)
+    if value > 1.0:
+        logger.warning(f"{name}={value} is more than 1; using {default}")
+        return default
+    return value
+
+
+def _env_time(name: str):
+    """A UTC time from the environment (ISO 8601, 'Z' or an offset; no offset means UTC), or None if unset."""
+    raw = os.getenv(name, '').strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+    except ValueError:
+        logger.warning(f"{name}={raw!r} is not an ISO 8601 time; the feature stays off")
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+# Scheduled behaviors. Each is off unless its start time is set. Every choice (when a
+# burst starts, its region, which AI statuses are wrong and what they say) is drawn from
+# a random.Random seeded with CR_SEED plus the hour (and region), so staff can reproduce it.
+CR_SEED = os.getenv('CR_SEED', '551')
+# False-alarm bursts: extra symptom_report events in one region whose true status is LOW.
+FALSE_ALARM_START = _env_time('FALSE_ALARM_START')
+FALSE_ALARM_PROBABILITY = _env_prob('FALSE_ALARM_PROBABILITY', 0.04)   # chance that a burst starts in a UTC hour
+FALSE_ALARM_MINUTES = _env_float('FALSE_ALARM_MINUTES', 30.0, minimum=1.0)
+FALSE_ALARM_EVENTS_PER_MINUTE = _env_float('FALSE_ALARM_EVENTS_PER_MINUTE', 6.0, minimum=0.1)
+# AI-sourced statuses with staff corrections on events.<team>.outbreak_status.
+AI_LABELS_START = _env_time('AI_LABELS_START')
+AI_LABEL_DELAY_HOURS = _env_float('AI_LABEL_DELAY_HOURS', 1.0)
+AI_LABEL_ERROR_RATE = _env_prob('AI_LABEL_ERROR_RATE', 0.12)
+STAFF_CORRECTION_DELAY_HOURS = _env_float('STAFF_CORRECTION_DELAY_HOURS', 18.0)
+
 # Parse team bootstrap servers from environment
 TEAM_KAFKA_MAPPING = {}
 team_bootstrap_env = os.getenv('TEAM_BOOTSTRAP_SERVERS', '')
@@ -299,6 +338,11 @@ def parse_hour(text: str) -> datetime:
     return datetime.strptime(text, '%Y-%m-%dT%H:00:00Z').replace(tzinfo=timezone.utc)
 
 
+def parse_ts(text: str) -> datetime:
+    """Inverse of format_ts."""
+    return datetime.strptime(text, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+
+
 def format_ts(dt: datetime) -> str:
     """ISO UTC timestamp with a Z suffix, whole seconds."""
     return dt.astimezone(timezone.utc).replace(microsecond=0).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -323,17 +367,81 @@ def label_status(profile: str, affected_regions, region: str) -> str:
     return 'LOW'
 
 
-def build_labels(hour: datetime, profile: str, affected_regions, regions, released_at: datetime) -> list:
-    """One (key, value) pair per region for the hour. Labels never carry bad events."""
-    return [
-        (region, {
+def build_labels(hour: datetime, profile: str, affected_regions, regions, released_at: datetime,
+                 source: str = None) -> list:
+    """One (key, value) pair per region for the hour. Labels never carry bad events.
+
+    `source` ("ai" or "staff") is added only when given: records released before
+    AI_LABELS_START have no source field.
+    """
+    return build_status_messages(
+        hour, {r: label_status(profile, affected_regions, r) for r in regions}, regions, released_at, source)
+
+
+def build_status_messages(hour: datetime, statuses: dict, regions, released_at: datetime,
+                          source: str = None) -> list:
+    """(key, value) pairs for the given regions, with the status given per region."""
+    out = []
+    for region in regions:
+        value = {
             'region': region,
             'hour': format_hour(hour),
-            'status': label_status(profile, affected_regions, region),
+            'status': statuses[region],
             'released_at': format_ts(released_at),
-        })
-        for region in regions
-    ]
+        }
+        if source is not None:
+            value['source'] = source
+        out.append((region, value))
+    return out
+
+
+STATUSES = ('LOW', 'WATCH', 'ALERT')
+
+
+def ai_status(seed, hour: datetime, region: str, true_status: str, error_rate: float) -> str:
+    """The status the AI labeler gives a region-hour. Deterministic from (seed, hour, region).
+
+    With probability error_rate it is one of the other two statuses (each equally likely),
+    otherwise the true status. The first draw decides wrong/right, so a higher error rate
+    only adds errors: every region-hour wrong at a lower rate is also wrong at a higher one.
+    """
+    rng = random.Random(f"{seed}|ai|{format_hour(hour)}|{region}")
+    if rng.random() < error_rate:
+        return rng.choice([s for s in STATUSES if s != true_status])
+    return true_status
+
+
+def false_alarm_plan(seed, hour: datetime, probability: float):
+    """(planned_start, pick) of the burst that starts in this UTC hour, or None. Deterministic.
+
+    pick (0..1) chooses the region among the regions whose status is LOW when the burst starts.
+    """
+    rng = random.Random(f"{seed}|false_alarm|{format_hour(hour)}")
+    if rng.random() >= probability:
+        return None
+    start = hour_floor(hour) + timedelta(seconds=int(rng.uniform(0, 3600)))
+    return start, rng.random()
+
+
+def record_key(rec: dict) -> str:
+    """Kafka key of a staff-topic record. A compacted topic keeps the newest record per key."""
+    kind = rec['kind']
+    if kind == 'state':
+        return f"state|{rec['hour']}"
+    if kind in ('released', 'corrected'):
+        return f"{kind}|{rec['team']}|{rec['hour']}"
+    if kind == 'ai_label':
+        return f"ai_label|{rec['hour']}|{rec['region']}"
+    if kind == 'false_alarm':
+        return f"false_alarm|{rec['planned_start']}"
+    raise ValueError(f"unknown record kind {kind!r}")
+
+
+def raw_topic(team_id: str) -> str:
+    """The raw event topic of a team, as the emit thread names it."""
+    if team_id == 'shared':
+        return EXPLICIT_TOPIC if EXPLICIT_TOPIC else f"{TOPIC_PREFIX}{TOPIC_SUFFIX.lstrip('.')}"
+    return f"{TOPIC_PREFIX}{team_id}{TOPIC_SUFFIX}"
 
 
 def label_topic(team_id: str) -> str:
@@ -473,9 +581,16 @@ class KafkaStateStore:
 
     Two kinds of JSON record, keyed so that a compacted topic keeps the newest of each:
       {"kind": "state", "hour": H, "profile": P, "affected_regions": [...], "recorded_at": T}
-      {"kind": "released", "team": TEAM, "hour": H, "released_at": T}
-    load() replays the whole topic. The topic is tiny (24 state records and one
-    released record per team per hour, per day).
+      {"kind": "released", "team": TEAM, "hour": H, "released_at": T[, "source": "ai"|"staff"]}
+    and, when the scheduled behaviors are on (see LabelService and FalseAlarmService):
+      {"kind": "corrected", "team": TEAM, "hour": H, "released_at": T, "regions": [...]}
+      {"kind": "ai_label", "hour": H, "region": R, "true_status", "ai_status", "wrong",
+       "ai_released_at": {TEAM: T}, "correction_released_at": {TEAM: T}}
+      {"kind": "false_alarm", "planned_start", "planned_end", "region", "start", "end",
+       "events_added", "status", "end_reason"}
+    record_key() gives the key of each. load() replays the whole topic. The topic is
+    small (per day: 24 state records, one released record per team per hour, and with
+    AI labels on, one ai_label record per region-hour, rewritten at each release).
     """
 
     def __init__(self, bootstrap: str, topic: str, get_producer):
@@ -517,14 +632,18 @@ class KafkaStateStore:
             logger.warning(f"[LABELS] Creating {self.topic} timed out after {ENSURE_TOPICS_TIMEOUT:.0f}s")
 
     def load(self):
-        """Return (states, released). states: {hour_dt: (profile, affected_tuple)}; released: {(team, hour_dt)}."""
-        states, released = {}, set()
+        """Return (states, released, records).
+
+        states: {hour_dt: (profile, affected_tuple)}; released: {(team, hour_dt)};
+        records: {record_key: newest record} for every kind except state.
+        """
+        states, released, records = {}, set(), {}
         consumer = KafkaConsumer(bootstrap_servers=[self.bootstrap], group_id=None,
                                  enable_auto_commit=False, auto_offset_reset='earliest')
         try:
             partitions = consumer.partitions_for_topic(self.topic)
             if not partitions:  # topic does not exist yet: first run
-                return states, released
+                return states, released, records
             tps = [TopicPartition(self.topic, p) for p in sorted(partitions)]
             consumer.assign(tps)
             consumer.seek_to_beginning(*tps)
@@ -535,20 +654,23 @@ class KafkaStateStore:
                     raise TimeoutError(f"could not read all of {self.topic} within 60s")
                 for records in consumer.poll(timeout_ms=2000).values():
                     for rec in records:
-                        self._apply(rec.value, states, released)
+                        self._apply(rec.value, states, released, records)
         finally:
             consumer.close()
-        return states, released
+        return states, released, records
 
     @staticmethod
-    def _apply(raw, states: dict, released: set):
+    def _apply(raw, states: dict, released: set, records: dict = None):
         try:
             rec = json.loads(raw)
-            hour = parse_hour(rec['hour'])
-            if rec['kind'] == 'state':
-                states[hour] = (rec['profile'], tuple(rec.get('affected_regions') or ()))
-            elif rec['kind'] == 'released':
-                released.add((rec['team'], hour))
+            kind = rec['kind']
+            if kind == 'state':
+                states[parse_hour(rec['hour'])] = (rec['profile'], tuple(rec.get('affected_regions') or ()))
+                return
+            if kind == 'released':
+                released.add((rec['team'], parse_hour(rec['hour'])))
+            if records is not None:
+                records[record_key(rec)] = rec
         except Exception as e:  # skip a malformed record; never block startup on it
             logger.warning(f"[LABELS] Skipping unreadable state record: {e}")
 
@@ -568,10 +690,36 @@ class KafkaStateStore:
             'kind': 'state', 'hour': format_hour(hour), 'profile': profile,
             'affected_regions': list(affected_regions), 'recorded_at': format_ts(recorded_at)})
 
-    def save_released(self, team: str, hour: datetime, released_at: datetime) -> bool:
-        return self._send(f"released|{team}|{format_hour(hour)}", {
-            'kind': 'released', 'team': team, 'hour': format_hour(hour),
-            'released_at': format_ts(released_at)})
+    def save_released(self, team: str, hour: datetime, released_at: datetime, source: str = None) -> bool:
+        value = {'kind': 'released', 'team': team, 'hour': format_hour(hour),
+                 'released_at': format_ts(released_at)}
+        if source is not None:
+            value['source'] = source
+        return self._send(f"released|{team}|{format_hour(hour)}", value)
+
+    def save_record(self, value: dict) -> bool:
+        return self._send(record_key(value), value)
+
+
+@dataclass
+class AiLabelConfig:
+    """AI-sourced statuses with staff corrections. Applies to every hour from hour_floor(start) on."""
+    start: datetime
+    delay_hours: float = 1.0
+    error_rate: float = 0.12
+    correction_delay_hours: float = 18.0
+    seed: str = '551'
+
+    @property
+    def first_hour(self) -> datetime:
+        return hour_floor(self.start)
+
+
+def ai_config_from_env():
+    if AI_LABELS_START is None:
+        return None
+    return AiLabelConfig(AI_LABELS_START, AI_LABEL_DELAY_HOURS, AI_LABEL_ERROR_RATE,
+                         STAFF_CORRECTION_DELAY_HOURS, CR_SEED)
 
 
 class LabelService:
@@ -596,9 +744,25 @@ class LabelService:
 
     An hour with no recorded state (the generator was down for the whole second
     half of the hour) gets no label.
+
+    AI labels (ai = AiLabelConfig, off when None). Every hour from ai.first_hour on is
+    released ai.delay_hours after it ends, with source "ai"; for each region the AI status
+    is ai_status() (wrong with probability ai.error_rate). For each team and hour, the
+    regions whose AI status was wrong get a source "staff" record with the true status
+    ai.correction_delay_hours after the AI release to that team. Hours before
+    ai.first_hour keep the LABEL_DELAY_HOURS path; those released at or after ai.start
+    carry source "staff". Nothing released before ai.start carries a source.
+
+    Restart safety of AI labels: the AI decision of each region-hour is a pure function of
+    (seed, hour, region, true status); it is also written to the staff topic (ai_label)
+    before its first send and read back on load, so a restart reuses it even if the error
+    rate was changed. The released marker carries released_at and source, so the due time
+    of a pending correction survives a restart. A corrected marker per (team, hour) is
+    written right after the correction is acknowledged and stops a second correction; a
+    crash in between re-sends that correction once (same status, later released_at).
     """
 
-    def __init__(self, store, regions, delay_hours: float, send_labels, teams_fn):
+    def __init__(self, store, regions, delay_hours: float, send_labels, teams_fn, ai: AiLabelConfig = None):
         self.store = store                  # object with load/save_state/save_released, or None
         self.regions = list(regions)
         self.delay = timedelta(hours=delay_hours)
@@ -611,6 +775,27 @@ class LabelService:
         self._unsaved_released = []         # [(team, hour_dt, released_at)]
         self._topic_checked = False
         self.max_unsaved = 2000             # bound when the state team's Kafka never accepts writes
+        self.ai = ai
+        self.released_meta = {}             # (team, hour_dt) -> (released_at, source or None)
+        self.corrected = set()              # (team, hour_dt) whose AI errors have been corrected
+        self.records = {}                   # record_key -> newest ai_label / false_alarm / ... record
+        self._unsaved_records = {}          # record_key -> record not yet written
+        self._records_lock = Lock()         # the false-alarm thread also writes records
+
+    def queue_record(self, rec: dict):
+        """Keep rec as the newest record for its key and write it to the staff topic on the next flush."""
+        key = record_key(rec)
+        with self._records_lock:
+            self.records[key] = rec
+            self._unsaved_records[key] = rec
+
+    def get_record(self, key: str):
+        with self._records_lock:
+            return self.records.get(key)
+
+    def records_of_kind(self, kind: str) -> list:
+        with self._records_lock:
+            return [r for r in self.records.values() if r.get('kind') == kind]
 
     def _cap_unsaved(self):
         """Drop the oldest unsaved entries past max_unsaved, with a warning. They stay valid in memory."""
@@ -624,6 +809,13 @@ class LabelService:
             self._unsaved_released = self._unsaved_released[n:]
             logger.warning(f"[LABELS] State topic unwritable: dropped {n} unsaved release markers "
                            f"(a restart now could re-send those hours)")
+        with self._records_lock:
+            if len(self._unsaved_records) > self.max_unsaved:
+                drop = list(self._unsaved_records)[:len(self._unsaved_records) - self.max_unsaved]
+                for key in drop:
+                    del self._unsaved_records[key]
+                logger.warning(f"[LABELS] State topic unwritable: dropped {len(drop)} unsaved records "
+                               f"(a restart now would lose them)")
 
     def ensure_loaded(self) -> bool:
         if self.loaded:
@@ -634,18 +826,34 @@ class LabelService:
             if ensure:
                 ensure()
         try:
-            states, released = self.store.load()
+            result = self.store.load()
         except Exception as e:
             logger.warning(f"[LABELS] State topic not readable yet (will retry): {e}")
             return False
+        states, released = result[0], result[1]
+        records = dict(result[2]) if len(result) > 2 else {}
         for hour, st in self.states.items():  # states recorded before the load succeeded
             if hour not in states:
                 states[hour] = st
                 self._unsaved_states.add(hour)
         self.states = states
         self.released |= released
+        for rec in records.values():
+            try:
+                hour = parse_hour(rec['hour']) if 'hour' in rec else None
+                if rec['kind'] == 'released':
+                    at = parse_ts(rec['released_at']) if rec.get('released_at') else None
+                    self.released_meta.setdefault((rec['team'], hour), (at, rec.get('source')))
+                elif rec['kind'] == 'corrected':
+                    self.corrected.add((rec['team'], hour))
+            except Exception as e:
+                logger.warning(f"[LABELS] Skipping unreadable state record: {e}")
+        with self._records_lock:
+            records.update(self.records)   # anything written in this run before the load is newer
+            self.records = records
         self.loaded = True
-        logger.info(f"[LABELS] Loaded {len(states)} hour states and {len(released)} released markers")
+        logger.info(f"[LABELS] Loaded {len(states)} hour states, {len(released)} released markers "
+                    f"and {len(records)} other records")
         return True
 
     def record(self, now: datetime, profile: str, affected_regions) -> bool:
@@ -679,14 +887,67 @@ class LabelService:
             if self.store.save_state(hour, profile, affected, hour + timedelta(minutes=30)):
                 self._unsaved_states.discard(hour)
         still = []
-        for team, hour, at in self._unsaved_released:
-            if not self.store.save_released(team, hour, at):
-                still.append((team, hour, at))
+        for team, hour, at, source in self._unsaved_released:
+            ok = (self.store.save_released(team, hour, at, source) if source is not None
+                  else self.store.save_released(team, hour, at))
+            if not ok:
+                still.append((team, hour, at, source))
         self._unsaved_released = still
+        self._flush_records()
+
+    def _flush_records(self):
+        if self.store is None or not self.loaded:
+            return
+        with self._records_lock:
+            pending = list(self._unsaved_records.items())
+        for key, rec in pending:
+            if self.store.save_record(rec):
+                with self._records_lock:
+                    if self._unsaved_records.get(key) is rec:   # not replaced meanwhile
+                        del self._unsaved_records[key]
+
+    def is_ai_hour(self, hour: datetime) -> bool:
+        return self.ai is not None and hour >= self.ai.first_hour
+
+    def _delay_for(self, hour: datetime) -> timedelta:
+        return timedelta(hours=self.ai.delay_hours) if self.is_ai_hour(hour) else self.delay
 
     def due_hours(self, now: datetime) -> list:
         """Hours whose labels may be released: hour end + delay has passed."""
-        return sorted(h for h in self.states if h + HOUR + self.delay <= now)
+        return sorted(h for h in self.states if h + HOUR + self._delay_for(h) <= now)
+
+    def ai_decisions(self, hour: datetime) -> dict:
+        """{region: (true_status, ai_status)} for an AI hour. Drawn once, then read from the staff topic.
+
+        A new decision is queued as ai_label records before any AI status of the hour is sent.
+        """
+        profile, affected = self.states[hour]
+        out, drawn = {}, False
+        for region in self.regions:
+            rec = self.get_record(f"ai_label|{format_hour(hour)}|{region}")
+            if rec is not None:
+                out[region] = (rec['true_status'], rec['ai_status'])
+                continue
+            true = label_status(profile, affected, region)
+            ai = ai_status(self.ai.seed, hour, region, true, self.ai.error_rate)
+            out[region] = (true, ai)
+            drawn = True
+            self.queue_record({'kind': 'ai_label', 'hour': format_hour(hour), 'region': region,
+                               'true_status': true, 'ai_status': ai, 'wrong': ai != true,
+                               'ai_released_at': {}, 'correction_released_at': {}})
+        if drawn:
+            self._flush_records()   # best effort: record the decision before the first send
+        return out
+
+    def _note_release(self, hour: datetime, regions, field_name: str, team: str, at: datetime):
+        """Add team -> time to field_name of the ai_label records of these regions (grading record)."""
+        for region in regions:
+            rec = self.get_record(f"ai_label|{format_hour(hour)}|{region}")
+            if rec is None:
+                continue
+            rec = dict(rec)
+            rec[field_name] = {**(rec.get(field_name) or {}), team: format_ts(at)}
+            self.queue_record(rec)
 
     def release_due(self, now: datetime) -> int:
         """Send labels for every due (team, hour) not yet released. Returns messages sent."""
@@ -696,15 +957,65 @@ class LabelService:
         teams = sorted(self.teams_fn())
         for hour in self.due_hours(now):
             profile, affected = self.states[hour]
+            ai_hour = self.is_ai_hour(hour)
+            if ai_hour:
+                if not any((t, hour) not in self.released for t in teams):
+                    continue
+                decisions = self.ai_decisions(hour)
             for team in teams:
                 if (team, hour) in self.released:
                     continue
-                msgs = build_labels(hour, profile, affected, self.regions, now)
+                if ai_hour:
+                    source = 'ai'
+                    msgs = build_status_messages(hour, {r: d[1] for r, d in decisions.items()},
+                                                 self.regions, now, source)
+                else:
+                    source = 'staff' if self.ai is not None and now >= self.ai.start else None
+                    msgs = build_labels(hour, profile, affected, self.regions, now, source)
                 if self.send_labels(team, msgs):
                     self.released.add((team, hour))
-                    self._unsaved_released.append((team, hour, now))
+                    self.released_meta[(team, hour)] = (now, source)
+                    self._unsaved_released.append((team, hour, now, source))
+                    if ai_hour:
+                        self._note_release(hour, self.regions, 'ai_released_at', team, now)
                     sent += len(msgs)
-                    logger.info(f"[LABELS] Released {len(msgs)} labels for {format_hour(hour)} to {team}")
+                    logger.info(f"[LABELS] Released {len(msgs)} labels for {format_hour(hour)} to {team}"
+                                + (f" (source {source})" if source else ""))
+        sent += self.release_corrections(now, teams)
+        return sent
+
+    def release_corrections(self, now: datetime, teams) -> int:
+        """Send a staff record with the true status for each wrong AI status whose correction is due."""
+        if self.ai is None:
+            return 0
+        delay = timedelta(hours=self.ai.correction_delay_hours)
+        sent = 0
+        teams = set(teams)
+        for (team, hour), (at, source) in sorted(self.released_meta.items()):
+            if source != 'ai' or team not in teams or (team, hour) in self.corrected or at is None:
+                continue
+            # Due after the delay, and strictly after the AI record's released_at (whole seconds),
+            # so the newest released_at of a region-hour is the true status.
+            if now < at + delay or format_ts(now) <= format_ts(at):
+                continue
+            if hour not in self.states:
+                logger.warning(f"[LABELS] No state for {format_hour(hour)}; cannot correct its AI statuses")
+                self.corrected.add((team, hour))
+                continue
+            decisions = self.ai_decisions(hour)
+            wrong = [r for r in self.regions if decisions[r][0] != decisions[r][1]]
+            if not wrong:
+                self.corrected.add((team, hour))   # nothing to correct; no marker needed
+                continue
+            msgs = build_status_messages(hour, {r: decisions[r][0] for r in wrong}, wrong, now, 'staff')
+            if self.send_labels(team, msgs):
+                self.corrected.add((team, hour))
+                self.queue_record({'kind': 'corrected', 'team': team, 'hour': format_hour(hour),
+                                   'released_at': format_ts(now), 'regions': wrong})
+                self._note_release(hour, wrong, 'correction_released_at', team, now)
+                self._flush_records()   # write the marker at once: a restart must not send it again
+                sent += len(msgs)
+                logger.info(f"[LABELS] Released {len(msgs)} staff corrections for {format_hour(hour)} to {team}")
         return sent
 
     def tick(self, now: datetime, profile: str, affected_regions) -> int:
@@ -716,6 +1027,159 @@ class LabelService:
         if self.loaded:
             self._flush_unsaved()
         self._cap_unsaved()
+        return sent
+
+
+@dataclass
+class FalseAlarmConfig:
+    start: datetime
+    probability: float = 0.04        # chance that a burst starts in a given UTC hour
+    minutes: float = 30.0            # planned length of a burst
+    events_per_minute: float = 6.0   # extra symptom_report events per minute during a burst
+    seed: str = '551'
+
+
+def false_alarm_config_from_env():
+    if FALSE_ALARM_START is None:
+        return None
+    return FalseAlarmConfig(FALSE_ALARM_START, FALSE_ALARM_PROBABILITY, FALSE_ALARM_MINUTES,
+                            FALSE_ALARM_EVENTS_PER_MINUTE, CR_SEED)
+
+
+class FalseAlarmService:
+    """Bursts of extra symptom_report events in one region whose true status is LOW.
+
+    The burst events go straight to the raw topics. They never enter the pool, never set
+    the emitted state, and do not add to the symptom burden, so the true outbreak state
+    and the labels do not change.
+
+    Schedule: false_alarm_plan() per UTC hour (from cfg.start on). At the planned start the
+    region is chosen with the plan's pick among the regions whose status (label rule on the
+    emitted state) is LOW, in REGIONS order; if none is LOW the burst is recorded as
+    skipped. A burst ends at its planned end, or earlier if its region stops being LOW.
+    A new burst starts only within START_GRACE (2 minutes) of its planned start; a plan
+    missed by more (another burst was running, or the generator was down or had not yet
+    replayed the staff topic) is recorded as skipped with end_reason "missed". So bursts
+    never overlap.
+
+    Each burst is a false_alarm record in the staff topic (through LabelService.queue_record),
+    written at the start, every checkpoint_seconds, and at the end. After a restart a burst
+    whose window is still open resumes with its recorded region and count; one whose window
+    closed while the generator was down is closed at its last event (end_reason "interrupted").
+    Up to checkpoint_seconds of the count can be lost in a crash. Nothing starts before the
+    staff topic has been replayed.
+    """
+
+    START_GRACE = timedelta(minutes=2)
+
+    def __init__(self, cfg: FalseAlarmConfig, regions, labels: LabelService, send_event,
+                 checkpoint_seconds: float = 60.0):
+        self.cfg = cfg
+        self.regions = list(regions)
+        self.labels = labels
+        self.send_event = send_event          # (region) -> bool
+        self.checkpoint = timedelta(seconds=checkpoint_seconds)
+        self.interval = timedelta(seconds=60.0 / cfg.events_per_minute)
+        self.length = timedelta(minutes=cfg.minutes)
+        self.active = None                    # the running burst record
+        self._next_at = None
+        self._last_saved = None
+        self._closed_stale = False
+
+    def plans_covering(self, now: datetime) -> list:
+        """(planned_start, pick) of every plan whose window [start, start + length) contains now."""
+        out = []
+        back = int(self.length / HOUR) + 1
+        for i in range(back, -1, -1):
+            hour = hour_floor(now) - i * HOUR
+            plan = false_alarm_plan(self.cfg.seed, hour, self.cfg.probability)
+            if plan and plan[0] >= self.cfg.start and plan[0] <= now < plan[0] + self.length:
+                out.append(plan)
+        return out
+
+    def _save(self, now: datetime):
+        self.labels.queue_record(dict(self.active))
+        self._last_saved = now
+
+    def _end(self, now: datetime, reason: str):
+        self.active.update(status='ended', end=self.active.get('last_event_at') or format_ts(now),
+                           end_reason=reason)
+        self._save(now)
+        logger.info(f"[FALSE_ALARM] Burst in {self.active['region']} ended ({reason}): "
+                    f"{self.active['events_added']} events added")
+        self.active = None
+
+    def _close_stale(self, now: datetime):
+        for rec in self.labels.records_of_kind('false_alarm'):
+            if rec.get('status') == 'running' and parse_ts(rec['planned_end']) <= now:
+                rec = dict(rec, status='ended', end=rec.get('last_event_at') or rec.get('start'),
+                           end_reason='interrupted')
+                self.labels.queue_record(rec)
+
+    def _maybe_start(self, now: datetime, profile: str, affected):
+        for planned_start, pick in self.plans_covering(now):
+            key_start = format_ts(planned_start)
+            rec = self.labels.get_record(f"false_alarm|{key_start}")
+            if rec is not None and rec.get('status') != 'running':
+                continue                         # ended or skipped
+            if rec is not None:                  # resume after a restart
+                if label_status(profile, affected, rec['region']) != 'LOW':
+                    self.active = dict(rec)
+                    self._end(now, 'status_changed')
+                    continue
+                self.active = dict(rec)
+                logger.info(f"[FALSE_ALARM] Resuming burst in {rec['region']} ({rec['events_added']} events so far)")
+            else:
+                low = [r for r in self.regions if label_status(profile, affected, r) == 'LOW']
+                base = {'kind': 'false_alarm', 'planned_start': key_start,
+                        'planned_end': format_ts(planned_start + self.length)}
+                if now - planned_start > self.START_GRACE:
+                    # Not started on time (another burst was running, or the generator was down
+                    # or had not replayed the staff topic yet): record it as missed.
+                    self.labels.queue_record(dict(base, status='skipped', region=None, start=None, end=None,
+                                                  events_added=0, end_reason='missed'))
+                    continue
+                if not low:
+                    self.labels.queue_record(dict(base, status='skipped', region=None, start=None, end=None,
+                                                  events_added=0, end_reason='no_low_region'))
+                    continue
+                region = low[min(int(pick * len(low)), len(low) - 1)]
+                self.active = dict(base, region=region, start=format_ts(now), end=None, events_added=0,
+                                   last_event_at=None, status='running', end_reason=None)
+                logger.info(f"[FALSE_ALARM] Burst started in {region} until {base['planned_end']}")
+            self._next_at = now
+            self._save(now)
+            return
+
+    def step(self, now: datetime, emitted_state) -> int:
+        """Advance to now. Returns the number of burst events sent."""
+        if now < self.cfg.start or emitted_state is None or not self.labels.loaded:
+            return 0
+        if not self._closed_stale:
+            self._closed_stale = True
+            self._close_stale(now)
+        profile, affected = emitted_state
+        if self.active is None:
+            self._maybe_start(now, profile, affected)
+            if self.active is None:
+                return 0
+        if now >= parse_ts(self.active['planned_end']):
+            self._end(now, 'planned')
+            return 0
+        if label_status(profile, affected, self.active['region']) != 'LOW':
+            self._end(now, 'status_changed')
+            return 0
+        if self._next_at < now - timedelta(seconds=5):   # the thread stalled: do not flood
+            self._next_at = now
+        sent = 0
+        while self._next_at <= now:
+            if self.send_event(self.active['region']):
+                sent += 1
+                self.active['events_added'] += 1
+                self.active['last_event_at'] = format_ts(now)
+            self._next_at += self.interval
+        if now - self._last_saved >= self.checkpoint:
+            self._save(now)
         return sent
 
 
@@ -756,6 +1220,9 @@ class EventGenerator:
         self._topics_ready = set()   # teams whose label topic has unlimited retention
         self._topic_failures = {}
         self.labels = self._build_label_service()
+        fa = false_alarm_config_from_env()
+        self.false_alarms = (FalseAlarmService(fa, REGIONS, self.labels, self.send_false_alarm_event)
+                             if fa is not None else None)
 
     def _build_label_service(self) -> LabelService:
         """Labels go to each team's Kafka; the durable state goes to the staff team's Kafka."""
@@ -773,7 +1240,38 @@ class EventGenerator:
                 f"[LABELS] No Kafka entry for LABEL_STATE_TEAM={LABEL_STATE_TEAM!r}: label state is "
                 f"kept in memory only, and a restart loses pending labels.")
         return LabelService(store, REGIONS, LABEL_DELAY_HOURS, self.send_labels,
-                            lambda: list(self.producers.keys()))
+                            lambda: list(self.producers.keys()), ai=ai_config_from_env())
+
+    def send_false_alarm_event(self, region: str) -> bool:
+        """Send one extra symptom_report for region to every team's raw topic, like the emit thread does.
+
+        It does not go through the pool, does not set emitted_state, and does not add to the
+        symptom burden. BAD_EVENT_RATE applies, as for every raw event.
+        """
+        if not self.producers:
+            return False
+        event = self.generate_symptom_report()
+        event['region'] = region
+        event['timestamp'] = datetime.now(timezone.utc).isoformat()
+        event['source'] = 'event-generator'
+        event['schema_version'] = '1.0'
+        value = event
+        if BAD_EVENT_RATE and random.random() < BAD_EVENT_RATE:
+            value = make_bad_event(event)
+        for team_id, producer in list(self.producers.items()):
+            try:
+                producer.send(raw_topic(team_id), value=value)
+            except Exception as e:
+                logger.error(f"[FALSE_ALARM] Error sending to {team_id}: {e}")
+        return True
+
+    def false_alarm_thread_worker(self):
+        while self.running:
+            time.sleep(0.5)
+            try:
+                self.false_alarms.step(datetime.now(timezone.utc), self.emitted_state)
+            except Exception as e:
+                logger.error(f"Error in false-alarm loop: {e}", exc_info=True)
 
     def _fill_pool(self, count: int):
         """Generate `count` events and queue them, each tagged with the state it was generated under.
@@ -1485,6 +1983,15 @@ class EventGenerator:
         # Start LabelThread (records each hour's state, releases delayed labels)
         Thread(target=self.label_thread_worker, daemon=True).start()
         logger.info(f"LabelThread started (labels released {LABEL_DELAY_HOURS}h after each hour ends)")
+        if self.labels.ai is not None:
+            ai = self.labels.ai
+            logger.info(f"AI labels from {format_ts(ai.start)} (delay {ai.delay_hours}h, error rate "
+                        f"{ai.error_rate}, corrections after {ai.correction_delay_hours}h)")
+        if self.false_alarms is not None:
+            fa = self.false_alarms.cfg
+            Thread(target=self.false_alarm_thread_worker, daemon=True).start()
+            logger.info(f"FalseAlarmThread started (from {format_ts(fa.start)}, p={fa.probability}/hour, "
+                        f"{fa.minutes} min, {fa.events_per_minute} events/min)")
 
         # Start ReconnectThread (retries teams skipped at startup)
         Thread(target=self.reconnect_missing_teams_worker, daemon=True).start()

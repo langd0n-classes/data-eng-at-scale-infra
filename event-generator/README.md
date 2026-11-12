@@ -380,6 +380,15 @@ All configuration is done via `config.env`. Key settings:
 | `LABEL_DELAY_HOURS` | Hours after a UTC hour ends before its labels are released to `events.<team>.outbreak_status`. Not in the ConfigMap template; add the key by hand and restart the Deployment | `12` |
 | `LABEL_STATE_TEAM` | Team whose Kafka holds the staff-only state topic (must be a key of `TEAM_BOOTSTRAP_SERVERS`) | `team00` |
 | `LABEL_STATE_TOPIC` | Name of the staff-only state topic | `staff.outbreak_state` |
+| `CR_SEED` | Seed of every choice of the scheduled behaviors below | `551` |
+| `FALSE_ALARM_START` | UTC ISO time from which false-alarm bursts can start; unset = off | unset |
+| `FALSE_ALARM_PROBABILITY` | Chance that a burst starts in a given UTC hour | `0.04` |
+| `FALSE_ALARM_MINUTES` | Planned length of a burst | `30` |
+| `FALSE_ALARM_EVENTS_PER_MINUTE` | Extra `symptom_report` events per minute in the burst region | `6` |
+| `AI_LABELS_START` | UTC ISO time from which statuses are AI-sourced with staff corrections; unset = off | unset |
+| `AI_LABEL_DELAY_HOURS` | Hours after an hour ends before its AI statuses are released | `1` |
+| `AI_LABEL_ERROR_RATE` | Share of AI statuses that are wrong | `0.12` |
+| `STAFF_CORRECTION_DELAY_HOURS` | Hours after a wrong AI status before the staff correction | `18` |
 
 **Topic naming pattern:**
 - Multi-team: `${TOPIC_PREFIX}${TEAM_ID}${TOPIC_SUFFIX}` → `events.team01.raw`
@@ -468,6 +477,59 @@ Without compaction the broker default (`cleanup.policy=delete`, 7 days) applies.
 history. If retention is shorter than the delay, a restart loses the states of hours that are still
 pending, and those hours get no label. Without compaction and with infinite retention the topic grows by
 about 24 + 24 x teams records a day, which is small.
+
+### Scheduled behaviors (staff only)
+
+Two behaviors, each off unless its start variable is set. Every choice is drawn from
+`random.Random` seeded with `CR_SEED` and the hour (and region), so staff can reproduce it.
+Neither changes the history backfill. Add the keys to the generator ConfigMap and restart
+the Deployment.
+
+**False-alarm bursts** (`FALSE_ALARM_START`). For each UTC hour from the start, a seeded draw
+decides with `FALSE_ALARM_PROBABILITY` whether a burst starts in that hour, at a seeded second.
+At that time the region is chosen (seeded) among the regions whose status, by the label rule on
+the emitted state, is LOW. For `FALSE_ALARM_MINUTES` the generator sends
+`FALSE_ALARM_EVENTS_PER_MINUTE` extra `symptom_report` events for that region to every team's raw
+topic. They have the normal schema; `BAD_EVENT_RATE` applies to them as to every raw event. They
+do not go through the pool, do not set the emitted state, and do not add to the symptom burden,
+so the outbreak state and the labels do not change. A burst ends early if its region stops being
+LOW. If no region is LOW, or the planned start was missed by more than 2 minutes (another burst
+running, the generator down or still replaying the staff topic), the burst is recorded as skipped;
+bursts never overlap.
+
+**AI-sourced statuses with corrections** (`AI_LABELS_START`). From the hour that contains the start,
+the statuses of each hour are released `AI_LABEL_DELAY_HOURS` after the hour ends, with
+`"source": "ai"`. For each region-hour a seeded draw makes the AI status wrong with
+`AI_LABEL_ERROR_RATE`; a wrong status is one of the other two statuses. For every wrong AI status,
+a record with `"source": "staff"` and the true status for the same region and hour is released
+`STAFF_CORRECTION_DELAY_HOURS` after the AI record (to that team), so the record with the newest
+`released_at` for a region-hour is the true status once the correction is out. Hours before the
+start keep the `LABEL_DELAY_HOURS` path; those released at or after the start carry
+`"source": "staff"`. No record released before the start has a `source` field.
+
+```json
+{"region": "Boston", "hour": "2026-12-03T14:00:00Z", "status": "WATCH", "released_at": "2026-12-03T16:00:04Z", "source": "ai"}
+{"region": "Boston", "hour": "2026-12-03T14:00:00Z", "status": "ALERT", "released_at": "2026-12-04T10:00:09Z", "source": "staff"}
+```
+
+**Grading records in `staff.outbreak_state`** (newest record per key):
+
+| Kind (key) | Fields |
+|---|---|
+| `false_alarm` (`false_alarm\|<planned_start>`) | `planned_start`, `planned_end`, `region`, `start`, `end` (last event), `events_added`, `status` (`running`, `ended`, `skipped`), `end_reason` (`planned`, `status_changed`, `interrupted`, `no_low_region`, `missed`) |
+| `ai_label` (`ai_label\|<hour>\|<region>`) | `hour`, `region`, `true_status`, `ai_status`, `wrong`, `ai_released_at` and `correction_released_at` (each `{team: time}`) |
+| `corrected` (`corrected\|<team>\|<hour>`) | `team`, `hour`, `released_at`, `regions` corrected |
+| `released` | as before, plus `released_at` and `source` |
+
+**Restart safety.** The AI decision is a pure function of seed, hour, region and true status, and
+is also written to `ai_label` before the first send; after a restart it is read back, so it is not
+drawn again (even if `AI_LABEL_ERROR_RATE` changed). The released marker carries `released_at` and
+`source`, so pending corrections keep their due time across a restart. The `corrected` marker is
+written right after the correction is acknowledged; a crash between the two re-sends that one
+correction (same status, later `released_at`). A running burst is checkpointed every 60 s: after a
+restart inside its window it resumes in the same region with its count (up to 60 s of count can
+be lost); if its window closed while the generator was down it is closed with `end_reason`
+`interrupted`.
 
 ### Retention of the history and label topics
 
