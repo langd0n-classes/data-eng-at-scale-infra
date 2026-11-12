@@ -652,8 +652,8 @@ class KafkaStateStore:
             while any(consumer.position(tp) < end[tp] for tp in tps):
                 if time.monotonic() > deadline:
                     raise TimeoutError(f"could not read all of {self.topic} within 60s")
-                for records in consumer.poll(timeout_ms=2000).values():
-                    for rec in records:
+                for batch in consumer.poll(timeout_ms=2000).values():
+                    for rec in batch:
                         self._apply(rec.value, states, released, records)
         finally:
             consumer.close()

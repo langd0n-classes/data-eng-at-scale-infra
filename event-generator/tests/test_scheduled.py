@@ -479,3 +479,50 @@ def test_state_records_replay_with_new_kinds():
     assert svc.ensure_loaded()
     assert svc.released_meta[('team01', utc(2026, 12, 3))] == (utc(2026, 12, 3, 2, 0, 5), 'ai')
     assert ('team01', utc(2026, 12, 3)) in svc.corrected
+
+
+def test_kafka_state_store_load_returns_other_records(monkeypatch):
+    """load() against a fake consumer: every kind is replayed (the poll loop must not shadow the result)."""
+    raws = [
+        {'kind': 'state', 'hour': '2026-12-03T00:00:00Z', 'profile': 'baseline', 'affected_regions': []},
+        {'kind': 'released', 'team': 'team12', 'hour': '2026-12-03T00:00:00Z', 'released_at': '2026-12-03T01:03:05Z',
+         'source': 'ai'},
+        {'kind': 'ai_label', 'hour': '2026-12-03T00:00:00Z', 'region': 'Boston', 'true_status': 'LOW',
+         'ai_status': 'WATCH', 'wrong': True, 'ai_released_at': {}, 'correction_released_at': {}},
+    ]
+
+    class Rec:
+        def __init__(self, v):
+            self.value = json.dumps(v).encode()
+
+    class Consumer:
+        def __init__(self, *a, **k):
+            self.pos = 0
+
+        def partitions_for_topic(self, topic):
+            return {0}
+
+        def assign(self, tps):
+            pass
+
+        def seek_to_beginning(self, *tps):
+            pass
+
+        def end_offsets(self, tps):
+            return {tp: len(raws) for tp in tps}
+
+        def position(self, tp):
+            return self.pos
+
+        def poll(self, timeout_ms=None):
+            self.pos = len(raws)
+            return {'tp': [Rec(r) for r in raws]}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(eg, 'KafkaConsumer', Consumer)
+    states, released, records = eg.KafkaStateStore('b:9092', 'staff.outbreak_state', lambda: None).load()
+    assert states == {utc(2026, 12, 3): ('baseline', ())}
+    assert released == {('team12', utc(2026, 12, 3))}
+    assert set(records) == {'released|team12|2026-12-03T00:00:00Z', 'ai_label|2026-12-03T00:00:00Z|Boston'}
