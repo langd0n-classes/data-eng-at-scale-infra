@@ -1,6 +1,7 @@
 """Scheduled false-alarm bursts and AI-sourced labels with staff corrections. Kafka is mocked."""
 import json
 import os
+from collections import Counter
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -103,13 +104,14 @@ def test_both_behaviors_off_by_default(monkeypatch):
 def test_defaults_and_env_parsing(monkeypatch):
     assert (eg.CR_SEED, eg.FALSE_ALARM_PROBABILITY, eg.FALSE_ALARM_MINUTES, eg.FALSE_ALARM_EVENTS_PER_MINUTE,
             eg.AI_LABEL_DELAY_HOURS, eg.AI_LABEL_ERROR_RATE, eg.STAFF_CORRECTION_DELAY_HOURS) == \
-        ('551', 0.04, 30.0, 6.0, 1.0, 0.12, 18.0)
+        ('551', 0.04, 15.0, 6.0, 1.0, 0.12, 18.0)
     monkeypatch.setenv('X_START', '2026-12-03T00:00:00Z')
     assert eg._env_time('X_START') == utc(2026, 12, 3)
     monkeypatch.setenv('X_START', '2026-12-03T05:00:00-05:00')
     assert eg._env_time('X_START') == utc(2026, 12, 3, 10)
+    monkeypatch.setattr(eg, 'CONFIG_ERRORS', [])
     monkeypatch.setenv('X_START', 'soon')
-    assert eg._env_time('X_START') is None
+    assert eg._env_time('X_START') is None and len(eg.CONFIG_ERRORS) == 1
     monkeypatch.setenv('X_RATE', '1.5')
     assert eg._env_prob('X_RATE', 0.12) == 0.12
 
@@ -318,8 +320,18 @@ def drive_bursts(gen, fa, start, end, step=timedelta(seconds=5)):
     while t < end:
         st = schedule_state(t)
         gen.emitted_state = (st[0], tuple(st[1]))
-        fa.step(t, gen.emitted_state)
         gen.labels.tick(t, st[0], st[1])
+        fa.step(t, gen.emitted_state)
+        t += step
+    return t
+
+
+def drive(labels, fa, start, end, state=('baseline', ()), step=timedelta(seconds=5)):
+    """Label tick then burst step every `step`, with a fixed emitted state."""
+    t = start
+    while t < end:
+        labels.tick(t, state[0], list(state[1]))
+        fa.step(t, state)
         t += step
     return t
 
@@ -346,34 +358,51 @@ def test_bursts_never_change_state_or_labels(monkeypatch):
     assert gen.labels.states == ref.states                    # labels unchanged
     bursts = [r for r in gen.labels.records_of_kind('false_alarm') if r['status'] == 'ended']
     assert bursts and sum(b['events_added'] for b in bursts) == len(events)
+    assert any(ref.states[eg.hour_floor(eg.parse_ts(b['start']))][0] == 'outbreak' for b in bursts)
     for ev in events:
         assert ev['event_type'] == 'symptom_report' and ev['source'] == 'event-generator'
     for b in bursts:
         s, e = eg.parse_ts(b['start']), eg.parse_ts(b['end'])
-        assert e - s <= timedelta(minutes=20)
-        for t in (s, e):
-            p, a = schedule_state(t)
-            assert eg.label_status(p, a, b['region']) == 'LOW'
+        hour = eg.hour_floor(s)
+        # inside one hour, after its HH:30 state, and the hour's recorded label is LOW for the region
+        assert hour + timedelta(minutes=31) <= s and e < hour + eg.HOUR
+        assert eg.parse_ts(b['planned_end']) <= hour + eg.HOUR
+        p, a = ref.states[hour]
+        assert eg.label_status(p, a, b['region']) == 'LOW'
+        assert timedelta(minutes=15) - timedelta(seconds=10) <= e - s <= timedelta(minutes=20)
         assert abs(b['events_added'] - 6 * (e - s).total_seconds() / 60) <= 2
-    # a burst at most every planned hour, and at a probability of 0.5 about half the hours
+    # at a probability of 0.5 about half the hours have a plan, and every plan has a record
     hours = (end - start) / eg.HOUR
-    planned = sum(1 for i in range(int(hours))
-                  if eg.false_alarm_plan('551', start + i * eg.HOUR, 0.5) and
-                  eg.false_alarm_plan('551', start + i * eg.HOUR, 0.5)[0] >= start)
+    planned = sum(1 for i in range(int(hours)) if eg.false_alarm_plan('551', start + i * eg.HOUR, 0.5))
     assert 0.35 * hours < planned < 0.65 * hours
     assert len(gen.labels.records_of_kind('false_alarm')) == planned
+
+
+def test_burst_is_capped_at_the_top_of_the_hour():
+    labels = service(None, [], teams=())
+    fa = eg.FalseAlarmService(fa_cfg(probability=1.0, minutes=50), REGIONS, labels, lambda r: True)
+    hour = utc(2026, 11, 30, 3)
+    plan_start, _ = eg.false_alarm_plan('551', hour, 1.0)
+    drive(labels, fa, hour, hour + timedelta(hours=1, minutes=5))
+    rec = labels.get_record(f"false_alarm|{eg.format_ts(plan_start)}")
+    assert rec['planned_end'] == eg.format_ts(hour + eg.HOUR)
+    assert rec['status'] == 'ended' and rec['end_reason'] == 'planned'
+    assert eg.parse_ts(rec['end']) < hour + eg.HOUR
+    assert eg.parse_ts(rec['last_event_at']) < hour + eg.HOUR
 
 
 def test_burst_region_is_low_and_ends_when_status_changes():
     labels = service(None, [], teams=())
     sent = []
-    fa = eg.FalseAlarmService(fa_cfg(probability=1.0, minutes=50), REGIONS, labels,
+    fa = eg.FalseAlarmService(fa_cfg(probability=1.0, minutes=15), REGIONS, labels,
                               lambda r: sent.append(r) or True)
     hour = utc(2026, 11, 30, 3)
     plan_start, _ = eg.false_alarm_plan('551', hour, 1.0)
+    # the hour's recorded state: Boston affected; the emitted state at the start: four regions affected
+    labels.record(hour + timedelta(minutes=30), 'outbreak', ['Boston'])
     state = ('outbreak', ('Boston', 'Cambridge', 'Somerville', 'Brookline'))
     fa.step(plan_start, state)
-    assert fa.active['region'] == 'Newton'                   # the only LOW region
+    assert fa.active['region'] == 'Newton'                   # the only region LOW in both
     for i in range(5, 65, 5):
         fa.step(plan_start + timedelta(seconds=i), state)
     assert set(sent) == {'Newton'} and len(sent) == 7          # 6 per minute, from second 0 to 60
@@ -382,11 +411,19 @@ def test_burst_region_is_low_and_ends_when_status_changes():
     rec = labels.get_record(f"false_alarm|{eg.format_ts(plan_start)}")
     assert rec['status'] == 'ended' and rec['end_reason'] == 'status_changed' and rec['events_added'] == 7
 
-    # no LOW region at all: skipped, nothing sent
-    plan2, _ = eg.false_alarm_plan('551', hour + eg.HOUR, 1.0)
-    fa.step(plan2, ('outbreak', tuple(REGIONS)))
+    # a region LOW in the emitted state but not in the hour's recorded label is never chosen
+    h2 = hour + eg.HOUR
+    plan2, _ = eg.false_alarm_plan('551', h2, 1.0)
+    labels.record(h2 + timedelta(minutes=30), 'outbreak', list(REGIONS))
+    fa.step(plan2, ('baseline', ()))
     rec2 = labels.get_record(f"false_alarm|{eg.format_ts(plan2)}")
     assert rec2['status'] == 'skipped' and rec2['end_reason'] == 'no_low_region' and len(sent) == 7
+
+    # no recorded state for the hour: skipped
+    h3 = hour + 2 * eg.HOUR
+    plan3, _ = eg.false_alarm_plan('551', h3, 1.0)
+    fa.step(plan3, ('baseline', ()))
+    assert labels.get_record(f"false_alarm|{eg.format_ts(plan3)}")['end_reason'] == 'no_hour_state'
 
 
 def test_bursts_off_before_start():
@@ -394,56 +431,90 @@ def test_bursts_off_before_start():
     sent = []
     fa = eg.FalseAlarmService(fa_cfg(start=utc(2026, 12, 1), probability=1.0), REGIONS, labels,
                               lambda r: sent.append(r) or True)
-    t = utc(2026, 11, 30)
-    while t < utc(2026, 12, 1):
-        fa.step(t, ('baseline', ()))
-        t += timedelta(seconds=30)
+    drive(labels, fa, utc(2026, 11, 30), utc(2026, 12, 1), step=timedelta(seconds=30))
     assert sent == [] and labels.records == {}
 
 
-def test_burst_restart_resumes_and_closes_interrupted():
-    store = Store()
+def test_burst_events_use_the_baseline_mix(monkeypatch):
+    gen = make_gen(monkeypatch)
+    gen.state.profile, gen.state.affected_regions = 'outbreak', ['Boston', 'Cambridge']
+    for _ in range(3000):
+        gen.send_false_alarm_event('Newton')
+    events = [v for _, v in gen.producers['team01'].sent]
+    assert {e['region'] for e in events} == {'Newton'}
+    sev = Counter(e['severity'] for e in events)
+    # baseline weights 60/30/10; outbreak would be 20/40/40
+    assert abs(sev['mild'] / 3000 - 0.6) < 0.04 and abs(sev['severe'] / 3000 - 0.1) < 0.03
+    durations = [e['duration_days'] for e in events if e['severity'] == 'mild']
+    assert max(durations) <= 5
+
+
+def burst_then_restart(store, cfg, minutes_run):
+    """Run a burst for minutes_run minutes; return (plan_start, region, events sent)."""
     sent = []
-    cfg = fa_cfg(probability=1.0, minutes=30)
     l1 = service(store, [], teams=())
     fa1 = eg.FalseAlarmService(cfg, REGIONS, l1, lambda r: sent.append(r) or True, checkpoint_seconds=60)
-    plan_start, _ = eg.false_alarm_plan('551', utc(2026, 11, 30, 2), 1.0)
-    t = plan_start
-    while t < plan_start + timedelta(minutes=10, seconds=1):
-        fa1.step(t, ('baseline', ()))
-        l1.tick(t, 'baseline', [])
-        t += timedelta(seconds=5)
-    region = fa1.active['region']
-    n_before = len(sent)
+    hour = utc(2026, 11, 30, 2)
+    plan_start, _ = eg.false_alarm_plan(cfg.seed, hour, 1.0)
+    drive(l1, fa1, hour + timedelta(minutes=29), plan_start + timedelta(minutes=minutes_run, seconds=1))
+    return plan_start, fa1.active['region'], sent
 
-    # restart 1 minute later: the burst resumes in the same region and keeps its count
+
+def test_burst_restart_resumes_in_same_region_with_count():
+    store = Store()
+    cfg = fa_cfg(probability=1.0, minutes=12)
+    plan_start, region, sent = burst_then_restart(store, cfg, 5)
+    n_before = len(sent)
+    rec = store.records('false_alarm')[f"false_alarm|{eg.format_ts(plan_start)}"]
+    assert rec['status'] == 'running' and rec['events_added'] >= n_before - 6   # flushed at start and each minute
+
     l2 = service(store, [], teams=())
     assert l2.ensure_loaded()
     fa2 = eg.FalseAlarmService(cfg, REGIONS, l2, lambda r: sent.append(r) or True)
-    t = plan_start + timedelta(minutes=11)
-    while t < plan_start + timedelta(minutes=31):
-        fa2.step(t, ('baseline', ()))
-        l2.tick(t, 'baseline', [])
-        t += timedelta(seconds=5)
+    drive(l2, fa2, plan_start + timedelta(minutes=6), plan_start + timedelta(minutes=13))
     rec = store.records('false_alarm')[f"false_alarm|{eg.format_ts(plan_start)}"]
-    assert rec['status'] == 'ended' and rec['region'] == region and set(sent) == {region}
-    assert n_before <= rec['events_added'] <= len(sent)
-    assert rec['events_added'] >= len(sent) - 6               # at most one checkpoint interval lost
+    assert rec['status'] == 'ended' and rec['end_reason'] == 'planned'
+    assert rec['region'] == region and set(sent) == {region}
+    assert len(sent) - 6 <= rec['events_added'] <= len(sent)   # at most one checkpoint interval lost
 
-    # a burst whose window closes while the generator is down is closed as interrupted
-    store2 = Store()
-    l3 = service(store2, [], teams=())
-    fa3 = eg.FalseAlarmService(cfg, REGIONS, l3, lambda r: True)
-    p3, _ = eg.false_alarm_plan('551', utc(2026, 11, 30, 5), 1.0)
-    for i in range(0, 125, 5):
-        fa3.step(p3 + timedelta(seconds=i), ('baseline', ()))
-        l3.tick(p3 + timedelta(seconds=i), 'baseline', [])
-    l4 = service(store2, [], teams=())
-    l4.ensure_loaded()
-    fa4 = eg.FalseAlarmService(cfg, REGIONS, l4, lambda r: True)
-    fa4.step(p3 + timedelta(hours=2), ('baseline', ()))
-    l4.tick(p3 + timedelta(hours=2), 'baseline', [])
-    rec = store2.records('false_alarm')[f"false_alarm|{eg.format_ts(p3)}"]
+
+@pytest.mark.parametrize("change", [
+    {'seed': '552'},                # another plan
+    {'probability': 0.0},           # no plan
+    {'minutes': 2},                 # the plan's window has closed
+    {'start': utc(2026, 12, 15)},   # start moved later
+])
+def test_restart_with_changed_config_closes_running_burst(change):
+    store = Store()
+    cfg = fa_cfg(probability=1.0, minutes=12)
+    plan_start, region, _ = burst_then_restart(store, cfg, 4)
+    key = f"false_alarm|{eg.format_ts(plan_start)}"
+    assert store.records('false_alarm')[key]['status'] == 'running'
+
+    l2 = service(store, [], teams=())
+    assert l2.ensure_loaded()
+    cfg2 = fa_cfg(**{**dict(probability=1.0, minutes=12), **change})
+    fa2 = eg.FalseAlarmService(cfg2, REGIONS, l2, lambda r: True)
+    t = plan_start + timedelta(minutes=5)
+    l2.tick(t, 'baseline', [])
+    fa2.step(t, ('baseline', ()))
+    rec = store.records('false_alarm')[key]
+    assert rec['status'] == 'ended' and rec['end_reason'] == 'interrupted' and rec['region'] == region
+    assert not [r for r in store.records('false_alarm').values() if r['status'] == 'running' and
+                r['planned_start'] == eg.format_ts(plan_start)]
+
+
+def test_burst_closed_when_window_ended_during_downtime():
+    store = Store()
+    cfg = fa_cfg(probability=1.0, minutes=12)
+    plan_start, _, _ = burst_then_restart(store, cfg, 2)
+    l2 = service(store, [], teams=())
+    l2.ensure_loaded()
+    fa2 = eg.FalseAlarmService(cfg, REGIONS, l2, lambda r: True)
+    t = plan_start + timedelta(hours=2)
+    l2.tick(t, 'baseline', [])
+    fa2.step(t, ('baseline', ()))
+    rec = store.records('false_alarm')[f"false_alarm|{eg.format_ts(plan_start)}"]
     assert rec['status'] == 'ended' and rec['end_reason'] == 'interrupted'
 
 
@@ -456,7 +527,50 @@ def test_false_alarm_plan_deterministic():
     assert 5 <= len(starts) <= 40                              # about 20 at 4 % per hour
     for h, p in zip(hours, a):
         if p:
-            assert h <= p[0] < h + eg.HOUR and 0 <= p[1] < 1
+            assert h + timedelta(minutes=31) <= p[0] < h + timedelta(minutes=45) and 0 <= p[1] < 1
+
+
+# ---- corrections without the AI config, config errors -------------------------
+
+@pytest.mark.parametrize("ai_after", [None, 'later'])
+def test_corrections_continue_when_ai_start_removed_or_moved(ai_after):
+    store = Store()
+    sent1 = []
+    s1 = service(store, sent1, ai=ai_cfg(correction_delay_hours=18))
+    mid = run(s1, utc(2026, 12, 3), utc(2026, 12, 3, 20))
+    wrong = {(t, v['region'], v['hour']) for t, v in sent1
+             if v['status'] != s1.ai_decisions(eg.parse_hour(v['hour']))[v['region']][0]}
+    assert wrong and set(s1.pending_corrections) == {(t, eg.parse_hour(v['hour'])) for t, v in sent1}
+    ai2 = None if ai_after is None else ai_cfg(start=utc(2026, 12, 10), correction_delay_hours=18)
+    sent2 = []
+    s2 = service(store, sent2, ai=ai2)
+    assert s2.ensure_loaded()
+    assert set(s2.pending_corrections) == set(s1.pending_corrections)
+    run(s2, mid, utc(2026, 12, 4, 16))
+    corr = [(t, v['region'], v['hour']) for t, v in sent2 if v.get('source') == 'staff'
+            and eg.parse_hour(v['hour']) < utc(2026, 12, 3, 19)]
+    assert sorted(corr) == sorted(wrong)                      # each wrong AI status corrected exactly once
+    assert not s2.pending_corrections                         # all done; nothing left to scan
+
+
+def test_pending_corrections_are_cleared():
+    sent = []
+    s = service(None, sent, ai=ai_cfg(correction_delay_hours=1), teams=('team01',))
+    run(s, utc(2026, 12, 3), utc(2026, 12, 3, 6))
+    # hours 0..3 have AI out (hour end + 1 h) and their corrections (+1 h) are past: nothing pending
+    assert all(h >= utc(2026, 12, 3, 3) for _, h in s.pending_corrections)
+
+
+def test_unparseable_start_time_fails_loudly(monkeypatch):
+    monkeypatch.setattr(eg, 'CONFIG_ERRORS', [])
+    monkeypatch.setenv('AI_LABELS_START', '2026-12-3 midnight')
+    assert eg._env_time('AI_LABELS_START') is None
+    assert len(eg.CONFIG_ERRORS) == 1 and 'AI_LABELS_START' in eg.CONFIG_ERRORS[0]
+    assert eg.main() == 2
+    monkeypatch.setattr(eg, 'CONFIG_ERRORS', [])
+    monkeypatch.setenv('FALSE_ALARM_START', 'soon')
+    eg._env_time('FALSE_ALARM_START')
+    assert 'FALSE_ALARM_START' in eg.CONFIG_ERRORS[0] and eg.main() == 2
 
 
 def test_state_records_replay_with_new_kinds():
