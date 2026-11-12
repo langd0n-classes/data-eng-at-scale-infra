@@ -14,7 +14,7 @@ COPY src/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY src/event_generator.py .
+COPY src/event_generator.py src/backfill_history.py src/reconstruct_state.py ./
 
 # Health check endpoint port (also used for readiness/liveness probes)
 EXPOSE 8000

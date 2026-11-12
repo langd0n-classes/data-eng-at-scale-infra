@@ -34,3 +34,8 @@ data:
   # Set in config.env to use single-cluster mode instead of multi-team
   KAFKA_BOOTSTRAP_SERVERS: "${KAFKA_BOOTSTRAP_SERVERS}"
 
+  # Optional, not templated (the deploy scripts substitute a fixed variable list).
+  # Add by hand to change the defaults, then restart the Deployment:
+  #   LABEL_DELAY_HOURS: "12"          # hours after an hour ends before its labels are released
+  #   LABEL_STATE_TEAM: "team00"       # team whose Kafka holds the staff-only staff.outbreak_state topic
+

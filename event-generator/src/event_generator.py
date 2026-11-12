@@ -11,6 +11,11 @@ Architecture:
   - EmitThread (continuous): drains pool to Kafka at variable pace
 
 Outbreak-aware event and severity distributions are defined inline in this file.
+
+Delayed labels: each team also gets events.<team>.outbreak_status, one message per
+region per completed UTC hour, released LABEL_DELAY_HOURS after the hour ends.
+See label_status() for the rule and LabelService for restart safety.
+Labeled history for training is written by backfill_history.py (separate entry point).
 """
 
 import os
@@ -26,7 +31,10 @@ from datetime import datetime, timedelta, timezone
 from threading import Thread, Lock
 from flask import Flask
 from waitress import serve
-from kafka import KafkaProducer
+from kafka import KafkaProducer, KafkaConsumer, TopicPartition
+from kafka.admin import KafkaAdminClient, NewTopic, ConfigResource, ConfigResourceType
+from kafka.errors import TopicAlreadyExistsError
+import kafka.errors as kafka_errors
 
 # Configure logging
 logging.basicConfig(
@@ -76,6 +84,33 @@ def _bad_event_rate() -> float:
 BAD_EVENT_RATE = _bad_event_rate()
 BAD_EVENT_KINDS = ['not_json', 'missing_field', 'wrong_type', 'unknown_type',
                    'out_of_range', 'bad_timestamp']
+
+
+# Delayed outbreak labels (see label_status / LabelService below).
+def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
+    raw = os.getenv(name, '')
+    if raw.strip() == '':
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = float('nan')
+    if not value >= minimum:  # also rejects NaN
+        logger.warning(f"{name}={raw!r} is not a number >= {minimum}; using {default}")
+        return default
+    return value
+
+
+# Hours between the end of a UTC hour and the release of that hour's labels.
+LABEL_DELAY_HOURS = _env_float('LABEL_DELAY_HOURS', 12.0)
+LABEL_TOPIC_SUFFIX = os.getenv('LABEL_TOPIC_SUFFIX', '.outbreak_status')
+HISTORY_TOPIC_SUFFIX = os.getenv('HISTORY_TOPIC_SUFFIX', '.history')
+# Staff-only topic that records the per-hour state so pending labels survive a
+# restart. It lives in the Kafka of LABEL_STATE_TEAM (team00), which students
+# cannot read because each team only has access to its own Kafka.
+LABEL_STATE_TOPIC = os.getenv('LABEL_STATE_TOPIC', 'staff.outbreak_state')
+LABEL_STATE_TEAM = os.getenv('LABEL_STATE_TEAM', 'team00')
+LABEL_TICK_SECONDS = 15
 
 # Parse team bootstrap servers from environment
 TEAM_KAFKA_MAPPING = {}
@@ -244,6 +279,447 @@ def is_in_outbreak_window(now: datetime) -> tuple:
 
 
 # ============================================================================
+# Outbreak Labels
+# ============================================================================
+
+HOUR = timedelta(hours=1)
+
+
+def hour_floor(dt: datetime) -> datetime:
+    """Start of the UTC hour that contains dt."""
+    return dt.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+
+
+def format_hour(hour: datetime) -> str:
+    """'YYYY-MM-DDTHH:00:00Z' for the start of an hour."""
+    return hour_floor(hour).strftime('%Y-%m-%dT%H:00:00Z')
+
+
+def parse_hour(text: str) -> datetime:
+    return datetime.strptime(text, '%Y-%m-%dT%H:00:00Z').replace(tzinfo=timezone.utc)
+
+
+def format_ts(dt: datetime) -> str:
+    """ISO UTC timestamp with a Z suffix, whole seconds."""
+    return dt.astimezone(timezone.utc).replace(microsecond=0).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def label_status(profile: str, affected_regions, region: str) -> str:
+    """THE label rule. One function; the live service and the backfill both call it.
+
+    ALERT if the profile was "outbreak" and the region was in affected_regions.
+    WATCH if the profile was "winddown" and the region was in affected_regions.
+    LOW otherwise (baseline, or a region the outbreak did not touch).
+
+    profile and affected_regions are the state that held for the hour. When the
+    state changes inside an hour, the hour uses the state at the half hour
+    (HH:30:00): see LabelService.record().
+    """
+    if region in (affected_regions or ()):
+        if profile == 'outbreak':
+            return 'ALERT'
+        if profile == 'winddown':
+            return 'WATCH'
+    return 'LOW'
+
+
+def build_labels(hour: datetime, profile: str, affected_regions, regions, released_at: datetime) -> list:
+    """One (key, value) pair per region for the hour. Labels never carry bad events."""
+    return [
+        (region, {
+            'region': region,
+            'hour': format_hour(hour),
+            'status': label_status(profile, affected_regions, region),
+            'released_at': format_ts(released_at),
+        })
+        for region in regions
+    ]
+
+
+def label_topic(team_id: str) -> str:
+    if team_id == 'shared':
+        return f"{TOPIC_PREFIX}{LABEL_TOPIC_SUFFIX.lstrip('.')}"
+    return f"{TOPIC_PREFIX}{team_id}{LABEL_TOPIC_SUFFIX}"
+
+
+# Team brokers default to log.retention.hours=24 and log.retention.bytes=100 MB per partition,
+# and auto-create topics. The history and label topics must stay readable for the whole term,
+# so they get the same unlimited retention as the raw topic (deploy-kafka-task.yaml).
+UNLIMITED_RETENTION = {'retention.ms': '-1', 'retention.bytes': '-1'}
+
+
+TOPIC_EXISTS_CODE = 36        # TOPIC_ALREADY_EXISTS
+ENSURE_TOPICS_TIMEOUT = 60.0  # seconds for the whole call; the admin client has no overall timeout
+_ensure_inflight = {}         # (bootstrap, topics) -> worker thread of a call that timed out
+
+
+def _error_name(code: int) -> str:
+    try:
+        return f"{kafka_errors.for_code(code).__name__} ({code})"
+    except Exception:
+        return f"error code {code}"
+
+
+def _check_topic_errors(response, what: str, allow_exists: bool = False) -> bool:
+    """Check the per-topic error codes of a CreateTopics response.
+
+    kafka-python 2.0.2 raises for some of these and returns the response for others, so both
+    are handled. Returns True if the topic already exists (code 36, when allowed); raises on any
+    other non-zero code.
+    """
+    exists = False
+    for entry in (getattr(response, 'topic_errors', None) or []):
+        code, message = entry[1], (entry[2] if len(entry) > 2 else None)
+        if code == 0:
+            continue
+        if code == TOPIC_EXISTS_CODE and allow_exists:
+            exists = True
+            continue
+        raise RuntimeError(f"{what}: {_error_name(code)} {message or ''}".strip())
+    return exists
+
+
+def _check_resource_errors(response, what: str):
+    """Check the per-resource error codes of an AlterConfigs response (not raised by kafka-python 2.0.2)."""
+    for entry in (getattr(response, 'resources', None) or []):
+        code, message = entry[0], entry[1]
+        if code != 0:
+            raise RuntimeError(f"{what}: {_error_name(code)} {message or ''}".strip())
+
+
+def _retention_is_unlimited(admin, topic: str) -> bool:
+    """Read the topic's config back and check that both retention settings are -1."""
+    for response in admin.describe_configs([ConfigResource(ConfigResourceType.TOPIC, topic)]):
+        for res in response.resources:
+            code, message, name, entries = res[0], res[1], res[3], res[4]
+            if name != topic:
+                continue
+            if code != 0:
+                raise RuntimeError(f"describe {topic}: {_error_name(code)} {message or ''}".strip())
+            values = {e[0]: e[1] for e in entries}
+            return all(str(values.get(k)) == v for k, v in UNLIMITED_RETENTION.items())
+    return False
+
+
+def _ensure_unlimited_topics(bootstrap: str, topics) -> bool:
+    admin = None
+    try:
+        admin = KafkaAdminClient(bootstrap_servers=[bootstrap], api_version=(2, 5, 0),
+                                 request_timeout_ms=30000, api_version_auto_timeout_ms=10000)
+        existing = set(admin.list_topics())
+        for topic in topics:
+            needs_alter = topic in existing
+            if not needs_alter:
+                try:
+                    response = admin.create_topics([NewTopic(topic, num_partitions=1, replication_factor=1,
+                                                             topic_configs=dict(UNLIMITED_RETENTION))])
+                    needs_alter = _check_topic_errors(response, f"create {topic}", allow_exists=True)
+                except TopicAlreadyExistsError:
+                    needs_alter = True  # raised by kafka-python 2.0.2 for code 36
+            if needs_alter:
+                response = admin.alter_configs([ConfigResource(ConfigResourceType.TOPIC, topic,
+                                                               configs=dict(UNLIMITED_RETENTION))])
+                _check_resource_errors(response, f"alter {topic}")
+            if not _retention_is_unlimited(admin, topic):
+                raise RuntimeError(f"{topic}: retention.ms and retention.bytes are not both -1 on read-back")
+            logger.info(f"[TOPICS] {topic} has unlimited retention")
+        return True
+    except Exception as e:
+        logger.warning(f"[TOPICS] Could not set up {list(topics)} with unlimited retention: {e}")
+        return False
+    finally:
+        if admin is not None:
+            try:
+                admin.close()
+            except Exception:
+                pass
+
+
+def ensure_unlimited_topics(bootstrap: str, topics, timeout: float = None) -> bool:
+    """Create each topic if missing (1 partition, unlimited retention); set unlimited retention on one that exists.
+
+    Uses the Kafka admin client; no CLI in a broker. Returns True only if every topic was created or
+    altered without an error code AND a read-back shows retention.ms and retention.bytes both -1.
+    Never raises. The admin client can block for good on an unreachable broker, so the work runs in
+    a daemon thread and a call that exceeds `timeout` (default ENSURE_TOPICS_TIMEOUT) counts as a
+    failure. A timed-out call still running blocks a new call for the same topics (also a failure),
+    so threads do not pile up. For an existing topic, alter_configs sets the topic's overrides to
+    exactly these two; these topics are owned by this tool, so nothing else is expected on them.
+    """
+    timeout = ENSURE_TOPICS_TIMEOUT if timeout is None else timeout
+    key = (bootstrap, tuple(topics))
+    previous = _ensure_inflight.get(key)
+    if previous is not None and previous.is_alive():
+        logger.warning(f"[TOPICS] An earlier attempt for {list(topics)} is still running; not starting another")
+        return False
+    result = [False]
+
+    def work():
+        result[0] = _ensure_unlimited_topics(bootstrap, topics)
+
+    worker = Thread(target=work, daemon=True)
+    _ensure_inflight[key] = worker
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        logger.warning(f"[TOPICS] Setting up {list(topics)} timed out after {timeout:.0f}s")
+        return False
+    _ensure_inflight.pop(key, None)
+    return result[0]
+
+
+class KafkaStateStore:
+    """Durable per-hour state and released-hour markers, in one staff topic.
+
+    Two kinds of JSON record, keyed so that a compacted topic keeps the newest of each:
+      {"kind": "state", "hour": H, "profile": P, "affected_regions": [...], "recorded_at": T}
+      {"kind": "released", "team": TEAM, "hour": H, "released_at": T}
+    load() replays the whole topic. The topic is tiny (24 state records and one
+    released record per team per hour, per day).
+    """
+
+    def __init__(self, bootstrap: str, topic: str, get_producer):
+        self.bootstrap = bootstrap
+        self.topic = topic
+        self.get_producer = get_producer  # callable -> KafkaProducer or None
+
+    def ensure_topic(self):
+        """Create the topic as compacted if it does not exist. Best effort; never raises.
+
+        An existing topic is left as it is (see README: staff must set cleanup.policy=compact on it).
+        """
+        def work():
+            admin = None
+            try:
+                admin = KafkaAdminClient(bootstrap_servers=[self.bootstrap], api_version=(2, 5, 0),
+                                         request_timeout_ms=30000, api_version_auto_timeout_ms=10000)
+                response = admin.create_topics([NewTopic(self.topic, num_partitions=1, replication_factor=1,
+                                                         topic_configs={'cleanup.policy': 'compact'})])
+                if not _check_topic_errors(response, f"create {self.topic}", allow_exists=True):
+                    logger.info(f"[LABELS] Created compacted topic {self.topic}")
+            except TopicAlreadyExistsError:
+                pass
+            except Exception as e:
+                logger.warning(f"[LABELS] Could not create {self.topic} as compacted ({e}); the first write "
+                               f"creates it with the broker defaults. See README for the topic config.")
+            finally:
+                if admin is not None:
+                    try:
+                        admin.close()
+                    except Exception:
+                        pass
+
+        # The admin client can block for good on an unreachable broker; never hold up startup.
+        worker = Thread(target=work, daemon=True)
+        worker.start()
+        worker.join(ENSURE_TOPICS_TIMEOUT)
+        if worker.is_alive():
+            logger.warning(f"[LABELS] Creating {self.topic} timed out after {ENSURE_TOPICS_TIMEOUT:.0f}s")
+
+    def load(self):
+        """Return (states, released). states: {hour_dt: (profile, affected_tuple)}; released: {(team, hour_dt)}."""
+        states, released = {}, set()
+        consumer = KafkaConsumer(bootstrap_servers=[self.bootstrap], group_id=None,
+                                 enable_auto_commit=False, auto_offset_reset='earliest')
+        try:
+            partitions = consumer.partitions_for_topic(self.topic)
+            if not partitions:  # topic does not exist yet: first run
+                return states, released
+            tps = [TopicPartition(self.topic, p) for p in sorted(partitions)]
+            consumer.assign(tps)
+            consumer.seek_to_beginning(*tps)
+            end = consumer.end_offsets(tps)
+            deadline = time.monotonic() + 60
+            while any(consumer.position(tp) < end[tp] for tp in tps):
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"could not read all of {self.topic} within 60s")
+                for records in consumer.poll(timeout_ms=2000).values():
+                    for rec in records:
+                        self._apply(rec.value, states, released)
+        finally:
+            consumer.close()
+        return states, released
+
+    @staticmethod
+    def _apply(raw, states: dict, released: set):
+        try:
+            rec = json.loads(raw)
+            hour = parse_hour(rec['hour'])
+            if rec['kind'] == 'state':
+                states[hour] = (rec['profile'], tuple(rec.get('affected_regions') or ()))
+            elif rec['kind'] == 'released':
+                released.add((rec['team'], hour))
+        except Exception as e:  # skip a malformed record; never block startup on it
+            logger.warning(f"[LABELS] Skipping unreadable state record: {e}")
+
+    def _send(self, key: str, value: dict) -> bool:
+        producer = self.get_producer()
+        if producer is None:
+            return False
+        try:
+            producer.send(self.topic, key=key.encode('utf-8'), value=value).get(timeout=10)
+            return True
+        except Exception as e:
+            logger.error(f"[LABELS] Could not write to {self.topic}: {e}")
+            return False
+
+    def save_state(self, hour: datetime, profile: str, affected_regions, recorded_at: datetime) -> bool:
+        return self._send(f"state|{format_hour(hour)}", {
+            'kind': 'state', 'hour': format_hour(hour), 'profile': profile,
+            'affected_regions': list(affected_regions), 'recorded_at': format_ts(recorded_at)})
+
+    def save_released(self, team: str, hour: datetime, released_at: datetime) -> bool:
+        return self._send(f"released|{team}|{format_hour(hour)}", {
+            'kind': 'released', 'team': team, 'hour': format_hour(hour),
+            'released_at': format_ts(released_at)})
+
+
+class LabelService:
+    """Records the state of each UTC hour and releases its labels after a delay.
+
+    The state fed to tick() is the state of the events being emitted (the tag of the
+    newest event taken from the FIFO pool), not the generator's current state, which
+    runs ahead of the emitted events by the pool depth.
+
+    Mid-hour rule: the state of an hour is the emitted state at the half hour. tick()
+    records the first state it sees at or after HH:30:00 and never changes it. The
+    emitted state can change inside an hour; the half-hour state is the state that held
+    at the midpoint of the hour, which is the state that held for most of the hour
+    whenever the hour has one change.
+
+    Restart safety: every recorded state and every release is also written to
+    the staff topic (store). On startup, load() replays it, so pending hours
+    stay pending and released hours stay released. Nothing is released before
+    load() has succeeded. A crash between sending labels and writing the
+    released marker re-sends that hour on restart: consumers should upsert on
+    (region, hour).
+
+    An hour with no recorded state (the generator was down for the whole second
+    half of the hour) gets no label.
+    """
+
+    def __init__(self, store, regions, delay_hours: float, send_labels, teams_fn):
+        self.store = store                  # object with load/save_state/save_released, or None
+        self.regions = list(regions)
+        self.delay = timedelta(hours=delay_hours)
+        self.send_labels = send_labels      # (team_id, [(key, value)]) -> bool
+        self.teams_fn = teams_fn            # () -> iterable of team ids that can receive labels now
+        self.states = {}                    # hour_dt -> (profile, affected tuple)
+        self.released = set()               # (team, hour_dt)
+        self.loaded = store is None         # with no store there is nothing to load
+        self._unsaved_states = set()
+        self._unsaved_released = []         # [(team, hour_dt, released_at)]
+        self._topic_checked = False
+        self.max_unsaved = 2000             # bound when the state team's Kafka never accepts writes
+
+    def _cap_unsaved(self):
+        """Drop the oldest unsaved entries past max_unsaved, with a warning. They stay valid in memory."""
+        if len(self._unsaved_states) > self.max_unsaved:
+            drop = sorted(self._unsaved_states)[:len(self._unsaved_states) - self.max_unsaved]
+            self._unsaved_states.difference_update(drop)
+            logger.warning(f"[LABELS] State topic unwritable: dropped {len(drop)} unsaved hour states "
+                           f"(a restart now would lose them)")
+        if len(self._unsaved_released) > self.max_unsaved:
+            n = len(self._unsaved_released) - self.max_unsaved
+            self._unsaved_released = self._unsaved_released[n:]
+            logger.warning(f"[LABELS] State topic unwritable: dropped {n} unsaved release markers "
+                           f"(a restart now could re-send those hours)")
+
+    def ensure_loaded(self) -> bool:
+        if self.loaded:
+            return True
+        if not self._topic_checked:
+            self._topic_checked = True
+            ensure = getattr(self.store, 'ensure_topic', None)
+            if ensure:
+                ensure()
+        try:
+            states, released = self.store.load()
+        except Exception as e:
+            logger.warning(f"[LABELS] State topic not readable yet (will retry): {e}")
+            return False
+        for hour, st in self.states.items():  # states recorded before the load succeeded
+            if hour not in states:
+                states[hour] = st
+                self._unsaved_states.add(hour)
+        self.states = states
+        self.released |= released
+        self.loaded = True
+        logger.info(f"[LABELS] Loaded {len(states)} hour states and {len(released)} released markers")
+        return True
+
+    def record(self, now: datetime, profile: str, affected_regions) -> bool:
+        """Record the state of the current hour if it is at or after HH:30 and not yet recorded."""
+        hour = hour_floor(now)
+        if now < hour + timedelta(minutes=30) or hour in self.states:
+            return False
+        self.states[hour] = (profile, tuple(affected_regions))
+        self._unsaved_states.add(hour)
+        return True
+
+    def restorable_regions(self, now: datetime, max_age_hours: float = 6.0) -> list:
+        """Affected regions of the newest recorded state, if it is recent and active.
+
+        Lets a restarted generator carry on an outbreak with the same regions,
+        so the labels match the events students saw before the restart.
+        """
+        if not self.states:
+            return []
+        hour = max(self.states)
+        profile, affected = self.states[hour]
+        if profile == 'baseline' or now - (hour + HOUR) > timedelta(hours=max_age_hours):
+            return []
+        return [r for r in affected if r in self.regions]
+
+    def _flush_unsaved(self):
+        if self.store is None:
+            return
+        for hour in sorted(self._unsaved_states):
+            profile, affected = self.states[hour]
+            if self.store.save_state(hour, profile, affected, hour + timedelta(minutes=30)):
+                self._unsaved_states.discard(hour)
+        still = []
+        for team, hour, at in self._unsaved_released:
+            if not self.store.save_released(team, hour, at):
+                still.append((team, hour, at))
+        self._unsaved_released = still
+
+    def due_hours(self, now: datetime) -> list:
+        """Hours whose labels may be released: hour end + delay has passed."""
+        return sorted(h for h in self.states if h + HOUR + self.delay <= now)
+
+    def release_due(self, now: datetime) -> int:
+        """Send labels for every due (team, hour) not yet released. Returns messages sent."""
+        if not self.loaded:
+            return 0
+        sent = 0
+        teams = sorted(self.teams_fn())
+        for hour in self.due_hours(now):
+            profile, affected = self.states[hour]
+            for team in teams:
+                if (team, hour) in self.released:
+                    continue
+                msgs = build_labels(hour, profile, affected, self.regions, now)
+                if self.send_labels(team, msgs):
+                    self.released.add((team, hour))
+                    self._unsaved_released.append((team, hour, now))
+                    sent += len(msgs)
+                    logger.info(f"[LABELS] Released {len(msgs)} labels for {format_hour(hour)} to {team}")
+        return sent
+
+    def tick(self, now: datetime, profile: str, affected_regions) -> int:
+        self.ensure_loaded()
+        self.record(now, profile, affected_regions)
+        if self.loaded:
+            self._flush_unsaved()
+        sent = self.release_due(now)
+        if self.loaded:
+            self._flush_unsaved()
+        self._cap_unsaved()
+        return sent
+
+
+# ============================================================================
 # Event Generator
 # ============================================================================
 
@@ -275,6 +751,103 @@ class EventGenerator:
         self.event_pool = queue.Queue(maxsize=EVENT_POOL_SIZE)
         self.state = OutbreakState()
         self.state_lock = Lock()
+        # (profile, affected_regions tuple) of the newest event taken from the pool; None until one is.
+        self.emitted_state = None
+        self._topics_ready = set()   # teams whose label topic has unlimited retention
+        self._topic_failures = {}
+        self.labels = self._build_label_service()
+
+    def _build_label_service(self) -> LabelService:
+        """Labels go to each team's Kafka; the durable state goes to the staff team's Kafka."""
+        if TEAM_KAFKA_MAPPING:
+            state_team = LABEL_STATE_TEAM if LABEL_STATE_TEAM in TEAM_KAFKA_MAPPING else None
+            bootstrap = TEAM_KAFKA_MAPPING.get(state_team)
+        else:
+            state_team, bootstrap = 'shared', SINGLE_BOOTSTRAP
+        store = None
+        if state_team and bootstrap:
+            store = KafkaStateStore(bootstrap, LABEL_STATE_TOPIC,
+                                    lambda: self.producers.get(state_team))
+        else:
+            logger.warning(
+                f"[LABELS] No Kafka entry for LABEL_STATE_TEAM={LABEL_STATE_TEAM!r}: label state is "
+                f"kept in memory only, and a restart loses pending labels.")
+        return LabelService(store, REGIONS, LABEL_DELAY_HOURS, self.send_labels,
+                            lambda: list(self.producers.keys()))
+
+    def _fill_pool(self, count: int):
+        """Generate `count` events and queue them, each tagged with the state it was generated under.
+
+        The pool is FIFO and is drained at the emit pace, so the events being emitted
+        can be several hours older than self.state. The tag (profile, affected tuple)
+        travels with the event but is never part of the emitted JSON; the emit thread
+        copies it into self.emitted_state, and labels follow that.
+        """
+        with self.state_lock:
+            tag = (self.state.profile, tuple(self.state.affected_regions))
+        for _ in range(count):
+            event = self.generate_event()
+            try:
+                self.event_pool.put((tag, event), block=False)
+            except queue.Full:
+                logger.warning("[REFILL] Event pool full, dropping event")
+                break
+
+    def _ensure_label_topic(self, team_id: str) -> bool:
+        """Make sure the team's label topic exists with unlimited retention before the first send.
+
+        Runs in the label thread only. A failure holds the labels (they are retried on the next
+        tick) rather than letting the broker auto-create the topic with 24 h retention.
+        """
+        if team_id in self._topics_ready:
+            return True
+        bootstrap = SINGLE_BOOTSTRAP if team_id == 'shared' else TEAM_KAFKA_MAPPING.get(team_id)
+        if not bootstrap:
+            self._topics_ready.add(team_id)  # nothing to configure through
+            return True
+        if ensure_unlimited_topics(bootstrap, [label_topic(team_id)]):
+            self._topics_ready.add(team_id)
+            return True
+        n = self._topic_failures[team_id] = self._topic_failures.get(team_id, 0) + 1
+        if n == 1 or n % 20 == 0:
+            logger.warning(f"[LABELS] Labels for {team_id} are held until {label_topic(team_id)} has "
+                           f"unlimited retention (attempt {n}). Set retention.ms=-1 and retention.bytes=-1 by hand if this persists.")
+        return False
+
+    def send_labels(self, team_id: str, messages: list) -> bool:
+        """Send one hour of labels to one team. True only if every message was acknowledged.
+
+        Labels are never passed through make_bad_event.
+        """
+        producer = self.producers.get(team_id)
+        if producer is None:
+            return False
+        if not self._ensure_label_topic(team_id):
+            return False  # labels wait; event streaming is not affected
+        topic = label_topic(team_id)
+        try:
+            futures = [producer.send(topic, key=key.encode('utf-8'), value=value) for key, value in messages]
+            producer.flush(timeout=15)
+            for future in futures:
+                if future is not None:
+                    future.get(timeout=15)  # raises if the send failed
+            return True
+        except Exception as e:
+            logger.error(f"[LABELS] Could not send labels to {team_id}: {e}")
+            return False
+
+    def label_thread_worker(self):
+        """Every LABEL_TICK_SECONDS: record the emitted state at HH:30, release labels that are due."""
+        while self.running:
+            time.sleep(LABEL_TICK_SECONDS)
+            emitted = self.emitted_state
+            if emitted is None:  # no event has been emitted yet
+                continue
+            try:
+                profile, affected = emitted
+                self.labels.tick(datetime.now(timezone.utc), profile, list(affected))
+            except Exception as e:
+                logger.error(f"Error in label loop: {e}", exc_info=True)
 
     def connect_kafka_for_team(self, team_id: str, bootstrap_server: str):
         """Initialize Kafka producer for a specific team."""
@@ -735,8 +1308,20 @@ class EventGenerator:
                         # Only pick new affected regions when transitioning into outbreak;
                         # keep the same regions for subsequent 6h checks within the same window
                         if not _was_active:
-                            k = min(random.randint(2, 4), len(REGIONS))
-                            self.state.affected_regions = random.sample(REGIONS, k)
+                            # After a restart in the middle of a window, keep the regions
+                            # recorded before the restart so the labels match the events.
+                            restored = self.labels.restorable_regions(now)
+                            if restored:
+                                self.state.affected_regions = restored
+                                logger.info(f"[REFILL] Restored affected regions after restart: {restored}")
+                            else:
+                                if not self.labels.loaded:
+                                    logger.warning(
+                                        "[REFILL] The state topic could not be replayed, so affected regions are "
+                                        "sampled anew. If this is a restart in the middle of an outbreak, the "
+                                        "labels for the hours before the restart and the events after it can disagree.")
+                                k = min(random.randint(2, 4), len(REGIONS))
+                                self.state.affected_regions = random.sample(REGIONS, k)
                     else:
                         self.state.affected_regions = []
                         self.state.symptom_burden = 0.0
@@ -753,13 +1338,7 @@ class EventGenerator:
                 batch_size = max(0, EVENT_POOL_REFILL_THRESHOLD - self.event_pool.qsize())
                 if batch_size > 0:
                     logger.info(f"[REFILL] Generating {batch_size} events...")
-                    for _ in range(batch_size):
-                        event = self.generate_event()
-                        try:
-                            self.event_pool.put(event, block=False)
-                        except queue.Full:
-                            logger.warning("[REFILL] Event pool full, dropping event")
-                            break
+                    self._fill_pool(batch_size)
                     logger.info(f"[REFILL] Pool now has {self.event_pool.qsize()}/{EVENT_POOL_SIZE} events")
 
             except Exception as e:
@@ -779,11 +1358,13 @@ class EventGenerator:
             try:
                 # Get event from pool (wait max 5s)
                 try:
-                    event = self.event_pool.get(timeout=5)
+                    tag, event = self.event_pool.get(timeout=5)
                 except queue.Empty:
                     logger.warning("[EMIT] Pool empty; waiting for RefillThread to catch up")
                     time.sleep(1)
                     continue
+                # The state this event was generated under: labels follow it.
+                self.emitted_state = tag
 
                 # Determine pace based on profile
                 with self.state_lock:
@@ -888,6 +1469,11 @@ class EventGenerator:
 
         self.running = True
 
+        # Replay the staff state topic before the first refill, so a restart in the
+        # middle of an outbreak keeps its affected regions. A failure here is
+        # retried by the label thread; nothing is released before it succeeds.
+        self.labels.ensure_loaded()
+
         # Start RefillThread (generates events periodically)
         Thread(target=self.refill_thread_worker, daemon=True).start()
         logger.info("RefillThread started (generates batch every 6h, checks outbreak schedule)")
@@ -895,6 +1481,10 @@ class EventGenerator:
         # Start EmitThread (drains pool to Kafka)
         Thread(target=self.emit_thread_worker, daemon=True).start()
         logger.info("EmitThread started (continuous emission at variable pace)")
+
+        # Start LabelThread (records each hour's state, releases delayed labels)
+        Thread(target=self.label_thread_worker, daemon=True).start()
+        logger.info(f"LabelThread started (labels released {LABEL_DELAY_HOURS}h after each hour ends)")
 
         # Start ReconnectThread (retries teams skipped at startup)
         Thread(target=self.reconnect_missing_teams_worker, daemon=True).start()

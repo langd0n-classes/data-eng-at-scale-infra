@@ -377,9 +377,231 @@ All configuration is done via `config.env`. Key settings:
 | `SYMPTOM_BURDEN_DECAY` | Exponential decay rate for symptom burden | `0.995` |
 | `BAD_EVENT_RATE` | Share of sent events that break the event contract (bad JSON, missing field, wrong type, unknown `event_type`, out-of-range age, bad timestamp); `0` turns it off. To change it on a running cluster, add the key to the generator ConfigMap and restart the Deployment | `0.0175` |
 
+| `LABEL_DELAY_HOURS` | Hours after a UTC hour ends before its labels are released to `events.<team>.outbreak_status`. Not in the ConfigMap template; add the key by hand and restart the Deployment | `12` |
+| `LABEL_STATE_TEAM` | Team whose Kafka holds the staff-only state topic (must be a key of `TEAM_BOOTSTRAP_SERVERS`) | `team00` |
+| `LABEL_STATE_TOPIC` | Name of the staff-only state topic | `staff.outbreak_state` |
+
 **Topic naming pattern:**
 - Multi-team: `${TOPIC_PREFIX}${TEAM_ID}${TOPIC_SUFFIX}` → `events.team01.raw`
 - Single cluster: `${TOPIC_PREFIX}${TOPIC_SUFFIX}` → `events.raw`
+
+---
+
+## Outbreak Labels and Labeled History
+
+Students train a model that decides LOW, WATCH, or ALERT per region per hour. They get
+the ground truth late, on `events.<team>.outbreak_status`, and labeled history to train
+a first model on `events.<team>.history`.
+
+### Delayed labels (live)
+
+One JSON message per region per completed UTC hour, key = region:
+
+```json
+{"region": "Boston", "hour": "2026-11-09T14:00:00Z", "status": "ALERT", "released_at": "2026-11-10T03:00:04Z"}
+```
+
+`hour` is the start of the hour. Labels for an hour are released `LABEL_DELAY_HOURS` after
+the hour ends. Labels never carry bad events (`BAD_EVENT_RATE` does not apply to them).
+
+**Rule** (`label_status()` in `event_generator.py`): ALERT if the generator's profile for
+the hour was `outbreak` and the region was in `affected_regions`; WATCH if the profile was
+`winddown` and the region was in `affected_regions`; LOW otherwise.
+
+**Label = state of the events being emitted.** The generator's state changes only when the
+refill thread runs (every 6 hours, not at the schedule boundary), and the refill tops a FIFO
+pool up to `EVENT_POOL_REFILL_THRESHOLD` events that the emit thread drains at the profile's
+pace. The events on the wire can therefore be several hours older than the current state. Each
+pooled event carries, internally, the state it was generated under (profile, affected
+regions); the emitted JSON is unchanged. The emit thread records the state of the event it
+last took from the pool, and the label uses that.
+
+**Mid-hour rule.** For an hour, the state is the emitted state at the half hour (HH:30): the
+first emitted state the label thread sees at or after HH:30 is recorded and kept for the hour.
+
+The history backfill follows the same rule (label = state of the events being written), because it
+emits each event as it generates it. One difference remains: live `available_beds` is computed from
+the symptom burden when the batch is generated (frozen per refill batch), while the history computes
+it per event on the simulated clock. Live event content is not changed.
+
+**Restart safety.** The label thread writes each hour's state (`hour`, `profile`,
+`affected_regions`) and each release (`team`, `hour`) to `staff.outbreak_state` in the Kafka of
+`LABEL_STATE_TEAM` (`team00`). Students cannot read it, because each team only has access to its
+own Kafka. At startup the generator replays that topic: pending hours stay pending, released hours
+are not released again, and an outbreak that was running keeps its `affected_regions`. Nothing is
+released until the replay succeeds. If the pod dies between sending labels and writing the
+release marker, that hour is sent again. Consumers must upsert on `(region, hour)`. An hour in
+which the generator was down for the whole second half has no label. Run one replica.
+
+A restart empties the pool, so after a restart the emitted state is the new first refill's state.
+
+If `LABEL_STATE_TEAM` is not in `TEAM_BOOTSTRAP_SERVERS`, state is kept in memory only and a
+restart loses pending labels; the log says so. If the replay fails at startup, the log warns
+("The state topic could not be replayed") when the first refill samples affected regions anew; a
+restart in the middle of an outbreak can then give labels and events that disagree. If the state
+team's Kafka never accepts writes, at most 2000 unsaved states and 2000 unsaved release markers are
+kept for retry; older ones are dropped with a warning, and a restart then loses them.
+
+**Staff topic config.** At startup the generator tries to create `staff.outbreak_state` with
+`cleanup.policy=compact`, 1 partition, replication factor 1, through the Kafka admin client (no
+CLI in the broker). It never changes an existing topic. If the topic already exists, or the
+create is refused, staff must set the config. With Strimzi:
+
+```yaml
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: staff.outbreak-state       # a resource name cannot contain "_" or "."; set spec.topicName
+  namespace: team-00               # the namespace of team00's Kafka
+  labels:
+    strimzi.io/cluster: kafka-team00   # adjust to team00's Kafka cluster name
+spec:
+  topicName: staff.outbreak_state
+  partitions: 1
+  replicas: 1
+  config:
+    cleanup.policy: compact
+```
+
+Without compaction the broker default (`cleanup.policy=delete`, 7 days) applies. That is safe while
+`LABEL_DELAY_HOURS` plus a few hours stays well below the retention: older records are only
+history. If retention is shorter than the delay, a restart loses the states of hours that are still
+pending, and those hours get no label. Without compaction and with infinite retention the topic grows by
+about 24 + 24 x teams records a day, which is small.
+
+### Retention of the history and label topics
+
+The team brokers default to `log.retention.hours=24` and `log.retention.bytes=104857600` (100 MB per
+partition) and auto-create topics. The raw topic is set to `retention.ms=-1`, `retention.bytes=-1` by the Kafka
+deploy task. `events.<team>.history` (about 300 MB) and `events.<team>.outbreak_status` get the same
+unlimited retention, so students can re-read both for the rest of the term:
+
+- `backfill_history.py` creates each topic it writes (1 partition, `retention.ms=-1`, `retention.bytes=-1`) or,
+  if it exists, sets both to `-1`, before it writes anything, through the Kafka admin client (no CLI in a
+  broker). If that fails it writes nothing and exits 1. `--no-topic-setup` skips the step; then set the two
+  configs yourself.
+- The live generator does the same for `events.<team>.outbreak_status` before its first label send to each team.
+  If it fails, the labels for that team are held and retried on the next tick (15 s) with a warning in the log;
+  event streaming is not affected. If it keeps failing, set the two configs by hand.
+- For an existing topic, the admin `alter_configs` call sets the topic's overrides to exactly these two. Other
+  overrides on these tool-owned topics are not expected.
+- Every create and alter response is checked for error codes (kafka-python 2.0.2 does not raise them for
+  `alter_configs`), and the topic's config is read back; the step counts as done only if `retention.ms` and
+  `retention.bytes` both read `-1`. The whole call is limited to 60 seconds, because the admin client can wait
+  for good on an unreachable broker; a timeout counts as a failure. The same limit applies to the creation of
+  the compacted state topic at startup, so a broker that does not answer cannot hold up the generator.
+- Topics that students create (for example their decisions topic) keep the broker default: 24 hours and
+  100 MB per partition.
+
+### Labeled history (staff, on demand, one team)
+
+`backfill_history.py` is in the same image. It simulates the generator over a past UTC range
+with a simulated clock and a fixed seed, and writes to one team's Kafka:
+
+- `events.<team>.history`: the events (same schema, same pacing and distributions as live, no bad events)
+- `events.<team>.outbreak_status`: the label of every region-hour in the range, `released_at` = time of the run
+
+Defaults: the 14 days ending `2026-11-09T00:00:00Z` (about 980,000 events at 1.5 events/s), seed 551.
+The simulation does not depend on the team, so the same seed and range give every team identical
+events and labels. It does not read or write `staff.outbreak_state` or `events.<team>.raw`.
+`REGIONS`, `EVENT_RATE_PER_SEC`, and the bed-pressure settings come from the same environment as the
+generator, so run it with the generator's ConfigMap. The simulation applies the schedule (Mon/Thu 09:00)
+exactly at the hour; it does not copy the 6-hourly lag of the live state. Running it twice writes the
+data twice. It sends in batches (flush every 5000 events) and prints progress per day.
+
+As a one-off Job in the cluster, using the image of the running Deployment (`TEAM` is one team id;
+on OpenShift remove the `imagePullSecrets` lines):
+
+```bash
+source config.env
+TEAM=team01
+IMAGE=$(kubectl get deployment ${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE} \
+  -o jsonpath='{.spec.template.spec.containers[0].image}')
+cat <<EOF | kubectl apply -f -
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: history-${TEAM}
+  namespace: ${INFRA_NAMESPACE}
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: history
+          image: ${IMAGE}
+          command: ["python", "backfill_history.py", "--team", "${TEAM}"]
+          envFrom:
+            - configMapRef:
+                name: ${EVENT_GENERATOR_NAME}-config
+          resources:
+            requests: {memory: 256Mi, cpu: 200m}
+            limits: {memory: 1Gi, cpu: 1}
+EOF
+kubectl logs -f job/history-${TEAM} -n ${INFRA_NAMESPACE}
+```
+
+Options: `--start`, `--end` (UTC, hour boundaries, end exclusive), `--days`, `--seed`, `--batch-size`,
+`--bootstrap`, and `--dry-run` (simulate and print counts, write nothing). The topics are created by the
+first write if the broker allows auto-creation; otherwise create them first (see "Topics not created
+automatically").
+
+### Reconstructing the gap from the generator log (staff, one-off repair)
+
+For hours the live generator emitted before this feature existed, no state was recorded. The state
+of the emitted events can be rebuilt from the pod log, because the pool is FIFO. `reconstruct_state.py`
+(standard library only; it runs on a host or in the image) reads:
+
+- `[REFILL] Outbreak state updated: profile=..., affected_regions=[...]` and `[REFILL] Generating N events...`:
+  one batch of N events under that state, in log order (the first batch is the pool filled at startup);
+- `[EMIT] Produced N events`: the cumulative count emitted since the pod started, against time.
+
+It lays the batches end to end, interpolates the emitted count at each HH:30, and takes the state of
+the batch that holds that event. Output is a state list for `--labels-from`:
+
+```bash
+kubectl logs --timestamps deploy/${EVENT_GENERATOR_NAME} -n ${INFRA_NAMESPACE} > pod.log
+python3 reconstruct_state.py pod.log --start 2026-11-10T02:00:00Z --end 2026-11-11T14:00:00Z --out states.json
+python3 backfill_history.py --team team01 --labels-from states.json \
+  --start 2026-11-10T02:00:00Z --end 2026-11-11T14:00:00Z --dry-run
+```
+
+Limits: the log covers one pod from its start (a log that spans a restart is rejected), so events before the
+pod started (2026-11-10T01:37Z for the current pod) are not covered. Hours before the first `[REFILL]` line
+or after the last `[EMIT]` line are skipped and listed. The count at HH:30 is interpolated between `[EMIT]`
+lines about 100 events apart, so a state change within about a minute or two of HH:30 can fall on the other
+side. Without `--timestamps` the log's own timestamps are read as UTC. Check the printed rows against the
+`[REFILL]` times before writing.
+
+### Labels from a supplied state list (staff, one-off repair)
+
+To write labels for past hours from a known state history (the file `reconstruct_state.py` writes, or one
+made by hand), give it as a file and run:
+
+```bash
+python backfill_history.py --team team01 --labels-from states.json \
+  --start 2026-11-10T02:00:00Z --end 2026-11-11T14:00:00Z
+```
+
+This writes labels only (no events) to `events.<team>.outbreak_status`, with `released_at` = time of the run.
+`--start` and `--end` are required. `states.json`:
+
+```json
+[
+  {"from_time": "2026-11-10T01:37:00Z", "profile": "winddown", "affected_regions": ["Boston", "NYC"]},
+  {"from_time": "2026-11-11T01:37:00Z", "profile": "baseline", "affected_regions": []}
+]
+```
+
+CSV works too: header `from_time,profile,affected_regions`, regions separated by `;`. A row holds from its
+`from_time` until the next row. Each hour takes the state in force at its half hour, as in the live rule.
+Hours before the first row are skipped and reported. Regions must be in `REGIONS`. Use `--dry-run` first.
+Run it as the Job above with `command: ["python", "backfill_history.py", "--team", "team01", "--labels-from", ...]`
+and the file in a ConfigMap mounted into the pod.
 
 ---
 
@@ -594,6 +816,8 @@ kubectl delete deployment/${EVENT_GENERATOR_NAME} configmap/${EVENT_GENERATOR_NA
 event-generator/
 ├── src/                      # Python source code
 │   ├── event_generator.py    # Main application (outbreak scheduler + Kafka producer)
+│   ├── backfill_history.py   # Staff command: labeled history and label repair for one team
+│   ├── reconstruct_state.py  # Staff tool: emitted-state timeline from a pod log
 │   ├── check_events.py       # Diagnostic script (run via oc exec)
 │   └── requirements.txt      # Python dependencies
 ├── k8s/                      # Kubernetes manifests
