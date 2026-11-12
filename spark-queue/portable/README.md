@@ -41,7 +41,9 @@ redeploy from briefly running two uncoordinated controllers each able to
 admit their own 4.
 
 **Submission is validated, not just conventional** — one policy rejects a
-Job using the Spark image or the `queue: spark` label unless it already
+Job using the Spark image, an image whose last path segment ends in
+`-spark` before its tag or digest (the team Spark image the course workflow
+builds), or the `queue: spark` label, unless the Job already
 has `suspend: true`, the label, `activeDeadlineSeconds` in 1-7200,
 `parallelism <= 1`, and `ttlSecondsAfterFinished <= 86400`. A Spark run
 started from a bare Pod or with `spark-submit --master k8s://` bypasses the

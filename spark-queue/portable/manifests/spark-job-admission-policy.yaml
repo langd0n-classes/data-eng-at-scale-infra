@@ -1,9 +1,12 @@
 # spark-queue/portable/manifests/spark-job-admission-policy.yaml
 #
 # One ValidatingAdmissionPolicy, spark-job-queue-policy. It matches a Job in
-# a team namespace using the Spark image (any repo/tag/digest form) or
-# carrying the `queue: spark` label (covers a team's own differently-named
-# Spark-based image, which can't be detected from the image string).
+# a team namespace that uses the Spark image (any repo/tag/digest form), uses
+# an image whose last path segment ends in `-spark` before its tag or digest
+# (the team Spark image that the course workflow builds,
+# ghcr.io/<org>/<repo>-spark), or carries the
+# `queue: spark` label. A team image under another name, with no label, is
+# not matched.
 # Requires `suspend: true`, the label, `activeDeadlineSeconds` in 1-7200,
 # `parallelism <= 1`, and `ttlSecondsAfterFinished <= 86400`. Only the queue
 # controller's own ServiceAccount may change `suspend` or the label after
@@ -43,7 +46,8 @@ spec:
     - name: spark-image-or-label-jobs
       expression: >-
         object.spec.template.spec.containers.exists(c,
-          c.image.contains('${SPARK_IMAGE_REPO}:') || c.image.contains('${SPARK_IMAGE_REPO}@')
+          c.image.contains('${SPARK_IMAGE_REPO}:') || c.image.contains('${SPARK_IMAGE_REPO}@') ||
+          c.image.matches('(^|/)[^/:@]*-spark([:@]|$)')
         ) ||
         (has(object.metadata.labels) && 'queue' in object.metadata.labels && object.metadata.labels['queue'] == 'spark') ||
         (request.operation == 'UPDATE' && has(oldObject.metadata.labels) && 'queue' in oldObject.metadata.labels && oldObject.metadata.labels['queue'] == 'spark')
