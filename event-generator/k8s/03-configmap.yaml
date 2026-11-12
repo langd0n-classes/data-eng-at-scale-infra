@@ -38,4 +38,15 @@ data:
   # Add by hand to change the defaults, then restart the Deployment:
   #   LABEL_DELAY_HOURS: "12"          # hours after an hour ends before its labels are released
   #   LABEL_STATE_TEAM: "team00"       # team whose Kafka holds the staff-only staff.outbreak_state topic
+  # Scheduled behaviors, off unless the start time is set (see event-generator/README.md).
+  # A start time that does not parse stops the generator at startup:
+  #   SCHEDULE_SEED: "551"                 # seed of every scheduled choice
+  #   FALSE_ALARM_START: ""                # UTC ISO time; e.g. 2026-10-26T00:00:00Z
+  #   FALSE_ALARM_PROBABILITY: "0.04"      # chance that a burst starts in a UTC hour
+  #   FALSE_ALARM_MINUTES: "15"            # maximum burst length (bursts start HH:31-HH:45 and end by the end of the hour)
+  #   FALSE_ALARM_EVENTS_PER_MINUTE: "6"   # extra symptom_report events per minute in the burst region
+  #   AI_LABELS_START: ""                  # UTC ISO time; e.g. 2026-10-29T00:00:00Z
+  #   AI_LABEL_DELAY_HOURS: "1"            # AI status released this long after the hour ends
+  #   AI_LABEL_ERROR_RATE: "0.12"          # share of AI statuses that are wrong
+  #   STAFF_CORRECTION_DELAY_HOURS: "18"   # staff correction this long after the AI status
 
