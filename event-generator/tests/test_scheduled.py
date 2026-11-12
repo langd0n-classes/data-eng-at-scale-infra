@@ -62,7 +62,7 @@ class Store:
         return latest
 
 
-def ai_cfg(start=utc(2026, 12, 3), **kw):
+def ai_cfg(start=utc(2026, 10, 29), **kw):
     kw.setdefault('seed', '551')
     return eg.AiLabelConfig(start, **kw)
 
@@ -102,13 +102,13 @@ def test_both_behaviors_off_by_default(monkeypatch):
 
 
 def test_defaults_and_env_parsing(monkeypatch):
-    assert (eg.CR_SEED, eg.FALSE_ALARM_PROBABILITY, eg.FALSE_ALARM_MINUTES, eg.FALSE_ALARM_EVENTS_PER_MINUTE,
+    assert (eg.SCHEDULE_SEED, eg.FALSE_ALARM_PROBABILITY, eg.FALSE_ALARM_MINUTES, eg.FALSE_ALARM_EVENTS_PER_MINUTE,
             eg.AI_LABEL_DELAY_HOURS, eg.AI_LABEL_ERROR_RATE, eg.STAFF_CORRECTION_DELAY_HOURS) == \
         ('551', 0.04, 15.0, 6.0, 1.0, 0.12, 18.0)
-    monkeypatch.setenv('X_START', '2026-12-03T00:00:00Z')
-    assert eg._env_time('X_START') == utc(2026, 12, 3)
-    monkeypatch.setenv('X_START', '2026-12-03T05:00:00-05:00')
-    assert eg._env_time('X_START') == utc(2026, 12, 3, 10)
+    monkeypatch.setenv('X_START', '2026-10-29T00:00:00Z')
+    assert eg._env_time('X_START') == utc(2026, 10, 29)
+    monkeypatch.setenv('X_START', '2026-10-29T05:00:00-05:00')
+    assert eg._env_time('X_START') == utc(2026, 10, 29, 10)
     monkeypatch.setattr(eg, 'CONFIG_ERRORS', [])
     monkeypatch.setenv('X_START', 'soon')
     assert eg._env_time('X_START') is None and len(eg.CONFIG_ERRORS) == 1
@@ -119,14 +119,14 @@ def test_defaults_and_env_parsing(monkeypatch):
 def test_no_source_without_ai():
     sent = []
     svc = service(None, sent)
-    run(svc, utc(2026, 11, 30, 0), utc(2026, 12, 1, 12))
+    run(svc, utc(2026, 10, 26, 0), utc(2026, 10, 27, 12))
     assert sent and all('source' not in v for _, v in sent)
 
 
 # ---- AI labels ---------------------------------------------------------------
 
 def test_ai_status_deterministic_and_rate_within_tolerance():
-    hours = [utc(2026, 12, 3) + i * eg.HOUR for i in range(24 * 200)]
+    hours = [utc(2026, 10, 29) + i * eg.HOUR for i in range(24 * 200)]
     wrong = 0
     total = 0
     for h in hours:
@@ -155,9 +155,9 @@ def released_rows(sent):
 
 def test_every_wrong_ai_status_gets_exactly_one_correction():
     sent = []
-    start = utc(2026, 12, 3)
+    start = utc(2026, 10, 29)
     svc = service(None, sent, ai=ai_cfg(start, delay_hours=1, error_rate=0.12, correction_delay_hours=18))
-    run(svc, utc(2026, 12, 2, 12), utc(2026, 12, 6, 12))
+    run(svc, utc(2026, 10, 28, 12), utc(2026, 11, 1, 12))
     rows = released_rows(sent)
     n_ai = n_wrong = 0
     for (team, region, hour), vs in rows.items():
@@ -175,7 +175,7 @@ def test_every_wrong_ai_status_gets_exactly_one_correction():
         if ai[0]['status'] == true:
             assert staff == []
             continue
-        if h + timedelta(hours=2 + 18, seconds=30) > utc(2026, 12, 6, 12):
+        if h + timedelta(hours=2 + 18, seconds=30) > utc(2026, 11, 1, 12):
             assert staff == []                                   # correction not due yet
             continue
         n_wrong += 1
@@ -189,9 +189,9 @@ def test_every_wrong_ai_status_gets_exactly_one_correction():
 
 def test_source_absent_before_start_and_present_after():
     sent = []
-    start = utc(2026, 12, 3)
+    start = utc(2026, 10, 29)
     svc = service(None, sent, ai=ai_cfg(start, correction_delay_hours=2), delay=12)
-    run(svc, utc(2026, 12, 1, 0), utc(2026, 12, 4, 0))
+    run(svc, utc(2026, 10, 27, 0), utc(2026, 10, 30, 0))
     before = [v for _, v in sent if eg.parse_ts(v['released_at']) < start]
     after = [v for _, v in sent if eg.parse_ts(v['released_at']) >= start]
     assert before and after
@@ -204,20 +204,20 @@ def test_source_absent_before_start_and_present_after():
         p, a = svc.states[eg.parse_hour(v['hour'])]
         assert v['status'] == eg.label_status(p, a, v['region'])
     # AI hours use the AI delay, not LABEL_DELAY_HOURS
-    assert any(v['source'] == 'ai' and v['hour'] == '2026-12-03T00:00:00Z' for v in after)
+    assert any(v['source'] == 'ai' and v['hour'] == '2026-10-29T00:00:00Z' for v in after)
 
 
 def test_ai_label_records_for_grading():
     store = Store()
     sent = []
     svc = service(store, sent, ai=ai_cfg(correction_delay_hours=2), teams=('team01',))
-    run(svc, utc(2026, 12, 3), utc(2026, 12, 3, 12))
+    run(svc, utc(2026, 10, 29), utc(2026, 10, 29, 12))
     recs = store.records('ai_label')
     assert len(recs) == len(REGIONS) * 10             # AI out for hours 00..09 (hour end + 1 h)
     for rec in recs.values():
         assert rec['wrong'] == (rec['true_status'] != rec['ai_status'])
         assert set(rec['ai_released_at']) == {'team01'}
-        if rec['wrong'] and rec['hour'] <= '2026-12-03T08:00:00Z':   # correction due (+ 2 h)
+        if rec['wrong'] and rec['hour'] <= '2026-10-29T08:00:00Z':   # correction due (+ 2 h)
             assert set(rec['correction_released_at']) == {'team01'}
             assert rec['correction_released_at']['team01'] > rec['ai_released_at']['team01']
         elif not rec['wrong']:
@@ -229,7 +229,7 @@ def test_restart_keeps_pending_corrections_and_does_not_duplicate():
     store = Store()
     sent1 = []
     s1 = service(store, sent1, ai=cfg)
-    mid = run(s1, utc(2026, 12, 3), utc(2026, 12, 3, 20))   # AI out for hours 0..18, no correction yet
+    mid = run(s1, utc(2026, 10, 29), utc(2026, 10, 29, 20))   # AI out for hours 0..18, no correction yet
     assert not any(v['source'] == 'staff' for _, v in sent1)
     wrong_before = {(t, v['region'], v['hour']) for t, v in sent1
                     if v['status'] != s1.ai_decisions(eg.parse_hour(v['hour']))[v['region']][0]}
@@ -239,18 +239,18 @@ def test_restart_keeps_pending_corrections_and_does_not_duplicate():
     sent2 = []
     s2 = service(store, sent2, ai=ai_cfg(correction_delay_hours=18, error_rate=0.9))
     assert s2.ensure_loaded()
-    mid = run(s2, mid, utc(2026, 12, 4, 16))
+    mid = run(s2, mid, utc(2026, 10, 30, 16))
     corr2 = [(t, v['region'], v['hour']) for t, v in sent2 if v['source'] == 'staff']
     assert len(corr2) == len(set(corr2))
     ai2 = [v for _, v in sent2 if v['source'] == 'ai']
-    assert not any(v['hour'] < '2026-12-03T18:00:00Z' for v in ai2)     # hours 0..17 were out before
+    assert not any(v['hour'] < '2026-10-29T18:00:00Z' for v in ai2)     # hours 0..17 were out before
     assert wrong_before <= set(corr2)                                     # none lost
 
     # restart 2: nothing already corrected is sent again
     sent3 = []
     s3 = service(store, sent3, ai=cfg)
     assert s3.ensure_loaded()
-    run(s3, mid, utc(2026, 12, 5, 16))
+    run(s3, mid, utc(2026, 10, 31, 16))
     corr3 = [(t, v['region'], v['hour']) for t, v in sent3 if v['source'] == 'staff']
     assert not set(corr2) & set(corr3)
     allcorr = corr2 + corr3 + [(t, v['region'], v['hour']) for t, v in sent1 if v['source'] == 'staff']
@@ -259,7 +259,7 @@ def test_restart_keeps_pending_corrections_and_does_not_duplicate():
     ai_all = [(t, v) for t, v in sent1 + sent2 + sent3 if v['source'] == 'ai']
     wrong_all = {(t, v['region'], v['hour']) for t, v in ai_all
                  if v['status'] != s3.ai_decisions(eg.parse_hour(v['hour']))[v['region']][0]
-                 and v['hour'] <= '2026-12-04T20:00:00Z'}
+                 and v['hour'] <= '2026-10-30T20:00:00Z'}
     assert wrong_all <= set(allcorr)
 
 
@@ -267,7 +267,7 @@ def test_correction_written_before_restart_window_closes():
     """The corrected marker is written as soon as the send is acknowledged."""
     store = Store()
     s = service(store, [], ai=ai_cfg(correction_delay_hours=0.5), teams=('team01',))
-    run(s, utc(2026, 12, 3), utc(2026, 12, 3, 6))
+    run(s, utc(2026, 10, 29), utc(2026, 10, 29, 6))
     markers = store.records('corrected')
     assert markers
     for m in markers.values():
@@ -276,11 +276,33 @@ def test_correction_written_before_restart_window_closes():
         assert m['regions'] == wrong
 
 
+def test_missing_ai_label_record_is_not_drawn_again():
+    """An hour already released whose ai_label records are lost gets no correction, not a new draw."""
+    store = Store()
+    s1 = service(store, [], ai=ai_cfg(correction_delay_hours=18), teams=('team01',))
+    mid = run(s1, utc(2026, 10, 29), utc(2026, 10, 29, 6))   # AI out for hours 0..3, no correction yet
+    released = {h for _, h in s1.released}
+    assert len(released) == 4
+    store.log = [r for r in store.log if json.loads(r)['kind'] != 'ai_label']
+    sent2 = []
+    s2 = service(store, sent2, ai=ai_cfg(correction_delay_hours=18, error_rate=1.0), teams=('team01',))
+    assert s2.ensure_loaded()
+    run(s2, mid, utc(2026, 10, 30, 6))
+    for h in released:
+        assert s2.ai_decisions(h) == {r: (s2.ai_decisions(h)[r][0],) * 2 for r in REGIONS}
+    staff = [v for _, v in sent2 if v['source'] == 'staff']
+    assert staff and all(eg.parse_hour(v['hour']) not in released for v in staff)
+    # hours released after the restart are drawn with the new rate: every AI status is wrong
+    later = [v for _, v in sent2 if v['source'] == 'ai']
+    assert later and all(eg.parse_hour(v['hour']) not in released for v in later)
+    assert all(v['status'] != s2.ai_decisions(eg.parse_hour(v['hour']))[v['region']][0] for v in later)
+
+
 def test_ai_labels_deterministic_from_seed():
     def stream(seed):
         sent = []
         svc = service(None, sent, ai=ai_cfg(seed=seed, correction_delay_hours=3))
-        run(svc, utc(2026, 12, 3), utc(2026, 12, 4, 6))
+        run(svc, utc(2026, 10, 29), utc(2026, 10, 30, 6))
         return sent
     a, b, c = stream('551'), stream('551'), stream('552')
     assert a == b
@@ -307,7 +329,7 @@ def make_gen(monkeypatch):
 
 
 def fa_cfg(**kw):
-    kw.setdefault('start', utc(2026, 11, 30))
+    kw.setdefault('start', utc(2026, 10, 26))
     kw.setdefault('probability', 0.5)
     kw.setdefault('minutes', 20)
     kw.setdefault('events_per_minute', 6)
@@ -344,7 +366,7 @@ def test_bursts_never_change_state_or_labels(monkeypatch):
                     gen.event_pool.qsize())
     fa = eg.FalseAlarmService(fa_cfg(), REGIONS, gen.labels, gen.send_false_alarm_event)
     gen.false_alarms = fa
-    start, end = utc(2026, 11, 30), utc(2026, 12, 1, 12)   # Mon 00:00 to Tue 12:00: baseline, outbreak, winddown
+    start, end = utc(2026, 10, 26), utc(2026, 10, 27, 12)   # Mon 00:00 to Tue 12:00: baseline, outbreak, winddown
 
     # the same run with no bursts gives the reference labels
     ref = service(None, [], teams=())
@@ -381,7 +403,7 @@ def test_bursts_never_change_state_or_labels(monkeypatch):
 def test_burst_is_capped_at_the_top_of_the_hour():
     labels = service(None, [], teams=())
     fa = eg.FalseAlarmService(fa_cfg(probability=1.0, minutes=50), REGIONS, labels, lambda r: True)
-    hour = utc(2026, 11, 30, 3)
+    hour = utc(2026, 10, 26, 3)
     plan_start, _ = eg.false_alarm_plan('551', hour, 1.0)
     drive(labels, fa, hour, hour + timedelta(hours=1, minutes=5))
     rec = labels.get_record(f"false_alarm|{eg.format_ts(plan_start)}")
@@ -396,7 +418,7 @@ def test_burst_region_is_low_and_ends_when_status_changes():
     sent = []
     fa = eg.FalseAlarmService(fa_cfg(probability=1.0, minutes=15), REGIONS, labels,
                               lambda r: sent.append(r) or True)
-    hour = utc(2026, 11, 30, 3)
+    hour = utc(2026, 10, 26, 3)
     plan_start, _ = eg.false_alarm_plan('551', hour, 1.0)
     # the hour's recorded state: Boston affected; the emitted state at the start: four regions affected
     labels.record(hour + timedelta(minutes=30), 'outbreak', ['Boston'])
@@ -419,19 +441,33 @@ def test_burst_region_is_low_and_ends_when_status_changes():
     rec2 = labels.get_record(f"false_alarm|{eg.format_ts(plan2)}")
     assert rec2['status'] == 'skipped' and rec2['end_reason'] == 'no_low_region' and len(sent) == 7
 
-    # no recorded state for the hour: skipped
+    # no recorded state for the hour: the burst waits for it through the start grace, then is skipped
     h3 = hour + 2 * eg.HOUR
     plan3, _ = eg.false_alarm_plan('551', h3, 1.0)
+    key3 = f"false_alarm|{eg.format_ts(plan3)}"
     fa.step(plan3, ('baseline', ()))
-    assert labels.get_record(f"false_alarm|{eg.format_ts(plan3)}")['end_reason'] == 'no_hour_state'
+    fa.step(plan3 + fa.START_GRACE, ('baseline', ()))
+    assert labels.get_record(key3) is None and fa.active is None
+    fa.step(plan3 + fa.START_GRACE + timedelta(seconds=5), ('baseline', ()))
+    assert labels.get_record(key3)['end_reason'] == 'no_hour_state' and len(sent) == 7
+
+    # the hour's state recorded late, but within the start grace: the burst starts
+    h4 = hour + 3 * eg.HOUR
+    plan4, _ = eg.false_alarm_plan('551', h4, 1.0)
+    fa.step(plan4, ('baseline', ()))
+    assert fa.active is None
+    labels.record(plan4 + timedelta(seconds=90), 'baseline', [])
+    fa.step(plan4 + timedelta(seconds=90), ('baseline', ()))
+    rec4 = labels.get_record(f"false_alarm|{eg.format_ts(plan4)}")
+    assert rec4['status'] == 'running' and fa.active is not None
 
 
 def test_bursts_off_before_start():
     labels = service(None, [], teams=())
     sent = []
-    fa = eg.FalseAlarmService(fa_cfg(start=utc(2026, 12, 1), probability=1.0), REGIONS, labels,
+    fa = eg.FalseAlarmService(fa_cfg(start=utc(2026, 10, 27), probability=1.0), REGIONS, labels,
                               lambda r: sent.append(r) or True)
-    drive(labels, fa, utc(2026, 11, 30), utc(2026, 12, 1), step=timedelta(seconds=30))
+    drive(labels, fa, utc(2026, 10, 26), utc(2026, 10, 27), step=timedelta(seconds=30))
     assert sent == [] and labels.records == {}
 
 
@@ -454,7 +490,7 @@ def burst_then_restart(store, cfg, minutes_run):
     sent = []
     l1 = service(store, [], teams=())
     fa1 = eg.FalseAlarmService(cfg, REGIONS, l1, lambda r: sent.append(r) or True, checkpoint_seconds=60)
-    hour = utc(2026, 11, 30, 2)
+    hour = utc(2026, 10, 26, 2)
     plan_start, _ = eg.false_alarm_plan(cfg.seed, hour, 1.0)
     drive(l1, fa1, hour + timedelta(minutes=29), plan_start + timedelta(minutes=minutes_run, seconds=1))
     return plan_start, fa1.active['region'], sent
@@ -482,7 +518,7 @@ def test_burst_restart_resumes_in_same_region_with_count():
     {'seed': '552'},                # another plan
     {'probability': 0.0},           # no plan
     {'minutes': 2},                 # the plan's window has closed
-    {'start': utc(2026, 12, 15)},   # start moved later
+    {'start': utc(2026, 11, 10)},   # start moved later
 ])
 def test_restart_with_changed_config_closes_running_burst(change):
     store = Store()
@@ -519,7 +555,7 @@ def test_burst_closed_when_window_ended_during_downtime():
 
 
 def test_false_alarm_plan_deterministic():
-    hours = [utc(2026, 11, 30) + i * eg.HOUR for i in range(500)]
+    hours = [utc(2026, 10, 26) + i * eg.HOUR for i in range(500)]
     a = [eg.false_alarm_plan('551', h, 0.04) for h in hours]
     assert a == [eg.false_alarm_plan('551', h, 0.04) for h in hours]
     assert a != [eg.false_alarm_plan('552', h, 0.04) for h in hours]
@@ -537,18 +573,18 @@ def test_corrections_continue_when_ai_start_removed_or_moved(ai_after):
     store = Store()
     sent1 = []
     s1 = service(store, sent1, ai=ai_cfg(correction_delay_hours=18))
-    mid = run(s1, utc(2026, 12, 3), utc(2026, 12, 3, 20))
+    mid = run(s1, utc(2026, 10, 29), utc(2026, 10, 29, 20))
     wrong = {(t, v['region'], v['hour']) for t, v in sent1
              if v['status'] != s1.ai_decisions(eg.parse_hour(v['hour']))[v['region']][0]}
     assert wrong and set(s1.pending_corrections) == {(t, eg.parse_hour(v['hour'])) for t, v in sent1}
-    ai2 = None if ai_after is None else ai_cfg(start=utc(2026, 12, 10), correction_delay_hours=18)
+    ai2 = None if ai_after is None else ai_cfg(start=utc(2026, 11, 5), correction_delay_hours=18)
     sent2 = []
     s2 = service(store, sent2, ai=ai2)
     assert s2.ensure_loaded()
     assert set(s2.pending_corrections) == set(s1.pending_corrections)
-    run(s2, mid, utc(2026, 12, 4, 16))
+    run(s2, mid, utc(2026, 10, 30, 16))
     corr = [(t, v['region'], v['hour']) for t, v in sent2 if v.get('source') == 'staff'
-            and eg.parse_hour(v['hour']) < utc(2026, 12, 3, 19)]
+            and eg.parse_hour(v['hour']) < utc(2026, 10, 29, 19)]
     assert sorted(corr) == sorted(wrong)                      # each wrong AI status corrected exactly once
     assert not s2.pending_corrections                         # all done; nothing left to scan
 
@@ -556,14 +592,14 @@ def test_corrections_continue_when_ai_start_removed_or_moved(ai_after):
 def test_pending_corrections_are_cleared():
     sent = []
     s = service(None, sent, ai=ai_cfg(correction_delay_hours=1), teams=('team01',))
-    run(s, utc(2026, 12, 3), utc(2026, 12, 3, 6))
+    run(s, utc(2026, 10, 29), utc(2026, 10, 29, 6))
     # hours 0..3 have AI out (hour end + 1 h) and their corrections (+1 h) are past: nothing pending
-    assert all(h >= utc(2026, 12, 3, 3) for _, h in s.pending_corrections)
+    assert all(h >= utc(2026, 10, 29, 3) for _, h in s.pending_corrections)
 
 
 def test_unparseable_start_time_fails_loudly(monkeypatch):
     monkeypatch.setattr(eg, 'CONFIG_ERRORS', [])
-    monkeypatch.setenv('AI_LABELS_START', '2026-12-3 midnight')
+    monkeypatch.setenv('AI_LABELS_START', '2026-10-29 midnight')
     assert eg._env_time('AI_LABELS_START') is None
     assert len(eg.CONFIG_ERRORS) == 1 and 'AI_LABELS_START' in eg.CONFIG_ERRORS[0]
     assert eg.main() == 2
@@ -576,32 +612,32 @@ def test_unparseable_start_time_fails_loudly(monkeypatch):
 def test_state_records_replay_with_new_kinds():
     states, released, records = {}, set(), {}
     raws = [
-        {'kind': 'released', 'team': 'team01', 'hour': '2026-12-03T00:00:00Z', 'released_at': '2026-12-03T02:00:05Z',
+        {'kind': 'released', 'team': 'team01', 'hour': '2026-10-29T00:00:00Z', 'released_at': '2026-10-29T02:00:05Z',
          'source': 'ai'},
-        {'kind': 'corrected', 'team': 'team01', 'hour': '2026-12-03T00:00:00Z', 'released_at': '2026-12-03T20:00:05Z',
+        {'kind': 'corrected', 'team': 'team01', 'hour': '2026-10-29T00:00:00Z', 'released_at': '2026-10-29T20:00:05Z',
          'regions': ['Boston']},
-        {'kind': 'false_alarm', 'planned_start': '2026-11-30T03:10:00Z', 'planned_end': '2026-11-30T03:40:00Z',
+        {'kind': 'false_alarm', 'planned_start': '2026-10-26T03:10:00Z', 'planned_end': '2026-10-26T03:40:00Z',
          'status': 'ended'},
     ]
     for r in raws:
         eg.KafkaStateStore._apply(json.dumps(r), states, released, records)
-    assert released == {('team01', utc(2026, 12, 3))}
-    assert set(records) == {'released|team01|2026-12-03T00:00:00Z', 'corrected|team01|2026-12-03T00:00:00Z',
-                            'false_alarm|2026-11-30T03:10:00Z'}
+    assert released == {('team01', utc(2026, 10, 29))}
+    assert set(records) == {'released|team01|2026-10-29T00:00:00Z', 'corrected|team01|2026-10-29T00:00:00Z',
+                            'false_alarm|2026-10-26T03:10:00Z'}
     svc = eg.LabelService(Store([json.dumps(r) for r in raws]), REGIONS, 12, lambda t, m: True, lambda: [],
                           ai=ai_cfg())
     assert svc.ensure_loaded()
-    assert svc.released_meta[('team01', utc(2026, 12, 3))] == (utc(2026, 12, 3, 2, 0, 5), 'ai')
-    assert ('team01', utc(2026, 12, 3)) in svc.corrected
+    assert svc.released_meta[('team01', utc(2026, 10, 29))] == (utc(2026, 10, 29, 2, 0, 5), 'ai')
+    assert ('team01', utc(2026, 10, 29)) in svc.corrected
 
 
 def test_kafka_state_store_load_returns_other_records(monkeypatch):
     """load() against a fake consumer: every kind is replayed (the poll loop must not shadow the result)."""
     raws = [
-        {'kind': 'state', 'hour': '2026-12-03T00:00:00Z', 'profile': 'baseline', 'affected_regions': []},
-        {'kind': 'released', 'team': 'team12', 'hour': '2026-12-03T00:00:00Z', 'released_at': '2026-12-03T01:03:05Z',
+        {'kind': 'state', 'hour': '2026-10-29T00:00:00Z', 'profile': 'baseline', 'affected_regions': []},
+        {'kind': 'released', 'team': 'team12', 'hour': '2026-10-29T00:00:00Z', 'released_at': '2026-10-29T01:03:05Z',
          'source': 'ai'},
-        {'kind': 'ai_label', 'hour': '2026-12-03T00:00:00Z', 'region': 'Boston', 'true_status': 'LOW',
+        {'kind': 'ai_label', 'hour': '2026-10-29T00:00:00Z', 'region': 'Boston', 'true_status': 'LOW',
          'ai_status': 'WATCH', 'wrong': True, 'ai_released_at': {}, 'correction_released_at': {}},
     ]
 
@@ -637,6 +673,6 @@ def test_kafka_state_store_load_returns_other_records(monkeypatch):
 
     monkeypatch.setattr(eg, 'KafkaConsumer', Consumer)
     states, released, records = eg.KafkaStateStore('b:9092', 'staff.outbreak_state', lambda: None).load()
-    assert states == {utc(2026, 12, 3): ('baseline', ())}
-    assert released == {('team12', utc(2026, 12, 3))}
-    assert set(records) == {'released|team12|2026-12-03T00:00:00Z', 'ai_label|2026-12-03T00:00:00Z|Boston'}
+    assert states == {utc(2026, 10, 29): ('baseline', ())}
+    assert released == {('team12', utc(2026, 10, 29))}
+    assert set(records) == {'released|team12|2026-10-29T00:00:00Z', 'ai_label|2026-10-29T00:00:00Z|Boston'}

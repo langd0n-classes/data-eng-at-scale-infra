@@ -137,7 +137,7 @@ def _env_time(name: str):
     try:
         dt = datetime.fromisoformat(raw.replace('Z', '+00:00'))
     except ValueError:
-        msg = f"{name}={raw!r} is not an ISO 8601 time (for example 2026-12-03T00:00:00Z)"
+        msg = f"{name}={raw!r} is not an ISO 8601 time (for example 2026-10-29T00:00:00Z)"
         logger.error(msg)
         CONFIG_ERRORS.append(msg)
         return None
@@ -148,8 +148,8 @@ def _env_time(name: str):
 
 # Scheduled behaviors. Each is off unless its start time is set. Every choice (when a
 # burst starts, its region, which AI statuses are wrong and what they say) is drawn from
-# a random.Random seeded with CR_SEED plus the hour (and region), so staff can reproduce it.
-CR_SEED = os.getenv('CR_SEED', '551')
+# a random.Random seeded with SCHEDULE_SEED plus the hour (and region), so staff can reproduce it.
+SCHEDULE_SEED = os.getenv('SCHEDULE_SEED', '551')
 # False-alarm bursts: extra symptom_report events in one region whose true status is LOW.
 FALSE_ALARM_START = _env_time('FALSE_ALARM_START')
 FALSE_ALARM_PROBABILITY = _env_prob('FALSE_ALARM_PROBABILITY', 0.04)   # chance that a burst starts in a UTC hour
@@ -730,7 +730,7 @@ def ai_config_from_env():
     if AI_LABELS_START is None:
         return None
     return AiLabelConfig(AI_LABELS_START, AI_LABEL_DELAY_HOURS, AI_LABEL_ERROR_RATE,
-                         STAFF_CORRECTION_DELAY_HOURS, CR_SEED)
+                         STAFF_CORRECTION_DELAY_HOURS, SCHEDULE_SEED)
 
 
 class LabelService:
@@ -796,6 +796,7 @@ class LabelService:
         # release and on load, independent of self.ai: corrections for AI hours already released keep
         # going even if AI_LABELS_START is removed or moved later before a restart.
         self.pending_corrections = {}
+        self._warned_missing = set()        # (hour, region) logged as having no ai_label record
         if correction_delay_hours is None:
             correction_delay_hours = ai.correction_delay_hours if ai is not None else STAFF_CORRECTION_DELAY_HOURS
         self.correction_delay = timedelta(hours=correction_delay_hours)
@@ -919,11 +920,12 @@ class LabelService:
         self._unsaved_released = still
         self._flush_records()
 
-    def _flush_records(self):
+    def _flush_records(self, keys=None):
+        """Write the unsaved records (only those with a key in `keys`, if given) to the staff topic."""
         if self.store is None or not self.loaded:
             return
         with self._records_lock:
-            pending = list(self._unsaved_records.items())
+            pending = [(k, r) for k, r in self._unsaved_records.items() if keys is None or k in keys]
         for key, rec in pending:
             if self.store.save_record(rec):
                 with self._records_lock:
@@ -944,19 +946,28 @@ class LabelService:
         """{region: (true_status, ai_status)} for an AI hour. Drawn once, then read from the staff topic.
 
         A new decision is queued as ai_label records before any AI status of the hour is sent.
+        If the hour was already released to a team and its record is missing (the write failed,
+        or the topic lost it), the decision is not drawn again, because a new seed or rate could
+        give a different answer from the one that team received: the AI status counts as the true
+        status, so no correction is sent for it.
         """
         profile, affected = self.states[hour]
         out, drawn = {}, False
+        released = self.ai is None or any(h == hour for _, h in self.released)
         for region in self.regions:
             rec = self.get_record(f"ai_label|{format_hour(hour)}|{region}")
             if rec is not None:
                 out[region] = (rec['true_status'], rec['ai_status'])
                 continue
             true = label_status(profile, affected, region)
-            # Normally the record exists (written before the first send). Without self.ai (AI labels
-            # turned off after a release) the draw uses the environment's seed and rate.
-            seed, rate = (self.ai.seed, self.ai.error_rate) if self.ai else (CR_SEED, AI_LABEL_ERROR_RATE)
-            ai = ai_status(seed, hour, region, true, rate)
+            if released:
+                if (hour, region) not in self._warned_missing:
+                    self._warned_missing.add((hour, region))
+                    logger.warning(f"[LABELS] No ai_label record for {format_hour(hour)} {region}; "
+                                   f"no correction for it")
+                out[region] = (true, true)
+                continue
+            ai = ai_status(self.ai.seed, hour, region, true, self.ai.error_rate)
             out[region] = (true, ai)
             drawn = True
             self.queue_record({'kind': 'ai_label', 'hour': format_hour(hour), 'region': region,
@@ -1065,7 +1076,7 @@ class LabelService:
 class FalseAlarmConfig:
     start: datetime
     probability: float = 0.04        # chance that a burst starts in a given UTC hour
-    minutes: float = 15.0            # maximum length; a burst also ends at the top of the hour
+    minutes: float = 15.0            # maximum length; a burst also ends at the end of its UTC hour
     events_per_minute: float = 6.0   # extra symptom_report events per minute during a burst
     seed: str = '551'
 
@@ -1074,7 +1085,7 @@ def false_alarm_config_from_env():
     if FALSE_ALARM_START is None:
         return None
     return FalseAlarmConfig(FALSE_ALARM_START, FALSE_ALARM_PROBABILITY, FALSE_ALARM_MINUTES,
-                            FALSE_ALARM_EVENTS_PER_MINUTE, CR_SEED)
+                            FALSE_ALARM_EVENTS_PER_MINUTE, SCHEDULE_SEED)
 
 
 class FalseAlarmService:
@@ -1087,10 +1098,11 @@ class FalseAlarmService:
     A burst lies inside one UTC hour whose recorded label is LOW for its region:
     false_alarm_plan() puts the planned start between HH:31 and HH:45, after the hour's
     state is recorded at HH:30, and the burst ends at the earlier of start + cfg.minutes
-    and the top of the next hour. The region is chosen with the plan's pick, in REGIONS
+    and the end of that hour (the next HH:00). The region is chosen with the plan's pick, in REGIONS
     order, among the regions that are LOW both in the hour's recorded state and in the
-    emitted state. If none is (or the hour has no recorded state), the plan is recorded as
-    skipped. A burst also ends early if its region stops being LOW in the emitted state.
+    emitted state. If none is, the plan is recorded as skipped. If the hour's state is not
+    recorded yet, the burst waits for it until START_GRACE ends, then is skipped with
+    end_reason "no_hour_state". A burst also ends early if its region stops being LOW in the emitted state.
     A new burst starts only within START_GRACE (2 minutes) of its planned start; a plan
     missed by more (the generator was down or had not yet replayed the staff topic) is
     recorded as skipped with end_reason "missed".
@@ -1099,7 +1111,7 @@ class FalseAlarmService:
     every checkpoint_seconds, and at the end. After a restart, a running record that the
     current plan (same key, window still open) covers resumes with its region and count;
     every other running record is closed at its last event with end_reason "interrupted",
-    so a change of CR_SEED, probability or length cannot leave a record running. Up to
+    so a change of SCHEDULE_SEED, probability or length cannot leave a record running. Up to
     checkpoint_seconds of the count can be lost in a crash. Nothing starts before the staff
     topic has been replayed.
     """
@@ -1131,8 +1143,9 @@ class FalseAlarmService:
         return None
 
     def _save(self, now: datetime):
-        self.labels.queue_record(dict(self.active))
-        self.labels._flush_records()          # write at once; a crash loses at most one checkpoint
+        rec = dict(self.active)
+        self.labels.queue_record(rec)
+        self.labels._flush_records({record_key(rec)})   # write at once; a crash loses at most one checkpoint
         self._last_saved = now
 
     def _end(self, now: datetime, reason: str):
@@ -1144,9 +1157,10 @@ class FalseAlarmService:
         self.active = None
 
     def _skip(self, base: dict, reason: str):
-        self.labels.queue_record(dict(base, status='skipped', region=None, start=None, end=None,
-                                      events_added=0, last_event_at=None, end_reason=reason))
-        self.labels._flush_records()
+        rec = dict(base, status='skipped', region=None, start=None, end=None,
+                   events_added=0, last_event_at=None, end_reason=reason)
+        self.labels.queue_record(rec)
+        self.labels._flush_records({record_key(rec)})
 
     def _close_stale(self, keep: str = None):
         """Close every running record from before this run except `keep`, as interrupted."""
@@ -1183,11 +1197,15 @@ class FalseAlarmService:
         else:
             base = {'kind': 'false_alarm', 'planned_start': format_ts(planned_start),
                     'planned_end': format_ts(self.plan_end(planned_start))}
-            if now - planned_start > self.START_GRACE:
-                self._skip(base, 'missed')       # generator down, or the staff topic not replayed yet
-                return
+            late = now - planned_start > self.START_GRACE
             if hour_state is None:
-                self._skip(base, 'no_hour_state')
+                # The label thread records the hour's state at HH:30 on its own tick; wait for it
+                # until the start grace ends.
+                if late:
+                    self._skip(base, 'no_hour_state')
+                return
+            if late:
+                self._skip(base, 'missed')       # generator down, or the staff topic not replayed yet
                 return
             low = [r for r in self.regions
                    if label_status(hour_state[0], hour_state[1], r) == 'LOW'

@@ -380,10 +380,10 @@ All configuration is done via `config.env`. Key settings:
 | `LABEL_DELAY_HOURS` | Hours after a UTC hour ends before its labels are released to `events.<team>.outbreak_status`. Not in the ConfigMap template; add the key by hand and restart the Deployment | `12` |
 | `LABEL_STATE_TEAM` | Team whose Kafka holds the staff-only state topic (must be a key of `TEAM_BOOTSTRAP_SERVERS`) | `team00` |
 | `LABEL_STATE_TOPIC` | Name of the staff-only state topic | `staff.outbreak_state` |
-| `CR_SEED` | Seed of every choice of the scheduled behaviors below | `551` |
+| `SCHEDULE_SEED` | Seed of every choice of the scheduled behaviors below | `551` |
 | `FALSE_ALARM_START` | UTC ISO time from which false-alarm bursts can start; unset = off. A value that does not parse stops the generator at startup (exit 2) | unset |
 | `FALSE_ALARM_PROBABILITY` | Chance that a burst starts in a given UTC hour | `0.04` |
-| `FALSE_ALARM_MINUTES` | Maximum length of a burst (a burst also ends at the top of its hour) | `15` |
+| `FALSE_ALARM_MINUTES` | Maximum length of a burst (a burst also ends at the end of its UTC hour) | `15` |
 | `FALSE_ALARM_EVENTS_PER_MINUTE` | Extra `symptom_report` events per minute in the burst region | `6` |
 | `AI_LABELS_START` | UTC ISO time from which statuses are AI-sourced with staff corrections; unset = off. A value that does not parse stops the generator at startup (exit 2) | unset |
 | `AI_LABEL_DELAY_HOURS` | Hours after an hour ends before its AI statuses are released | `1` |
@@ -481,7 +481,7 @@ about 24 + 24 x teams records a day, which is small.
 ### Scheduled behaviors (staff only)
 
 Two behaviors, each off unless its start variable is set. Every choice is drawn from
-`random.Random` seeded with `CR_SEED` and the hour (and region), so staff can reproduce it.
+`random.Random` seeded with `SCHEDULE_SEED` and the hour (and region), so staff can reproduce it.
 Neither changes the history backfill. Add the keys to the generator ConfigMap and restart
 the Deployment. If `FALSE_ALARM_START` or `AI_LABELS_START` is set but does not parse as an ISO 8601
 time, the generator logs `Configuration error: ...` and exits with code 2, so a typo cannot turn a
@@ -494,20 +494,23 @@ HH:45:00 it starts (after the hour's state is recorded at HH:30). At that time t
 chosen (seeded) among the regions that are LOW both in the hour's recorded state and in the
 emitted state. The generator then sends `FALSE_ALARM_EVENTS_PER_MINUTE` extra `symptom_report`
 events for that region to every team's raw topic until the earlier of start +
-`FALSE_ALARM_MINUTES` and the top of the next hour. A burst also ends early if its region stops
+`FALSE_ALARM_MINUTES` and the end of that hour (the next HH:00). A burst also ends early if its region stops
 being LOW in the emitted state.
 
 - Expected length: `FALSE_ALARM_MINUTES` when it is 15 or less (the default 15 gives 15-minute
-  bursts); above 15, `min(FALSE_ALARM_MINUTES, 60 - start minute)`, so 15 to 29 minutes.
+  bursts); above 15, `min(FALSE_ALARM_MINUTES, 60 - start minute)`, which is 16 to
+  `min(FALSE_ALARM_MINUTES, 29)` minutes.
 - Expected count: `24 x FALSE_ALARM_PROBABILITY` planned per day (0.96 at the default 0.04), less
   the plans skipped because no region is LOW in both states (for example, every region affected).
 - Burst events have the normal schema, the baseline severity mix and no outbreak region skew,
   whatever the live state, so they look like ordinary reports. `BAD_EVENT_RATE` applies to them as
   to every raw event. They do not go through the pool, do not set the emitted state, and do not add
   to the symptom burden, so the outbreak state and the labels do not change.
-- A plan is recorded as skipped when no region is LOW in both states, when the hour has no recorded
-  state, or when its start was missed by more than 2 minutes (the generator was down or still
-  replaying the staff topic). Bursts never overlap.
+- A plan is recorded as skipped when no region is LOW in both states (`no_low_region`), when the
+  hour's state is still not recorded 2 minutes after the planned start (`no_hour_state`), or when
+  its start was missed by more than 2 minutes (`missed`: the generator was down or still replaying
+  the staff topic). When the state is missing and the start is late, either reason can appear.
+  Bursts never overlap.
 
 **AI-sourced statuses with corrections** (`AI_LABELS_START`). From the hour that contains the start,
 the statuses of each hour are released `AI_LABEL_DELAY_HOURS` after the hour ends, with
@@ -530,15 +533,15 @@ still gets its correction (from the `released` markers with `source: "ai"` that 
 use the `corrected` marker in `staff.outbreak_state`.
 
 ```json
-{"region": "Boston", "hour": "2026-12-03T14:00:00Z", "status": "WATCH", "released_at": "2026-12-03T16:00:04Z", "source": "ai"}
-{"region": "Boston", "hour": "2026-12-03T14:00:00Z", "status": "ALERT", "released_at": "2026-12-04T10:00:09Z", "source": "staff"}
+{"region": "Boston", "hour": "2026-10-29T14:00:00Z", "status": "WATCH", "released_at": "2026-10-29T16:00:04Z", "source": "ai"}
+{"region": "Boston", "hour": "2026-10-29T14:00:00Z", "status": "ALERT", "released_at": "2026-10-30T10:00:09Z", "source": "staff"}
 ```
 
 **Grading records in `staff.outbreak_state`** (newest record per key):
 
 | Kind (key) | Fields |
 |---|---|
-| `false_alarm` (`false_alarm\|<planned_start>`) | `planned_start`, `planned_end` (capped at the top of the hour), `region`, `start`, `end` (time of the last event), `last_event_at`, `events_added`, `status` (`running`, `ended`, `skipped`), `end_reason` (`planned`, `status_changed`, `interrupted`, `no_low_region`, `no_hour_state`, `missed`) |
+| `false_alarm` (`false_alarm\|<planned_start>`) | `planned_start`, `planned_end` (capped at the end of the hour), `region`, `start`, `end` (time of the last event), `last_event_at`, `events_added`, `status` (`running`, `ended`, `skipped`), `end_reason` (`planned`, `status_changed`, `interrupted`, `no_low_region`, `no_hour_state`, `missed`) |
 | `ai_label` (`ai_label\|<hour>\|<region>`) | `hour`, `region`, `true_status`, `ai_status`, `wrong`, `ai_released_at` and `correction_released_at` (each `{team: time}`) |
 | `corrected` (`corrected\|<team>\|<hour>`) | `team`, `hour`, `released_at`, `regions` corrected |
 | `released` | as before, plus `released_at` and `source` |
@@ -552,8 +555,24 @@ correction (same status, later `released_at`). A burst's record is written to th
 once when it starts, every 60 s while it runs, and when it ends, so a crash loses at most the last
 60 s of its `events_added`. After a restart, a running record that the current plan covers (same
 `planned_start`, window still open) resumes in the same region with its count. Every other running
-record is closed with `end_reason` `interrupted`, including after a change of `CR_SEED`,
-`FALSE_ALARM_PROBABILITY`, `FALSE_ALARM_MINUTES` or `FALSE_ALARM_START`.
+record is closed with `end_reason` `interrupted`, for example after a change of `SCHEDULE_SEED`,
+`FALSE_ALARM_PROBABILITY` or `FALSE_ALARM_START` that removes or moves the plan. A change of
+`FALSE_ALARM_MINUTES` alone keeps the plan: the burst resumes, and its `planned_end` is the earlier
+of the recorded one and the one for the new length. A longer length does not extend it. A shorter
+length ends it at the new end (as `planned`), or at once (as `interrupted`) if the new end has
+already passed.
+
+If an `ai_label` record is missing for an hour already released (its write failed and the topic
+lost it), the decision is not drawn again: that region-hour gets no correction, and the log says
+`No ai_label record` once per region-hour. The record is written before the first send, but that write is
+best effort: if it fails and the generator restarts before a retry succeeds, the teams already
+released keep their AI statuses uncorrected, and teams released later get the true status.
+
+**Rolling back to an image without these behaviors.** The older image reads the `state` and
+`released` records and ignores `ai_label` and `corrected`. It logs one `Skipping unreadable state
+record: 'hour'` warning per `false_alarm` record at each startup until the topic is compacted; the
+warnings are harmless. It sends no corrections: roll back after the pending corrections are out, or
+they wait until the newer image runs again, which then sends them.
 
 ### Retention of the history and label topics
 
